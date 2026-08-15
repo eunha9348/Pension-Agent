@@ -186,9 +186,21 @@ def _evidence_snippet(evidence: list[EvidenceChunk], doc_ids: list[str],
        내용(세율표, 한도 수치)이 잘려 나가, 근거를 인용하고도 답이 비는
        상황이 생긴다. 슬롯 핵심어가 처음 등장하는 지점을 중심으로 자른다.
     """
-    for c in evidence:
-        if c.doc_id not in doc_ids:
-            continue
+    kws = set(keywords or ())
+
+    def _relevance(c: EvidenceChunk) -> int:
+        """슬롯 핵심어가 몇 개나 실제로 등장하는가.
+
+        검색 순위 1위 청크가 그 슬롯의 최적 근거인 것은 아니다. BM25는 짧은
+        청크를 선호하므로, 인용 문장은 핵심어가 실제로 많이 등장하는 쪽을 고른다.
+        """
+        return sum(1 for kw in kws if kw in c.text)
+
+    # 순위(안정 정렬)를 유지하면서 관련도가 높은 청크를 앞으로
+    ordered = sorted((c for c in evidence if c.doc_id in doc_ids),
+                     key=_relevance, reverse=True)
+
+    for c in ordered:
         text = " ".join(c.text.split())
         start = 0
         for kw in sorted(keywords or (), key=len, reverse=True):

@@ -39,7 +39,29 @@ _LABELS = {
     "excluded": "가입 자격 미충족으로 제외",
 }
 
-# 값 표기를 결정하는 키 힌트
+# ── 단위 표기 ──────────────────────────────────────────────────
+# ⚠️ 휴리스틱만으로 단위를 정하면 사고가 난다. 실제로 "적용 분모 = 10만원"처럼
+#    개수를 금액으로 찍는 버그가 있었다. 아는 키는 명시적으로 못 박는다.
+_UNIT_MANWON = {
+    "limit", "A_tax_credit", "T_withholding", "P_private_excess", "difference",
+    "C_np_copay", "P_np_monthly", "P_np_annual",
+    "근속연수공제", "환산급여", "환산급여공제", "퇴직소득_과세표준",
+    "환산산출세액", "산출세액", "합계", "과세표준", "연금소득공제",
+    "사적연금_분리과세", "그외_종합과세",
+}
+_UNIT_RATE = {
+    "r_withholding", "reduction_rate", "applied_rate_of_original_tax",
+    "national_rate", "rate_with_local_tax", "r_tax_credit", "r_np_premium",
+    "r_irr", "separate_tax_rate_used",
+}
+_UNIT_PLAIN = {          # 금액도 비율도 아닌 값 (개수·연차 등)
+    "denominator": "",
+    "pension_year": "년차",
+    "M_np_credit": "개월",
+    "service_years": "년",
+}
+
+# 명시 목록에 없는 키를 위한 보조 힌트
 _RATE_HINTS = ("rate", "율", "r_")
 _AMOUNT_HINTS = ("limit", "한도", "세액", "금액", "공제", "T_", "A_", "P_", "C_", "차이")
 
@@ -61,10 +83,20 @@ def format_value(key: str, value: Any) -> str:
     if isinstance(value, bool):
         return "예" if value else "아니오"
     if isinstance(value, (int, float)):
-        if _is_rate(key, float(value)):
-            return f"{float(value) * 100:.4g}%"
-        if any(h in key for h in _AMOUNT_HINTS) or key in _LABELS:
-            return format_manwon(float(value))
+        v = float(value)
+        # 1) 명시 목록 우선
+        if key in _UNIT_RATE:
+            return f"{v * 100:.4g}%"
+        if key in _UNIT_MANWON:
+            return format_manwon(v)
+        if key in _UNIT_PLAIN:
+            suffix = _UNIT_PLAIN[key]
+            return f"{value:,}{suffix}" if suffix else f"{value:,}"
+        # 2) 보조 휴리스틱
+        if _is_rate(key, v):
+            return f"{v * 100:.4g}%"
+        if any(h in key for h in _AMOUNT_HINTS):
+            return format_manwon(v)
         return f"{value:,}"
     if isinstance(value, list):
         return f"{len(value)}건"

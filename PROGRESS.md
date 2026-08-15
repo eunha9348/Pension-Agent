@@ -1,0 +1,236 @@
+# 진행 보고서
+
+작성: 2026-08-15 (야간 자동 작업)
+브랜치: `claude/claude-implementation-plan-hpz25z`
+테스트: **190건 통과** · 자체 평가셋 **18/18**
+
+---
+
+## 0. 아침에 확인할 것 (우선순위 순)
+
+| # | 할 일 | 이유 | 소요 |
+|---|---|---|---|
+| **1** | **`.env`에 `CLOVA_API_KEY` 넣고 `python -m app.llm.smoke_test` 실행** | 지금 LLM이 **전혀 안 붙어 있다**. 응답 형식·인증 헤더·지연시간을 이걸로 먼저 확인해야 한다 | 10분 |
+| **2** | 스모크 테스트가 출력하는 지연 기준으로 `app/pipeline.py`의 `BUDGET_*` 상수 갱신 | 현재 값은 실측 없이 잡은 추정치 | 5분 |
+| **3** | 실제 제공 문서 zip을 `data/corpus/`에 넣고 `python -m app.ingest.inspect_zip data/corpus` 실행 | 지금은 **내가 만든 mock 문서**로 검색 중. 실물 zip 구조가 파서 가정과 맞는지 확인 필요 | 15분 |
+| **4** | 디스코드에 **임베딩/NLI 모델 허용 여부** 질의 | 현재 BM25 단독. 허용되면 검색 품질이 크게 올라간다 | — |
+| 5 | 미해결 2건(종신형+80세 세율 우선순위 / 이연퇴직소득 세율 구조) 팀 결정 | 코드는 손대지 않고 TODO만 남겼다 | — |
+| 6 | `python -m tests.eval_set` 결과를 읽고 평가셋 문항 보강 | 지금 18문항은 내가 만든 것이라 편향이 있을 수 있다 | 30분 |
+
+---
+
+## 1. 완료한 Phase와 커밋
+
+| Phase | 커밋 | 내용 |
+|---|---|---|
+| 0 | `ff54c43` | 프로젝트 구조, 7개 모듈 `app/core/` 이동, requirements/Dockerfile/.env.example/README |
+| 1 | `a217aef` | CLOVA 클라이언트 + mock 폴백 + 스모크 테스트 |
+| 3-1·2·2c | `845311f` | **calc_params_builder · slot_evidence_matcher · answer_covers_slot** (최우선) |
+| 2 | `a06b938` | zip(JPEG+OCR) 인제스트, 청킹, 메타데이터, BM25 색인 |
+| 3-4·5·6 | `1d3e134` | extract_query_spec · generate_answer · verify_grounding 래퍼 |
+| 4 | `4ec3afb` | REFUSE 판정 경로 |
+| 5·6 | `f133d57` | 6계층 파이프라인 통합 + `GET /answer` · `/health` |
+| 7 | `57dab7a` | 회귀 테스트 스위트 + 자체 평가셋 18문항 |
+
+Phase 8(배포)은 **하지 않았다** — 아래 3절 참고.
+
+### 지금 바로 돌려볼 수 있는 것
+
+```bash
+python -m app.ingest.build_index          # 인덱스 생성 (mock 코퍼스)
+python -m pytest -q                       # 190건
+python -m tests.eval_set                  # 평가셋 리포트 18/18
+uvicorn app.main:app --port 8000
+curl "http://localhost:8000/answer?question_id=Q-001&question=계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?"
+```
+
+---
+
+## 2. 막힌 것과 이유
+
+### 2-1. CLOVA Studio 실연동 ❌ (가장 중요)
+
+```
+clovastudio.stream.ntruss.com:443 → CONNECT 403 (네트워크 정책 차단)
+```
+
+개발 컨테이너의 아웃바운드 정책상 해당 도메인에 나갈 수 없어서 **실제 호출을
+한 번도 성공시키지 못했다.** 요청/응답 형식은 공개 규격에 맞춰 작성했지만
+**검증되지 않았다.**
+
+**API 키를 넣을 자리 — `.env` 파일 한 곳뿐이다:**
+
+```bash
+cp .env.example .env
+# .env 를 열어서:
+CLOVA_API_KEY=<여기에 발급받은 키>          # ← ★ 여기 ★
+CLOVA_ENDPOINT=https://clovastudio.stream.ntruss.com/testapp/v1/chat-completions/HCX-005
+LLM_MODE=auto        # auto면 키가 있을 때 자동으로 실호출로 전환
+```
+
+키를 넣은 뒤 **가장 먼저** 이걸 돌릴 것:
+
+```bash
+python -m app.llm.smoke_test
+```
+
+이 스크립트는 ① 인증이 되는지 ② 응답 JSON 구조가 파서와 맞는지
+③ 지연시간이 얼마인지 ④ Function calling 응답 형태가 어떤지를 출력하고,
+측정된 지연을 근거로 단계별 타임아웃 예산을 제안한다.
+
+실패하면 확인 순서:
+- **401/403** → 인증 헤더 형식. `app/llm/clova.py`의 `_headers()`가 Bearer 방식인데,
+  구형 콘솔 키는 `X-NCP-CLOVASTUDIO-API-KEY` 헤더일 수 있다
+- **404** → `CLOVA_ENDPOINT`의 모델 경로
+- **toolCalls 파싱 실패** → `call_with_functions()`의 파싱부를 실제 스키마에 맞출 것
+
+**지금 mock으로 돌고 있다는 표시는 세 군데에 있다:**
+1. 서버 기동 로그에 `★` 배너
+2. `GET /health` 의 `llm.is_mock: true`
+3. 모든 응답의 `think_trace` 첫 줄 `[MOCK LLM] ...`
+
+**mock은 내용을 지어내지 않는다.** 지어내면 실연동 시 문제가 안 드러나기 때문에,
+각 호출 지점에서 "분석 실패"를 반환하고 결정론적 경로로 넘긴다:
+- L1 → 규칙 기반 질의 분석기가 대신 처리
+- L5' → 결정론적 템플릿 답변 (계산 결과 + 근거 문장만 조합, 환각 불가능)
+- L6 → APPROVE + "감사 미수행" finding (권한 계층상 APPROVE는 판정을 완화하지 못해 안전)
+
+### 2-2. 실제 제공 문서 ❌
+
+문서를 아직 안 올리셨다고 하셔서, 말씀하신 구조(페이지별 JPEG + OCR 텍스트 zip)를
+흉내낸 **mock zip 7건**을 만들어 파서를 검증했다 (`data/corpus_mock/`).
+
+- PDF 라이브러리를 쓰지 않는다. `zipfile`로 구조를 먼저 확인한다
+- 이미지 엔트리는 **읽지 않고** 목록만 센다 (OCR을 다시 돌리지 않는다)
+- 실물 zip 구조를 모르므로 **4가지 레이아웃을 모두 흡수**하게 만들었다
+  (A: 디렉터리 분리 / B: 평면 / C: JSON 통합 / D: 단일 텍스트)
+
+실물을 받으면:
+```bash
+python -m app.ingest.inspect_zip data/corpus/<파일>.zip   # 구조 덤프 먼저
+mv <실물 zip들> data/corpus/
+python -m app.ingest.build_index                          # 실물이 자동 우선
+```
+`data/corpus/`에 zip이 하나라도 있으면 mock은 무시된다.
+
+### 2-3. PostgreSQL / pgvector ⚠️ 정의만
+
+컨테이너에 PG 서버가 없어 실행 검증을 못 했다. `sql/schema.sql`에 스키마만
+정의해 두고, 기본 경로는 **파일 기반 인덱스 + 순수 파이썬 BM25**로 만들었다
+(외부 DB 없이 동작). 검색 인터페이스가 같아서 PG로 바꿀 때 `app/ingest/store.py`의
+백엔드만 교체하면 된다.
+
+### 2-4. Phase 8 배포 ❌
+
+NCP 콘솔 접근·도메인·인증서가 필요해 이 환경에서 할 수 있는 게 없다.
+Dockerfile은 만들어 뒀다 (`docker build -t pension-agent .`).
+
+---
+
+## 3. 내가 내린 가정과 결정 (전부)
+
+### 3-1. 지시하신 두 가지에 대한 처리
+
+| 상황 | 결정 |
+|---|---|
+| CLOVA 차단 | mock 클라이언트로 인터페이스만 맞추고 나머지 Phase 전부 진행. mock은 **내용을 지어내지 않고** 결정론적 경로로 넘김 |
+| 임베딩 허용 여부 불명 | **BM25 단독**(가장 보수적). 임베딩 의존 코드는 `app/retrieval/embedding.py` **한 파일에만** 격리. 허용되면 `embed_texts()` 하나 구현 + `.env`에서 `USE_EMBEDDING=true` |
+
+### 3-2. CLAUDE.md와 다른 점 (확인 필요)
+
+**CLAUDE.md에는 zip 구조(페이지별 JPEG + OCR) 설명이 없다.** 메시지로 주신
+설명만 근거로 파서를 만들었다. CLAUDE.md에 그 문단을 추가해 두시는 게 좋겠다.
+
+### 3-3. 설계 결정
+
+1. **`calc_params_builder`의 3원칙**
+   - 모르면 지어내지 않는다 → 슬롯 MISSING 강등 + ASK_BACK (확인 항목 최대 2건)
+   - 경우의 수가 적으면 나눠서 전부 계산한다 → `__variants__`
+     (소득 구간 미상이면 13.2%/16.5% 양쪽 다 계산 → "조건별 결론"의 재료)
+   - 가정을 쓰면 반드시 기록한다 → `assumptions` → 답변 [한계 고지]
+
+2. **`퇴직소득세_감면율_계산`에 연금수령연차를 절대 넣지 않는다** (함정 B1).
+   "11년차"라고만 한 질의는 계산하지 않고 연금실제수령연차를 되묻는다.
+
+3. **`과세방식_판정_계산`(DEPRECATED)은 호출 경로에서 자동으로
+   `과세방식_비교_계산`으로 교정**한다. L1이 잘못 골라도 실행되지 않는다.
+
+4. **근거 각주는 LLM이 아니라 `citation_system`이 붙인다.** 문서 ID를 LLM에게
+   만들게 하면 없는 문서를 인용한다.
+
+5. **타임아웃을 `run_with_timeout`(스레드)로 하지 않았다.** 파이썬은 스레드를
+   죽일 수 없어 타임아웃 후에도 계속 돈다. 대신 `Deadline` 예산을 추적해
+   남은 시간이 없으면 **해당 LLM 단계를 건너뛰고** 결정론적 경로로 축퇴시킨다.
+   (계획서의 `asyncio.wait_for`도 같은 한계가 있다 — executor 스레드는 안 죽는다)
+
+6. **세제 질의에서 구법 문서는 근거에서 제외**한다(환산으로 해소되지 않는 오답).
+   세제 외 질의에서는 플래그만 달고 유지한다.
+
+7. **근거가 0건이면 REFUSE.** 되묻기(조건 부족)와 거절(답할 수 없음)을 구분했다.
+
+8. 계산 결과에 **`source` 필드가 없는 함수**(`calc_private_contribution_limit` 등)는
+   손대지 않고, 파이프라인에서 계산 슬롯을 주제 매칭으로 근거 문서와 연결했다.
+   (검증 완료 모듈을 수정하지 않기 위한 우회)
+
+### 3-4. 기존 모듈 수정 내역 (최소한으로)
+
+`app/core/coverage_pipeline.py` 두 곳만 고쳤다. 나머지 6개 모듈은 **무수정**이다.
+
+- `run_calculations()` — 인자 조립을 `try` 안으로 옮기고(조건 부족과 계산 오류를
+  구분해 trace에 기록), `__variants__` 조건 분기 계산 지원
+- `decide_answerability()` — `refusal` / `evidence_count` 인자 추가로 REFUSE 경로 신설.
+  기존 ANSWER/PARTIAL/ASK_BACK 동작은 회귀 테스트로 고정했다
+
+### 3-5. 손대지 않은 미해결 항목 (TODO만)
+
+지시대로 **건드리지 않았다**:
+- 종신형 + 80세 이상 세율 우선순위 (규격서 순서상 4.4%) — 현재 동작만 테스트로 고정
+- 이연퇴직소득 세율 서술 구조 (70/60/50 감면 vs 3.3% 고정)
+- BM25 파라미터·점수 임계값 튜닝 근거 (`app/retrieval/bm25.py`)
+
+---
+
+## 4. 평가셋을 돌리다 발견해 고친 실제 결함 4건
+
+1. **동의어 확장이 원 질의어와 같은 비중**이라, 동의어만 많은 짧은 청크(중도인출
+   조항)가 정작 세액공제를 다루는 청크보다 상위로 올라왔다 → 확장 가중치 0.35 분리
+2. **"한도"·"근속연수공제" 키워드 누락**으로 주제 인식 실패 → 배제어와 함께 보강
+3. **납입액이 하나도 없는데 기본값 0으로 계산**해 "세액공제액 = 0만원"을 출력했다
+   (맞지만 쓸모없고 오해를 부르는 답) → `REQUIRE_ANY` 가드로 확인 요청으로 전환
+4. **근거 스니펫을 앞에서부터 잘라** 정작 필요한 세율표가 누락 → 슬롯 핵심어
+   위치를 중심으로 발췌하고, 핵심어가 많이 나오는 청크를 우선 인용
+
+추가로 표시 버그 1건: `적용 분모 = 10만원` (개수를 금액으로 표기) → 단위 명시 테이블 도입
+
+---
+
+## 5. 남은 작업
+
+- [ ] CLOVA 실연동 검증 + 타임아웃 예산 재배분 (**최우선**)
+- [ ] 실제 문서 인제스트 및 검색 품질 재확인
+- [ ] 임베딩 허용 확인 후 `embed_texts()` 구현 (허용 시)
+- [ ] 실연동 후 L5'/L6 프롬프트 튜닝 — 지금은 프롬프트를 **한 번도 실행해 보지 못했다**
+- [ ] Phase 8 배포 (NCP VPC/Subnet/ACG/도메인/HTTPS)
+- [ ] 크레딧 사용량 모니터링 — `GET /health`의 `llm_usage`에 누적 토큰이 집계된다
+- [ ] 09.03 코드 프리즈 → 09.06 마감 전 실제 GET 리허설
+
+---
+
+## 6. 구조 요약
+
+```
+app/
+  config.py              환경 설정 (.env 로더)
+  core/                  ← 기존 검증 완료 7개 모듈 (거의 무수정)
+  llm/clova.py           CLOVA 클라이언트 + MockClovaClient
+  llm/smoke_test.py      ★ 키 넣고 가장 먼저 돌릴 것
+  ingest/                zip 파서 · 청킹 · 메타데이터 · 인덱스 빌드
+  retrieval/             BM25 · L0 개략검색 · L3 하이브리드 · ★임베딩 격리★
+  analysis/              L1 질의분석 · 조건 정규화 · 계산 인자 · 슬롯 매칭 · 거절 판정
+  generation/            L5' 프롬프트 · 결정론적 템플릿 · 근거 검증 래퍼
+  pipeline.py            L0~L6 통합
+  main.py                GET /answer · /health
+tests/                   190건 + eval_set 18문항
+data/corpus_mock/        ⚠️ 내가 만든 mock 문서 (실물 아님)
+sql/schema.sql           PostgreSQL 스키마 (정의만, 미검증)
+```
