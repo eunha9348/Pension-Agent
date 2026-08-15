@@ -259,6 +259,12 @@ def verify_requirement_coverage(
 # 4. 결정론적 계산 함수 플러그인 — 팀원 함수 연결 지점
 # ════════════════════════════════════════════════════════════════
 
+# calc_params_builder가 "조건을 몰라 경우를 나눠 계산"할 때 쓰는 키.
+# (정의는 app/analysis/calc_params.py — core가 analysis를 import하면 순환이 되므로
+#  키 문자열만 여기 둔다. 양쪽 값이 반드시 같아야 한다.)
+VARIANTS_KEY = "__variants__"
+
+
 CALC_REGISTRY: dict[str, Callable[..., Any]] = {
     **PENSION_CALC_FUNCTIONS,
     # 국민연금_본인부담금_계산 / 출산크레딧_인정개월_계산 / 국민연금_수령액_계산
@@ -288,9 +294,24 @@ def run_calculations(
                 )
             continue
 
-        params = calc_params_builder(slot)
+        params: dict = {}
         try:
-            result = fn(**params)
+            # 인자 조립도 try 안에서 한다 — 조건 부족(MissingCalcParams)은
+            # 예외로 올라오며, 그 경우 슬롯을 MISSING으로 강등해 ASK_BACK을 유도한다.
+            params = calc_params_builder(slot)
+
+            if VARIANTS_KEY in params:
+                # 조건을 모르지만 경우의 수가 적을 때: 나눠서 전부 계산한다.
+                # "A 상황이면 ~, B 상황이면 ~" 형태의 조건부 답변 재료가 된다.
+                variants = []
+                for label, p in params[VARIANTS_KEY]:
+                    variants.append({"label": label, "params": p, "result": fn(**p)})
+                result = {"variants": variants}
+                inputs = {"__variants__": [v["params"] for v in variants]}
+            else:
+                result = fn(**params)
+                inputs = params
+
             slot.calc_result = result
             slot.status = SlotStatus.CALC_DONE
             if trace:
@@ -298,11 +319,21 @@ def run_calculations(
                     "결정론적_계산_실행",
                     f"'{slot.description}' 계산 완료",
                     slot_id=slot.slot_id, function=slot.calc_function,
-                    inputs=params, output=result,
+                    inputs=inputs, output=result,
                 )
         except Exception as e:
             slot.status = SlotStatus.MISSING
-            if trace:
+            # 조건 부족과 계산 오류를 구분해서 남긴다 — 전자는 되물으면 풀리고
+            # 후자는 코드 문제이므로 대응이 다르다.
+            ask_back = getattr(e, "ask_back", None)
+            if trace and ask_back:
+                trace.log(
+                    "계산_조건_부족",
+                    f"'{slot.description}' 계산에 필요한 조건이 확인되지 않음 "
+                    f"({', '.join(getattr(e, 'missing_params', []))}) → 확인 요청 대상",
+                    slot_id=slot.slot_id, ask_back=ask_back,
+                )
+            elif trace:
                 trace.log(
                     "결정론적_계산_실패",
                     f"'{slot.description}' 계산 중 오류: {e} → 한계 고지 대상",
