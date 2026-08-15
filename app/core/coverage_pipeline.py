@@ -211,11 +211,43 @@ def map_evidence_to_slots(
     return slots
 
 
-def decide_answerability(slots: list[RequirementSlot], trace: Optional[TraceLogger] = None) -> Answerability:
+def decide_answerability(slots: list[RequirementSlot],
+                          trace: Optional[TraceLogger] = None,
+                          refusal: Any = None,
+                          evidence_count: Optional[int] = None) -> Answerability:
     """결정론적 규칙 — LLM에게 위임하지 않음 (기존 원칙 유지).
-    필수 슬롯 전부 MISSING → ASK_BACK, 일부만 MISSING → PARTIAL, 전부 충족 → ANSWER."""
+
+    REFUSE → ASK_BACK → PARTIAL → ANSWER 순으로 판정한다.
+
+    ━━ REFUSE 경로 (평가지표 '정보한계 대응' 대응) ━━
+    거절과 되묻기는 다르다:
+      ASK_BACK : 답할 수 있는 영역인데 사용자 조건이 모자람 → 확인 요청
+      REFUSE   : 애초에 답할 수 없음 (영역 밖 / 근거 0건 / 응해선 안 되는 요구)
+
+    refusal        : app.analysis.refusal.check_refusal() 결과 (거절 사유)
+    evidence_count : L3 검색 결과 건수. 0이면 근거 없이 답하지 않는다.
+    """
     required = [s for s in slots if s.required]
     missing = [s for s in required if s.status == SlotStatus.MISSING]
+
+    # ── 0. 거절 판정이 최우선 ──
+    if refusal is not None and getattr(refusal, "refuse", False):
+        if trace:
+            trace.log("답변가능성_판정",
+                      f"거절 — {getattr(refusal, 'detail', '') or refusal.reason}",
+                      decision=Answerability.REFUSE.value,
+                      code=getattr(refusal, "code", ""))
+        return Answerability.REFUSE
+
+    # 근거가 0건이면 계산 결과가 있어도 답변의 토대가 없다.
+    # (계산은 사용자가 준 조건으로 돌아갈 뿐, 제도적 근거를 대신하지 못한다)
+    if evidence_count == 0 and not any(
+            s.status == SlotStatus.CALC_DONE for s in slots):
+        if trace:
+            trace.log("답변가능성_판정",
+                      "검색 근거 0건이고 계산 결과도 없음 → 근거 없이 답하지 않음",
+                      decision=Answerability.REFUSE.value)
+        return Answerability.REFUSE
 
     if not required:
         result = Answerability.ANSWER
