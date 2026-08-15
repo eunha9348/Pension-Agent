@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>연금 Agent · 종합 설계서 총본</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+:root{
+  --bg:#14120F;--bg2:#181512;--card:#1C1915;--panel:#201D18;
+  --line:#2E2A24;--line2:#3B362E;
+  --ink:#EDE6D8;--ink2:#BBB09C;--ink-soft:#948A78;--ink-faint:#655D4E;
+  --moss:#8CA07D;--moss-bg:#20261D;
+  --brass:#C9A24B;--brass-bg:#27221A;
+  --seal:#BD6650;--seal-bg:#291C17;
+  --slate:#7C9AAE;--slate-bg:#1B2226;
+  --serif:'Source Serif 4',Georgia,serif;--sans:'Inter',-apple-system,sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink-soft);font-family:var(--sans);
+  font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:940px;margin:0 auto;padding:0 28px}
+p{max-width:68ch;margin:0 0 16px}
+b{color:var(--ink);font-weight:600}
+code{font-family:var(--mono);font-size:.82em;color:var(--brass);background:var(--panel);padding:1px 6px;border-radius:2px}
+a{color:var(--brass);text-decoration:none;border-bottom:1px solid rgba(201,162,75,.3)}
+
+.hero{padding:92px 0 54px;border-bottom:1px solid var(--line)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--brass);margin-bottom:22px;display:flex;gap:10px;align-items:center}
+.eyebrow::before{content:'';width:18px;height:1px;background:var(--brass)}
+.hero h1{font-family:var(--serif);font-weight:600;font-size:2.6rem;line-height:1.25;
+  color:var(--ink);margin:0 0 20px}
+.hero .sub{font-size:1.04rem;color:var(--ink2);max-width:60ch;margin:0}
+.hero .meta{margin-top:34px;display:flex;gap:26px;flex-wrap:wrap;font-family:var(--mono);
+  font-size:11.5px;color:var(--ink-faint)}
+.hero .meta b{color:var(--ink-soft);font-weight:500}
+
+/* TOC */
+.toc{background:var(--card);border:1px solid var(--line);padding:26px 28px;margin:34px 0 0}
+.toc-t{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--brass);margin-bottom:16px}
+.toc ol{margin:0;padding-left:20px;columns:2;column-gap:34px}
+@media(max-width:640px){.toc ol{columns:1}}
+.toc li{margin-bottom:7px;font-size:.89rem;break-inside:avoid}
+.toc a{border:none;color:var(--ink-soft)}
+.toc a:hover{color:var(--brass)}
+
+section{padding:54px 0;border-bottom:1px solid var(--line)}
+.sec-h{display:flex;align-items:baseline;gap:14px;margin-bottom:8px}
+.sec-n{font-family:var(--mono);font-size:12px;color:var(--brass)}
+h2{font-family:var(--serif);font-weight:600;font-size:1.55rem;color:var(--ink);margin:0}
+h3{font-family:var(--sans);font-size:1rem;font-weight:600;color:var(--ink);margin:32px 0 12px;
+  padding-left:11px;border-left:2px solid var(--brass)}
+h4{font-family:var(--sans);font-size:.93rem;font-weight:600;color:var(--ink2);margin:22px 0 9px}
+.sec-lead{color:var(--ink-faint);font-size:.92rem;margin:6px 0 26px;max-width:66ch}
+
+.box{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--slate);
+  padding:20px 22px;margin:16px 0}
+.box.warn{border-left-color:var(--brass)}.box.bad{border-left-color:var(--seal)}
+.box.good{border-left-color:var(--moss)}
+.box-t{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--slate);margin-bottom:10px}
+.box.warn .box-t{color:var(--brass)}.box.bad .box-t{color:var(--seal)}.box.good .box-t{color:var(--moss)}
+.box p{margin:0 0 10px;font-size:.91rem;max-width:none}.box p:last-child{margin:0}
+
+.tw{overflow-x:auto;margin:20px 0}
+table{width:100%;border-collapse:collapse;font-size:.84rem;min-width:600px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+thead th{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-faint);font-weight:400;border-bottom:1px solid var(--line2)}
+td{color:var(--ink-soft)}td b{color:var(--ink);font-weight:500}
+tbody th{font-weight:500;color:var(--ink);font-size:.84rem;font-family:var(--sans);width:19%}
+.tag{display:inline-block;font-family:var(--mono);font-size:9.5px;padding:2px 8px;
+  border-radius:3px;letter-spacing:.03em;white-space:nowrap}
+.tag-good{background:var(--moss-bg);color:var(--moss)}
+.tag-warn{background:var(--brass-bg);color:var(--brass)}
+.tag-bad{background:var(--seal-bg);color:var(--seal)}
+.tag-info{background:var(--slate-bg);color:var(--slate)}
+
+.snip{font-family:var(--mono);font-size:.75rem;color:var(--ink2);background:var(--bg2);
+  border:1px solid var(--line);padding:13px 15px;white-space:pre-wrap;line-height:1.7;margin:13px 0}
+.diagram{background:var(--bg2);border:1px solid var(--line);padding:24px 10px;margin:24px 0;overflow-x:auto}
+.diagram svg{display:block;margin:0 auto}
+.cap{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);text-align:center;margin-top:12px}
+
+.role{background:var(--card);border:1px solid var(--line);padding:20px 22px;margin-bottom:12px}
+.role-h{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.role-tag{font-family:var(--mono);font-size:9.5px;padding:3px 9px;border-radius:3px;
+  background:var(--slate-bg);color:var(--slate)}
+.role-h b{font-size:.97rem}
+.role ul{margin:0;padding-left:18px}.role li{margin-bottom:7px;font-size:.88rem}
+.role li:last-child{margin-bottom:0}
+
+.ref{border-top:1px solid var(--line);padding:16px 0}
+.ref:last-child{border-bottom:1px solid var(--line)}
+.ref-top{display:flex;justify-content:space-between;gap:16px;align-items:start;margin-bottom:3px}
+.ref-title{color:var(--ink);font-weight:600;font-size:.91rem}
+.ref-meta{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin-bottom:5px}
+.ref-desc{font-size:.86rem;color:var(--ink-soft);max-width:66ch}
+
+footer{padding:46px 0 84px;font-family:var(--mono);font-size:11px;color:var(--ink-faint);line-height:1.85}
+.reveal{opacity:0;transform:translateY(14px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero reveal">
+  <div class="eyebrow">PENSION AGENT · MASTER SPECIFICATION</div>
+  <h1>연금 Agent<br>종합 설계서 총본</h1>
+  <p class="sub">아키텍처, 수리함수, 함정 카탈로그, 환각 억제, 근거 인용까지
+  전 구성요소를 하나로 통합한 최종 명세.</p>
+  <div class="meta">
+    <span><b>작성</b> 2026.08</span>
+    <span><b>계산함수</b> 15종</span>
+    <span><b>함정규칙</b> 26종</span>
+    <span><b>검증·감독</b> 8계층</span>
+    <span><b>마감</b> 09.06</span>
+  </div>
+
+  <div class="toc">
+    <div class="toc-t">목차</div>
+    <ol>
+      <li><a href="#s1">설계 원칙과 대회 요건</a></li>
+      <li><a href="#s2">시스템 아키텍처</a></li>
+      <li><a href="#s3b">사전 검색 계층 (L0)</a></li>
+      <li><a href="#s3">계층별 명세</a></li>
+      <li><a href="#s4">근거 인용 시스템</a></li>
+      <li><a href="#s5">수리 계산 함수</a></li>
+      <li><a href="#s6">함정 문항 대응</a></li>
+      <li><a href="#s7">환각 억제 8계층</a></li>
+      <li><a href="#s7b">감독 계층</a></li>
+      <li><a href="#s8">에이전트성 확보</a></li>
+      <li><a href="#s9">구현 상태</a></li>
+      <li><a href="#s10">역할 분담과 일정</a></li>
+      <li><a href="#s11">리스크</a></li>
+      <li><a href="#s12">참고 문헌</a></li>
+    </ol>
+  </div>
+</div>
+
+<!-- 1 -->
+<section class="reveal" id="s1">
+  <div class="sec-h"><span class="sec-n">01</span><h2>설계 원칙과 대회 요건</h2></div>
+
+  <h3>핵심 통찰</h3>
+  <p>평가지표 8개 중 <b>5개가 "틀리지 않기"</b>에 해당합니다 — 정확성, 근거 완전성,
+  근거 기반, 안전성, 정보한계 대응. "잘 답하기"는 요구사항 충족·추론 논리성 2개뿐입니다.
+  <b>이 대회는 잘 답하는 시스템이 아니라 틀리지 않는 시스템을 뽑습니다.</b></p>
+
+  <h3>5대 설계 원칙</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>원칙</th><th>의미</th><th>구현 위치</th></tr></thead>
+    <tbody>
+      <tr><th>계산은 함수, 설명은 LLM</th>
+        <td>LLM은 숫자를 생성하지 않는다. 결정론적 함수의 출력을 설명만 한다.</td>
+        <td>CALC_REGISTRY + 수치 대조 검증</td></tr>
+      <tr><th>판단은 코드, 문장은 LLM</th>
+        <td>답변가능성·제약 위반 판정을 LLM 재량에 맡기지 않는다.</td>
+        <td>decide_answerability, Exploitation</td></tr>
+      <tr><th>사용한 것만 인용</th>
+        <td>검색된 근거 전부가 아니라 답변을 뒷받침한 근거만 제시한다.</td>
+        <td>citation_system</td></tr>
+      <tr><th>모르면 되묻는다</th>
+        <td>개인 사정이 확인되지 않으면 단정하지 않고 확인 조건을 제시한다.</td>
+        <td>ASK_BACK + 함정 규칙</td></tr>
+      <tr><th>감사는 심각도만 올린다</th>
+        <td>HyperCLOVA X는 의미 오류를 감사하되, 결정론적 판정을 완화하지 못한다.</td>
+        <td>supervisory_board — 권한 계층</td></tr>
+      <tr><th>분석도 문서 위에서</th>
+        <td>질의 분석이 모델 내부 지식이 아니라 실제 문서 범위 위에서 이뤄지게 한다.</td>
+        <td>grounding_retrieval — L0 사전 검색</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="box">
+    <div class="box-t">LLM 호출은 2개소가 아니라 3개소</div>
+    <p>L1(질의 분석)과 L5'(답변 생성)에 더해, <b>L6 감독 이사회에서도 HyperCLOVA X가
+    의미 감사를 수행합니다.</b> 나머지 모든 판단(제약 검증·계산·요구사항 커버리지·
+    준법/이상치/적합성/부담 감사)은 결정론적 코드입니다. 상세는 §09.</p>
+  </div>
+
+  <h3>대회 제약</h3>
+  <div class="box bad">
+    <div class="box-t">절대 조건</div>
+    <p><b>LLM은 HyperCLOVA X만 사용 가능</b> — 위반 시 평가대상 제외.
+    NLI·임베딩 모델이 이 범위에 포함되는지는 <b>미확인이며 디스코드 확인이 필요</b>합니다.
+    확인 전까지 모든 검증 계층을 LLM 없이 결정론적 코드로 구현했습니다.</p>
+    <p><b>09.06 마감 후 커밋·배포 시 실격</b> — 핫픽스 기회가 없습니다.</p>
+  </div>
+  <div class="box">
+    <div class="box-t">평가 방식</div>
+    <p>세션 없는 단일 GET 요청 <code>/answer?question_id=&amp;question=</code> →
+    JSON 5필드(question_id, question, retrieved_context, think_trace, answer).
+    다회차 대화가 불가능하므로 <b>역질문과 조건부 답변을 한 응답에 함께 담아야</b> 합니다.</p>
+  </div>
+</section>
+
+<!-- 2 -->
+<section class="reveal" id="s2">
+  <div class="sec-h"><span class="sec-n">02</span><h2>시스템 아키텍처</h2></div>
+
+  <div class="diagram">
+    <svg width="860" height="570" viewBox="0 0 860 570" xmlns="http://www.w3.org/2000/svg" role="img"
+         aria-label="연금 Agent 전체 아키텍처">
+      <defs>
+        <marker id="m1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#655D4E"/></marker>
+        <marker id="m2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+          <path d="M0,0 L6,3 L0,6 Z" fill="#8CA07D"/></marker>
+      </defs>
+
+      <rect x="300" y="16" width="260" height="38" fill="#1C1915" stroke="#3B362E"/>
+      <text x="430" y="32" text-anchor="middle" fill="#C9A24B" font-family="JetBrains Mono" font-size="8.5">GET /answer</text>
+      <text x="430" y="46" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="10.5">질의 + 조건</text>
+      <line x1="430" y1="54" x2="430" y2="66" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+
+      <rect x="255" y="68" width="350" height="40" fill="#1C1915" stroke="#7C9AAE" stroke-dasharray="3 2"/>
+      <text x="430" y="83" text-anchor="middle" fill="#7C9AAE" font-family="JetBrains Mono" font-size="8">L0 · 사전 검색 (LLM 없음)</text>
+      <text x="430" y="97" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8.5">도메인 커버리지 · 문서 용어 · 구법 사전경고 · 조기 거절</text>
+
+      <line x1="605" y1="88" x2="700" y2="88" stroke="#BD6650" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#m1)"/>
+      <text x="700" y="80" fill="#BD6650" font-family="JetBrains Mono" font-size="7.5">도메인 밖</text>
+      <text x="700" y="90" fill="#BD6650" font-family="JetBrains Mono" font-size="7.5">→ 조기 REFUSE</text>
+      <text x="700" y="100" fill="#655D4E" font-family="JetBrains Mono" font-size="7">(LLM 호출 0회)</text>
+
+      <line x1="430" y1="108" x2="430" y2="120" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+
+      <rect x="230" y="122" width="400" height="46" fill="#1C1915" stroke="#C9A24B"/>
+      <text x="430" y="138" text-anchor="middle" fill="#C9A24B" font-family="JetBrains Mono" font-size="8.5">L1 · HyperCLOVA X — 질의 분석 (L0 접지 정보 주입)</text>
+      <text x="430" y="152" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="10.5">슬롯 추출 · 도구 선택 · 실행 계획</text>
+      <text x="430" y="164" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8.5">Function calling → 계획이 곧 think_trace</text>
+
+      <line x1="630" y1="145" x2="690" y2="145" stroke="#BD6650" stroke-width="1.2" stroke-dasharray="3 2" marker-end="url(#m1)"/>
+      <rect x="692" y="126" width="140" height="38" fill="#291C17" stroke="#BD6650"/>
+      <text x="762" y="141" text-anchor="middle" fill="#BD6650" font-family="JetBrains Mono" font-size="7.5">계획 감사</text>
+      <text x="762" y="154" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8">화이트리스트 · 슬롯 정합</text>
+
+      <line x1="430" y1="168" x2="430" y2="180" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+      <rect x="290" y="182" width="280" height="36" fill="#1C1915" stroke="#BD6650"/>
+      <text x="430" y="197" text-anchor="middle" fill="#BD6650" font-family="JetBrains Mono" font-size="8.5">L2 · 함정 감지 (26종 규칙)</text>
+      <text x="430" y="211" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8.5">critical 감지 시 답변가능성 한 단계 보수화</text>
+
+      <line x1="430" y1="218" x2="430" y2="236" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+      <line x1="180" y1="258" x2="680" y2="258" stroke="#2E2A24" stroke-width="1.3"/>
+
+      <rect x="40" y="238" width="230" height="62" fill="#1C1915" stroke="#7C9AAE"/>
+      <text x="155" y="256" text-anchor="middle" fill="#7C9AAE" font-family="JetBrains Mono" font-size="8.5">L3 · EXPLORATION</text>
+      <text x="155" y="272" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="10.5">정밀 검색</text>
+      <text x="155" y="286" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8.5">pgvector + BM25 · 스펙 기반</text>
+
+      <rect x="590" y="238" width="230" height="62" fill="#1C1915" stroke="#BD6650"/>
+      <text x="705" y="256" text-anchor="middle" fill="#BD6650" font-family="JetBrains Mono" font-size="8.5">L4 · EXPLOITATION</text>
+      <text x="705" y="272" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="10.5">제약 · 자격 필터</text>
+      <text x="705" y="286" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8.5">구법탐지 · 가입자격 · 엔티티</text>
+
+      <rect x="310" y="240" width="240" height="40" fill="#201D18" stroke="#3B362E" stroke-dasharray="3 2"/>
+      <text x="430" y="256" text-anchor="middle" fill="#BBB09C" font-family="JetBrains Mono" font-size="8.5">DB · 미래에셋 제공자료</text>
+      <text x="430" y="270" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8.5">투자설명서 · 약관 · 제도 · 세제</text>
+      <line x1="310" y1="260" x2="274" y2="260" stroke="#655D4E" stroke-width="1" marker-end="url(#m1)"/>
+      <line x1="550" y1="260" x2="586" y2="260" stroke="#655D4E" stroke-width="1" marker-end="url(#m1)"/>
+
+      <line x1="155" y1="300" x2="330" y2="322" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+      <line x1="705" y1="300" x2="530" y2="322" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+      <text x="430" y="314" text-anchor="middle" fill="#655D4E" font-family="JetBrains Mono" font-size="8">L3 → L4 순차 (병렬 아님)</text>
+
+      <rect x="270" y="324" width="320" height="56" fill="#1C1915" stroke="#C9A24B"/>
+      <text x="430" y="342" text-anchor="middle" fill="#C9A24B" font-family="JetBrains Mono" font-size="8.5">L5 · PREDICTION — CALC_REGISTRY 15종</text>
+      <text x="430" y="358" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="10.5">조건별 수치 계산 (LLM 미개입)</text>
+      <text x="430" y="371" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8.5">반환값에 source 필드 — 근거 추적</text>
+
+      <line x1="430" y1="380" x2="430" y2="396" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+      <rect x="230" y="398" width="400" height="44" fill="#1C1915" stroke="#8CA07D"/>
+      <text x="430" y="415" text-anchor="middle" fill="#8CA07D" font-family="JetBrains Mono" font-size="8.5">L5' · SUPERVISOR — HyperCLOVA X 설명 생성</text>
+      <text x="430" y="431" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="10.5">조건부 문장 구성 · 숫자 생성 금지</text>
+
+      <line x1="430" y1="444" x2="430" y2="462" stroke="#655D4E" stroke-width="1.2" marker-end="url(#m1)"/>
+      <rect x="130" y="464" width="600" height="76" fill="#291C17" stroke="#BD6650" stroke-width="1.5"/>
+      <text x="430" y="481" text-anchor="middle" fill="#BD6650" font-family="JetBrains Mono" font-size="8.5">L6 · 감독 이사회</text>
+
+      <rect x="146" y="490" width="280" height="40" fill="#1C1915" stroke="#BD6650" stroke-dasharray="2 2"/>
+      <text x="286" y="504" text-anchor="middle" fill="#BD6650" font-family="JetBrains Mono" font-size="7.5">결정론적 4대 감사</text>
+      <text x="286" y="518" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8">준법 · 이상치 · 적합성 · 부담</text>
+
+      <rect x="434" y="490" width="280" height="40" fill="#1C1915" stroke="#C9A24B" stroke-dasharray="2 2"/>
+      <text x="574" y="504" text-anchor="middle" fill="#C9A24B" font-family="JetBrains Mono" font-size="7.5">HyperCLOVA X 의미 감사</text>
+      <text x="574" y="518" text-anchor="middle" fill="#948A78" font-family="Inter" font-size="8">정합성 · 태도 · 의도충족 · 오해유발</text>
+
+      <text x="430" y="534" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="9.5">병합 판정 — LLM은 심각도를 올릴 수만 있음 (권한 계층)</text>
+
+      <path d="M130,502 L100,502 L100,421 L228,421" fill="none" stroke="#BD6650"
+            stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#m1)"/>
+      <text x="102" y="452" fill="#BD6650" font-family="JetBrains Mono" font-size="7.5">REVISE</text>
+      <text x="102" y="462" fill="#BD6650" font-family="JetBrains Mono" font-size="7.5">재생성</text>
+
+      <line x1="730" y1="502" x2="742" y2="502" stroke="#8CA07D" stroke-width="1.2" marker-end="url(#m2)"/>
+      <rect x="744" y="481" width="96" height="42" fill="#20261D" stroke="#8CA07D"/>
+      <text x="792" y="498" text-anchor="middle" fill="#8CA07D" font-family="JetBrains Mono" font-size="8">RESPONSE</text>
+      <text x="792" y="513" text-anchor="middle" fill="#EDE6D8" font-family="Inter" font-size="10">JSON 5필드</text>
+    </svg>
+    <div class="cap">FIG.1 — 7계층 파이프라인. L0는 분석을 문서에 접지시키고, L6는 결정론적 감사와 HyperCLOVA X 의미 감사가 함께 판정한다</div>
+  </div>
+
+  <h3>역할 경계</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>계층</th><th>하는 일</th><th>하지 않는 일</th><th>LLM</th></tr></thead>
+    <tbody>
+      <tr><th>L0 사전검색</th><td>도메인 커버리지 판정 · 문서 용어 수집 · 조기 거절</td>
+        <td><b>답변 근거 제공</b></td><td>—</td></tr>
+      <tr><th>L1 질의분석</th><td>슬롯 추출 · 도구 선택 · 계획 산출</td><td>답변 생성</td><td>✓</td></tr>
+      <tr><th>계획감사</th><td>화이트리스트 검증 · 슬롯-계획 정합</td><td>계획 직접 수정</td><td>—</td></tr>
+      <tr><th>L2 함정감지</th><td>오류 전제·혼동 위험 식별</td><td>답변 결정</td><td>—</td></tr>
+      <tr><th>L3 Exploration</th><td>의미 기반 후보 탐색</td><td>제약 검증</td><td>—</td></tr>
+      <tr><th>L4 Exploitation</th><td>하드제약·자격·구법 필터</td><td>수치 계산, 우열 판단</td><td>—</td></tr>
+      <tr><th>L5 Prediction</th><td>조건별 수치 계산</td><td><b>단정적 우열 선언</b></td><td>—</td></tr>
+      <tr><th>L5' Supervisor</th><td>조건부 설명 생성</td><td><b>숫자 생성</b></td><td>✓</td></tr>
+      <tr><th>L6 감독 이사회</th><td>준법·이상치·적합성·부담 감사, <b>시정 지시</b>, 등급 강등</td>
+        <td>답변 직접 작성</td><td>△<sup>*</sup></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:.82rem; color:var(--ink-faint); margin-top:8px">
+  <sup>*</sup> L6는 결정론적 감사(규칙)와 HyperCLOVA X 의미 감사가 함께 판정합니다.
+  LLM은 심각도를 <b>올릴 수만</b> 있고 내릴 수 없습니다 — 상세는 §09.</p>
+</section>
+
+<!-- 3 -->
+<!-- 3B -->
+<section class="reveal" id="s3b">
+  <div class="sec-h"><span class="sec-n">03</span><h2>사전 검색 계층 (L0)</h2></div>
+  <p class="sec-lead">질의 분석을 문서에 접지시키는 저비용 개략 검색.
+  <b>LLM 호출 없이</b> 동작하므로 이 계층을 추가해도 호출 횟수는 늘지 않습니다.</p>
+
+  <h3>왜 필요한가 — 기존 순서의 실제 약점</h3>
+  <div class="box bad">
+    <div class="box-t">L1이 무엇을 근거로 판단하는가</div>
+    <p>기존 순서는 <b>질의 분석 → 검색</b>이었습니다. 그러면 L1이 요구사항 슬롯과
+    호출할 계산함수를 정할 때, 판단 근거는 <b>모델의 내부 지식</b>이 됩니다.</p>
+    <p>그런데 이 도메인에서 모델 내부 지식은 신뢰할 수 없습니다.
+    세법이 개정됐고(700만원→900만원, 1,200만원→1,500만원), 모델이 구법을 알고 있으면
+    <b>슬롯 자체가 틀리게 추출됩니다.</b> 검색은 그 뒤에 오므로 이미 늦습니다.</p>
+  </div>
+
+  <h3>설계 — 2단 검색</h3>
+  <p>구어체 질의("명퇴하는 교사예요…")를 날것으로 검색하면 품질이 나쁩니다.
+  질의 분석이 앞에 있는 이유가 그것입니다. 따라서 순서를 뒤집는 것이 아니라
+  <b>단계를 나눕니다.</b></p>
+  <div class="snip">L0 · 개략 검색  목적: 방향 잡기      비용: LLM 0회
+     → 어떤 영역인가 · 문서가 쓰는 용어는 무엇인가 · 구법 문서가 있는가
+L1 · 질의 분석  L0 접지 정보를 받아 슬롯·도구·계획 산출
+L3 · 정밀 검색  구조화된 스펙으로 실제 근거 확보
+L4 · 필터       구법탐지 · 엔티티충돌 · 가입자격 · 하드제약</div>
+
+  <div class="box bad">
+    <div class="box-t">절대 원칙 — L0 결과는 답변 근거가 아니다</div>
+    <p>L0는 Exploitation 필터를 거치지 않았습니다. 따라서 L0가 찾은 문서를
+    답변 인용에 쓰면 <b>"사용한 것만 인용" 원칙이 무너지고</b> 검증되지 않은 근거가
+    답변에 섞입니다.</p>
+    <p><b>L0 산출물 용도</b> — 질의 분석 접지, 도메인 커버리지 판정, 조기 거절<br>
+    <b>L0 산출물 금지</b> — 답변 인용, retrieved_context 기재, 계산 파라미터 공급</p>
+    <p>그래서 L1에 넘기는 것도 원문 전체가 아니라 <b>영역과 용어 목록뿐</b>입니다.
+    원문을 통째로 주면 L1이 이를 근거로 착각해 답변을 만들어낼 위험이 있습니다.</p>
+  </div>
+
+  <h3>동작 검증</h3>
+  <div class="snip">질의  "연금저축 세액공제 얼마까지 되나요?"
+검색 범위에 구법 문서(700만원 기준)가 포함된 상황
+
+L0 접지 — 영역 ['제도', '세제'] · 후보 1건 · 커버리지 0.55 · 구법 의심 1건
+
+── L1에 주입되는 접지 정보 ──
+관련 영역: 제도, 세제
+문서에서 사용하는 용어: 세액공제, 연금저축
+주의: 검색 범위에 법 개정 이전 수치를 담은 문서가 있습니다 (OLD_01).
+      현행 기준으로 판단하십시오.
+※ 위 정보는 분석 참고용이며 답변 근거가 아닙니다.
+   근거는 이후 검색 단계에서 확보합니다.</div>
+
+  <div class="box good">
+    <div class="box-t">이 사례의 의미</div>
+    <p>L0가 구법 문서를 <b>L1이 분석하기 전에</b> 경고합니다.
+    기존 순서였다면 L1이 700만원 기준으로 슬롯을 뽑은 뒤에야 발견됐을 문제입니다.
+    <b>오류를 뒤에서 잡는 것보다 앞에서 막는 쪽이 항상 싸고 안전합니다.</b></p>
+  </div>
+
+  <h3>조기 거절 — LLM 호출 전에 판정</h3>
+  <p>도메인 밖 질의에 LLM 호출을 소모할 이유가 없습니다.
+  L0에서 판정하면 <b>LLM 호출 0회로 거절</b>이 완결됩니다.</p>
+  <div class="snip">질의  "비트코인 지금 사도 될까요?"
+L0 조기 거절 — 도메인 밖 신호 '코인' 감지
+
+응답 (5필드 전부 채움)
+  retrieved_context : "근거 문서 없음 — 제공 자료 범위에서
+                       관련 문서를 찾지 못했습니다."
+  think_trace       : "L0 사전 검색 단계에서 도메인 범위 밖으로 판정.
+                       이후 단계를 수행하지 않고 종료."
+  answer            : 범위 밖임을 알리고 연금 관련 질문을 안내</div>
+  <p>비용 절감이자, 최고 가중치 지표인 <b>"정보한계 대응"에 대한 가장 확실한 대응</b>입니다.
+  <code>retrieved_context</code>를 비우지 않는 점도 중요합니다 — 스키마 위반이 되고
+  "모든 답변에 근거 문서 표시" 요건에도 어긋나기 때문입니다.</p>
+
+  <h3>장애 내성</h3>
+  <div class="snip">검색 함수 예외 발생
+  → "L0 개략 검색 실패(DB down) — 접지 없이 분석 진행"
+     domain_covered: True · early_refuse: False</div>
+  <p>L0가 죽어도 파이프라인은 중단되지 않습니다. 접지 정보 없이 L1이 진행하며,
+  실패 사실은 think_trace에 기록됩니다. <b>보조 계층이 주 경로를 막아서는 안 됩니다.</b></p>
+
+  <h3>계획 감사 — L1 산출물을 실행 전에 심사</h3>
+  <p>L0와 함께 추가된 두 번째 보완입니다. 기존에는 L1이 산출한 실행 계획을
+  <b>아무도 검사하지 않고 곧바로 실행</b>했습니다. L1이 잘못된 함수를 고르면
+  이후 전 단계가 그 위에서 진행되고, L6 감독은 이미 만들어진 답변만 봅니다 —
+  <b>원인이 아니라 증상을 보는 셈</b>이었습니다.</p>
+  <div class="snip">계획 감사 항목 (LLM 호출 없음)
+  · planned_calls가 CALC_REGISTRY 화이트리스트에 있는가
+  · 인자 구조가 유효한가
+  · 계산 슬롯이 있는데 호출 계획이 비었는가
+  · L0가 도메인 미커버로 판정했는데 계산을 계획했는가
+  · 계획 단계가 과도한가 (시간 예산 초과 위험)
+
+검증 ③  미등록 함수 '존재하지_않는_함수' 호출 계획
+        → REVISE · 교정된 호출: ['사적연금_납입한도_세액공제_계산']
+검증 ④  커버리지 없는데 계산 계획
+        → DOWNGRADE · 답변 등급 강등 → PARTIAL</div>
+  <p>③에서 감사가 <b>미등록 호출만 제거한 안전한 계획을 반환</b>합니다.
+  판정만 하는 것이 아니라 실행 가능한 형태로 교정합니다.</p>
+
+  <div class="box warn">
+    <div class="box-t">채택 판단 근거</div>
+    <p>두 보완 모두 <b>LLM 호출을 늘리지 않습니다.</b> L0는 BM25/키워드 스캔,
+    계획 감사는 화이트리스트 대조입니다. 따라서 레이턴시·비용 리스크 없이
+    ① 분석 접지 ② 조기 거절 ③ 계획 검증 세 가지를 얻습니다.</p>
+    <p>반대로 <b>채택하지 않은 것</b>: L0 결과를 답변 근거로 쓰는 것,
+    L0에 LLM을 붙여 질의를 재작성하는 것. 전자는 검증 우회이고
+    후자는 호출 증가 대비 이득이 불확실합니다.</p>
+  </div>
+</section>
+<section class="reveal" id="s3">
+  <div class="sec-h"><span class="sec-n">04</span><h2>계층별 명세</h2></div>
+  <p class="sec-lead">L0(사전 검색)와 계획 감사는 §03에서 이미 상세히 다뤘으므로
+  여기서는 L1부터 L6까지를 다룹니다.</p>
+
+  <h3>L1 · 질의 분석 (Function calling)</h3>
+  <p>단일 호출에서 세 가지를 동시에 산출합니다 — ① 요구사항 슬롯 ② 호출할 계산함수와 인자
+  ③ 실행 계획. ②가 <b>에이전트성의 근거</b>이고, ③이 <b>think_trace의 원본</b>이 됩니다.
+  이 산출물은 §03의 <b>계획 감사</b>를 거친 뒤에만 실행됩니다.</p>
+  <div class="snip">출력 스키마 (개요)
+{
+  "asked_for": [{"id":..., "type":"fact|calculation|comparison", "required":true}],
+  "user_conditions": {"account_type":..., "age":..., "amount":...},
+  "planned_calls": [{"function":"연금수령한도_계산", "args":{...}}],
+  "plan": ["자격 확인 → 한도 계산 → 조건별 비교"]
+}
+
+안전장치 — planned_calls는 CALC_REGISTRY 화이트리스트 검증을 거친다.
+           미등록 함수명이면 거부하고 매핑 테이블로 결정론적 폴백.</div>
+
+  <h3>L2 · 함정 감지</h3>
+  <p>26종 규칙으로 질의를 스캔해 잘못된 전제·혼동 위험을 식별합니다.
+  <b>critical 규칙이 걸리면 답변가능성 판정을 한 단계 보수화</b>합니다
+  (ANSWER→PARTIAL, PARTIAL→ASK_BACK). 상세는 §07.</p>
+
+  <h3>Exploration → Exploitation (순차)</h3>
+  <p>병렬이 아니라 <b>순차</b>입니다. 탐색이 후보를 넓히고 필터가 자격 없는 것을 걷어냅니다.
+  순서가 뒤집히면 "총보수 최저인데 가입 불가능한 상품"을 추천하게 됩니다(§07 D1).</p>
+  <div class="snip">Exploitation 필터 순서
+ 1. 구법 수치 탐지    — 법 개정 이전 문서를 세제 근거에서 제외
+ 2. 엔티티 충돌 제거  — 질의 대상과 다른 상품·조항 배제 (비교 질의는 예외)
+ 3. 가입자격 판정     — 계좌유형 × 판매클래스 적합성
+ 4. 하드 제약 검증    — 세제 한도·약관 위반</div>
+
+  <h3>Prediction · 입력의 3분류</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>구분</th><th>해당 값</th><th>답변 서술 방식</th></tr></thead>
+    <tbody>
+      <tr><th>제공문서 근거</th><td>수익률·총보수·위험등급·시장잔고·세액공제 한도·연금소득세율·수령한도</td>
+        <td>사실로 서술 + 근거 인용</td></tr>
+      <tr><th>기본제도 자료</th><td>국민연금 보험료율·소득대체율 등 (안내서 예외조항)</td>
+        <td>사실로 서술 + <b>출처가 제공문서가 아님을 명시</b></td></tr>
+      <tr><th>명시적 가정</th><td>물가상승률·기대수익률 등 미래 변수</td>
+        <td><b>가정 명시 + 복수 시나리오</b> (단정 금지)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>L5' · Supervisor 출력 형식</h3>
+  <p>답변 구조 자체가 평가지표 충족을 드러내도록 고정합니다.</p>
+  <div class="snip">[확인된 조건]  문의를 ○○ 기준으로 이해했습니다
+[조건별 결론]  A 상황이면 ~, B 상황이면 ~
+[한계 고지]    ○○는 제공 자료로 확정하기 어려워 확인이 필요합니다
+─── 근거 문서 ───
+[1] doc39 (세제안내) 【연금수령한도】 — 연금수령한도
+    "연금수령한도 = 평가액 ÷ (11 − 연금수령연차) × 120%…"</div>
+  <p><b>금지 표현</b>: "가장 유리합니다", "○○를 추천합니다" 등 단정 표현.
+  대주제 2의 "단정적 추천 지양" 요건이자 금융소비자보호법상 부당권유 리스크 완화 장치입니다.</p>
+</section>
+
+<!-- 4 -->
+<section class="reveal" id="s4">
+  <div class="sec-h"><span class="sec-n">05</span><h2>근거 인용 시스템</h2></div>
+  <p class="sec-lead">신규 구현. 답변 하단에 사용된 근거를 각주로 제시합니다.
+  전체 코퍼스 약 8,000건 중 일부만 확보된 상태이므로 <b>ID 화이트리스트에 의존하지 않는</b>
+  일반화 설계를 택했습니다.</p>
+
+  <h3>일반화 원칙</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>요소</th><th>방식</th><th>실패 시</th></tr></thead>
+    <tbody>
+      <tr><th>문서 유형</th><td>본문 내용 신호를 점수화해 추론 (ID 패턴은 보조)</td>
+        <td>'미분류'로 표기하되 <b>인용은 유지</b></td></tr>
+      <tr><th>위치(조항)</th><td>근거 직전 구간에서 조항·섹션 헤더 역탐색</td>
+        <td>위치 생략, 문서 단위로 인용</td></tr>
+      <tr><th>발췌</th><td>매칭 키워드 주변을 짧게 추출</td><td>문서 앞부분 사용</td></tr>
+      <tr><th>신뢰 플래그</th><td>구법 수치·외부출처 자동 표시</td><td>플래그 없음</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="box good">
+    <div class="box-t">설계 판단 — 누락보다 오분류가 낫다</div>
+    <p>처음 보는 형식의 문서가 들어와도 <b>인용에서 제외하지 않습니다.</b>
+    유형을 못 맞히면 '미분류'로 표기할 뿐 근거 자체는 반드시 제시합니다.
+    평가지표가 "모든 답변에 근거 문서 표시"를 요구하므로, 분류 실패로 인한 누락이
+    오분류보다 훨씬 큰 손실이기 때문입니다.</p>
+  </div>
+
+  <h3>동작 검증</h3>
+  <p>실제 문서 2건 + <b>존재하지 않는 가상 ID 2건</b>으로 테스트했습니다.</p>
+  <div class="snip">─── 근거 문서 ─────────────────────────
+[1] doc39 (세제안내) 【연금수령한도】 — 연금수령한도, 계산 근거
+     "제3장 연금수령 【연금수령한도】 연금수령한도 = 평가액 ÷ (11 − 연금수령연차)…"
+[2] R2_KR9999999999 (투자설명서) — 총보수
+     "한 사항: C-P는 연금저축계좌를 통하여 가입한 자. 총보수는 연 0.3490%이다."
+[3] UNKNOWN_DOC_777 — 기타
+     "이 문서는 어떤 규칙에도 걸리지 않는 새로운 형식의 문서입니다."
+[4] OLDDOC_001 (세제안내) — 세액공제
+     "연금저축 세액공제는 연 700만원 중 적은 금액을 한도로 한다."
+     ⚠ 법 개정 이전 수치 포함 가능 — 현행 기준 확인 필요
+[5] 소득세법 제47조의2 연금소득공제 (외부자료)
+     ⚠ 제공 자료 외 일반 기준 — 개별 상황에 따라 달라질 수 있음</div>
+  <p>미확보 문서를 흉내낸 <code>R2_KR9999999999</code>는 <b>내용만으로 투자설명서로 분류</b>됐고,
+  <code>OLDDOC_001</code>은 <b>구법 수치가 자동 탐지</b>됐으며,
+  어떤 규칙에도 안 걸리는 <code>UNKNOWN_DOC_777</code>도 <b>누락 없이 인용</b>됐습니다.</p>
+
+  <h3>인용 무결성 검사</h3>
+  <p>인용이 요건을 충족하는지 사후 검사합니다.</p>
+  <div class="snip">· 근거 없이 수치를 제시했는가        → 답변 보류 또는 근거 보강
+· 인용이 연결되지 않은 슬롯이 있는가  → 요구사항 충족 지표 대응
+· 구법 의심 문서가 인용됐는가        → 현행 기준 문서로 대체 검토
+· 외부 근거를 쓰고 명시하지 않았는가  → 문구 추가</div>
+
+  <div class="box warn">
+    <div class="box-t">핵심 — 인용은 '검색된 것'이 아니라 '사용된 것'</div>
+    <p>검색 결과를 전부 나열하면 평가지표 <b>근거 완전성</b>("질의 대상과 무관하거나
+    대상이 다른 근거를 배제했는가")에서 감점됩니다. 실제로 답변 문장을 뒷받침한
+    근거만 인용하고, <code>retrieved_context</code> 필드에는 채점자가 직접 확인할 수 있도록
+    원문을 더 길게 담습니다.</p>
+  </div>
+
+  <h3>인제스트 단계 권장 작업</h3>
+  <p>지금은 내용 추론으로 동작하지만, 문서를 적재할 때 메타데이터를 미리 만들어두면
+  추론보다 우선 적용됩니다. 8,000건 전체 적재 시 다음을 함께 저장하십시오.</p>
+  <div class="snip">{doc_id: {
+   "type"     : 투자설명서 | 제도안내 | 세제안내 | 약관,
+   "title"    : 문서 제목,
+   "entities" : {product_name, product_code, plan_type, fund_class, ...},
+   "sections" : [{"locator":"제12조", "span":[start,end]}, ...],
+   "legacy"   : 구법 마커 사전 스캔 결과
+}}</div>
+</section>
+
+<!-- 5 -->
+<section class="reveal" id="s5">
+  <div class="sec-h"><span class="sec-n">06</span><h2>수리 계산 함수</h2></div>
+  <p class="sec-lead">15종. 팀원 규격서 6종을 문서 대조로 검증·정정하고 9종을 신규 도출했습니다.</p>
+
+  <h3>세법 검증에서 정정한 3건</h3>
+  <div class="box bad">
+    <div class="box-t">① 과세 대상 범위 — '초과분'이 아니라 '전액'</div>
+    <p>제공문서 원문의 과세 객체는 '초과분'이 아니라 '연금소득'입니다.
+    1,500만원은 <b>공제액이 아니라 과세 방식이 갈리는 기준선</b>입니다.</p>
+    <p>연 2,000만원 수령 시 — 초과분 과세 82.5만원 vs <b>전액 과세 330만원</b> (4배 차이)</p>
+  </div>
+  <div class="box bad">
+    <div class="box-t">② 세율 기준 불일치 — 7,680만원의 정체</div>
+    <p>규격서 임계값 7,680은 <code>576 ÷ (0.24 − 0.165)</code>로 <b>도출 자체는 정확</b>합니다.
+    문제는 좌변이 국세 기준 누진세액인데 우변이 지방소득세 포함 세율이라는 것입니다.</p>
+    <p>기준을 통일하면 <code>576 ÷ (0.24 − 0.15) = <b>6,400만원</b></code>.
+    6,400~7,680 구간에서 유불리 판정이 뒤집힙니다.</p>
+  </div>
+  <div class="box bad">
+    <div class="box-t">③ 과세표준 ≠ 총연금액</div>
+    <p>누진세율은 총연금액이 아니라 <b>연금소득공제·종합소득공제를 뺀 과세표준</b>에 적용됩니다.
+    다만 이 공제 수치는 제공문서에 없어 일반 세법 기준이며, 개인 사정 미확인 시 ASK_BACK 대상입니다.</p>
+  </div>
+
+  <h3>함수 목록</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>함수</th><th>산출</th><th>근거</th></tr></thead>
+    <tbody>
+      <tr><th>연금수령한도_계산</th><td>평가액 ÷ (11 − 연차) × 120%</td><td>doc39</td></tr>
+      <tr><th>연금수령연차_계산</th><td>2013.3.1 이전 가입 6년차 기산</td><td>doc39</td></tr>
+      <tr><th>퇴직소득세_감면율_계산</th><td>실제수령연차별 70/60/50%</td><td>doc40</td></tr>
+      <tr><th>퇴직소득세_계산</th><td>근속연수공제→환산급여→산출세액</td><td>doc52</td></tr>
+      <tr><th>사적연금_납입한도_세액공제_계산</th><td>min(min(연금저축,600)+IRP, 900) × 공제율</td><td>투자설명서 다수</td></tr>
+      <tr><th>사적연금_원천징수_계산</th><td>연령별 5.5/4.4/3.3%</td><td>doc39</td></tr>
+      <tr><th>과세방식_비교_계산</th><td>분리 vs 종합 세액 비교 (정정판)</td><td>문서 + 세법</td></tr>
+      <tr><th>구법수치_탐지</th><td>개정 전 수치 마커 스캔</td><td>제공문서 대조</td></tr>
+      <tr><th>세율기준_정규화</th><td>국세 ↔ 지방세포함 환산</td><td>투자설명서</td></tr>
+      <tr><th>판매클래스_적합성_판정</th><td>계좌유형 × 가입자격</td><td>각 투자설명서</td></tr>
+      <tr><th>총보수_비교</th><td>가입가능 클래스만 정렬</td><td>각 투자설명서</td></tr>
+      <tr><th>국민연금 3종</th><td>본인부담금·출산크레딧·수령액</td><td><span class="tag tag-info">외부 기본제도</span></td></tr>
+      <tr><th>과세방식_판정_계산</th><td>규격서 원본</td><td><span class="tag tag-bad">DEPRECATED</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>원문 예시 재현 검증</h3>
+  <div class="snip">doc39: "10년차가 되면 분모가 1이되어 평가액 전체의 120%까지"
+  1억 · 1년차  → 1,200만원       ✓
+  1억 · 10년차 → 1억 2,000만원   ✓
+  1억 · 11년차 → 한도 없음        ✓
+
+doc39: "만59세에 이미 10년차 계좌를 보유하게 된다"
+  2013.3.1 이전 가입 · 4년 경과 → 10년차   ✓
+
+doc52: "25년 → 5,500만 원 공제"
+  근속 25년 → 근속연수공제 5,500만원       ✓</div>
+
+  <div class="box warn">
+    <div class="box-t">미해결 2건 — 팀원 확정 필요</div>
+    <p><b>종신형 + 80세 이상 세율 우선순위</b> — 규격서 순서상 4.4%가 되나
+    문서가 종신형의 연령 대비 우선순위를 명시하지 않음.</p>
+    <p><b>이연퇴직소득 세율 서술 구조</b> — doc39·doc40은 70/60/50% 감면 방식,
+    다른 문서는 3.3% 고정세율 방식. 환산으로 해소되지 않음.
+    임의 판단 금지, 질의 대상 상품의 근거문서를 따르고 출처 명시.</p>
+  </div>
+</section>
+
+<!-- 6 -->
+<section class="reveal" id="s6">
+  <div class="sec-h"><span class="sec-n">07</span><h2>함정 문항 대응</h2></div>
+  <p class="sec-lead">문서 전수 조사로 도출한 26종 (critical 9 / high 11 / medium 6).
+  각각 감지 규칙과 교정 응답을 코드로 구현했습니다.</p>
+
+  <div class="box bad">
+    <div class="box-t">최대 발견 — 문서가 함정을 직접 경고</div>
+    <p>doc20 원문: <b>"세법상의 '부득이한 사유'와 근로자퇴직급여 보장법상의 '중도인출 사유'도
+    서로 완전히 같지 않다."</b> 그리고 근퇴법/세법/세율을 3열 표로 대조해 놓았습니다.</p>
+    <p>핵심은 <b>"인출할 수 있다"와 "세금이 낮아진다"가 별개</b>라는 것입니다 —
+    주택구입은 인출은 되지만 기타소득세 16.5%, 해외이주는 중도인출 사유가 아닌데
+    연금소득세 5.5~3.3%가 적용됩니다.</p>
+  </div>
+
+  <h3>Critical 9종 요약</h3>
+  <div class="tw">
+  <table>
+    <thead><tr><th>ID</th><th>함정</th><th>근거</th></tr></thead>
+    <tbody>
+      <tr><th>A1</th><td>근퇴법 중도인출 사유 ≠ 세법 부득이한 사유</td><td>doc20</td></tr>
+      <tr><th>A2</th><td>IRP는 법정 사유만 / 연금저축은 사유 무관</td><td>doc20</td></tr>
+      <tr><th>B1</th><td>연금수령연차 ≠ 연금실제수령연차</td><td>doc40</td></tr>
+      <tr><th>C1</th><td>1,500만원 초과 시 전액이 과세 선택 대상</td><td>투자설명서 다수</td></tr>
+      <tr><th>C2</th><td>공적연금·이연퇴직소득은 1,500만원 계산에서 제외</td><td>투자설명서</td></tr>
+      <tr><th>C5</th><td>구법 수치 문서 혼재</td><td>제공문서 대조</td></tr>
+      <tr><th>D1</th><td>총보수 최저 상품이 가입 불가일 수 있음</td><td>각 투자설명서</td></tr>
+      <tr><th>E1</th><td>명예퇴직급여는 법정 외 — IRP 의무이전 대상 아님</td><td>doc55</td></tr>
+      <tr><th>E2</th><td>명퇴금 지급 경로(DC vs 급여계좌)에 따라 선택권 소멸</td><td>doc55</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>알려진 한계</h3>
+  <div class="box warn">
+    <div class="box-t">3건 — 반드시 인지</div>
+    <p><b>① 키워드 부분일치 오탐</b> — "정해지는"의 '해지'가 규칙에 걸리는 오탐이 실제 발생해
+    수정했습니다. 한국어 형태소 경계가 모호하므로 규칙 추가 시마다 회귀 확인이 필요합니다.</p>
+    <p><b>② 카탈로그 불완전</b> — 26종은 이번 조사분입니다. 상품 개별 약관(환매수수료·운용전략),
+    DB 재정검증, 디폴트옵션 영역은 미스캔입니다. <b>여기를 더 파는 것이 가장 확실한 점수 확보</b>입니다.</p>
+    <p><b>③ 교정 반영 미보장</b> — 규칙은 경고를 주입할 뿐 최종 문장은 Supervisor가 씁니다.
+    critical 항목은 사후 확인 검사가 필요합니다.</p>
+  </div>
+</section>
+
+<!-- 7 -->
+<section class="reveal" id="s7">
+  <div class="sec-h"><span class="sec-n">08</span><h2>환각 억제 8계층</h2></div>
+  <p class="sec-lead">전부 LLM 없이 결정론적 코드로 구현 — 대회의 LLM 단일사용 조건과 무관하게 동작합니다.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>계층</th><th>방식</th><th>막는 것</th><th>상태</th></tr></thead>
+    <tbody>
+      <tr><th>1 · 수치 대조</th><td>답변의 모든 숫자 ∈ (계산결과 ∪ 근거문서)</td>
+        <td>수치 환각</td><td><span class="tag tag-good">구현</span></td></tr>
+      <tr><th>2 · 역할 분리</th><td>프롬프트로 금지 + 코드로 사후 강제</td>
+        <td>LLM의 숫자 생성</td><td><span class="tag tag-good">구현</span></td></tr>
+      <tr><th>3 · 기준 정규화</th><td>세율 국세/지방세 환산 + 출처 추적</td>
+        <td>표기 차이로 인한 오답</td><td><span class="tag tag-good">구현</span></td></tr>
+      <tr><th>4 · 답변가능성 판정</th><td>슬롯 근거 확보 개수로 규칙 판정</td>
+        <td>모르는데 답하는 것</td><td><span class="tag tag-warn">REFUSE 분기 미구현</span></td></tr>
+      <tr><th>5 · 안전한 축퇴</th><td>실패 시 빈 값 아닌 명시적 응답</td>
+        <td>계산 실패 후 얼버무리기</td><td><span class="tag tag-warn">템플릿 미정의</span></td></tr>
+      <tr><th>6 · 인용 무결성</th><td>근거 없는 수치·미명시 외부출처 검사</td>
+        <td>근거 없는 단정</td><td><span class="tag tag-good">신규 구현</span></td></tr>
+      <tr><th>7 · 감독 심사</th><td>준법·이상치·적합성·부담 4대 감사 + HyperCLOVA X 의미 감사</td>
+        <td>규칙 위반·이상치·부적합·과부담·의미 오류</td><td><span class="tag tag-good">신규 구현</span></td></tr>
+      <tr><th>0 · 사전 접지</th><td>도메인 커버리지 판정 · 구법 사전경고 · 조기 거절</td>
+        <td>범위 밖 질의에 무리한 답변</td><td><span class="tag tag-good">신규 구현</span></td></tr>
+      <tr><th>1.5 · 계획 감사</th><td>화이트리스트 검증 · 슬롯-계획 정합</td>
+        <td>잘못된 도구 선택</td><td><span class="tag tag-good">신규 구현</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>계층 1 동작 검증</h3>
+  <div class="snip">[PASS ] "1년차이면 연금수령한도는 1,200만원입니다"        → 계산결과와 일치
+[PASS ] "1,500만원 초과 시 15% 분리과세"                  → 근거문서와 일치
+[PASS ] "1,500만원 초과 시 16.5% 분리과세"                → 지방세 표기 변형 흡수
+[BLOCK] "한도는 3,750만원이며 수익률은 7.2%로 예상됩니다"  → 근거 없는 수치 2건
+[BLOCK] "연금수령한도는 1,250만원입니다"                   → 미묘한 조작도 차단
+[PASS ] "계좌 유형을 먼저 확인해 주시면 안내드리겠습니다"   → 대조 대상 없음</div>
+
+  <div class="box warn">
+    <div class="box-t">주장 범위를 넘지 말 것</div>
+    <p>주장 가능: <b>"답변의 모든 수치는 계산 결과 또는 근거문서에 실재하는 값이며,
+    그렇지 않으면 차단된다."</b></p>
+    <p>주장 불가: <b>"환각이 없다."</b> 이 계층이 막는 것은 수치 환각이며,
+    숫자가 맞고 설명이 틀린 <b>의미 오류는 통과</b>합니다.
+    기술제안서에는 범위를 한정해 서술하십시오 — 한정된 주장이 과장된 주장보다 강합니다.</p>
+  </div>
+</section>
+
+<!-- 7B -->
+<section class="reveal" id="s7b">
+  <div class="sec-h"><span class="sec-n">09</span><h2>감독 계층 — 법무팀과 사외이사</h2></div>
+  <p class="sec-lead">기존 검증 계층은 <b>기계적 대조</b>였습니다.
+  이 계층은 <b>판단하고 시정을 지시</b>합니다. 검사와 감독은 다른 일입니다.</p>
+
+  <div class="box good">
+    <div class="box-t">검증과 감독의 차이</div>
+    <p><b>검증(verification)</b> — 이 숫자가 근거에 있는가. 참/거짓 판정. 기계적.</p>
+    <p><b>감독(supervision)</b> — 이 답변을 내보내도 되는가. 판단, 그리고 <b>무엇을 어떻게 고칠지 지시</b>.</p>
+    <p>기업으로 치면 전자는 회계 대사이고, 후자는 법무팀과 사외이사의 역할입니다.
+    감독은 통과·불통과만 정하지 않고 <b>시정 지시를 내리며, 필요하면 스스로 등급을 강등</b>시킵니다.</p>
+  </div>
+
+  <h3>구성 — 2원 감사 체계</h3>
+  <p>감독은 <b>결정론적 감사</b>와 <b>HyperCLOVA X 의미 감사</b>가 함께 수행합니다.
+  서로 잡을 수 있는 영역이 다르기 때문입니다.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>감사 주체</th><th>영역</th><th>대표 지적</th></tr></thead>
+    <tbody>
+      <tr><th rowspan="4">결정론적<br><span class="tag tag-info">규칙</span></th>
+        <td>준법 — 단정 표현·근거 없는 추천·개인정보</td><td>"가장 유리합니다" 검출</td></tr>
+      <tr><td>이상치 — 계산이 도메인 상식에 맞는가</td><td>음수 세액, 원/만원 단위 혼동</td></tr>
+      <tr><td>적합성 — 사용자 조건과 정합하는가</td><td>가입 불가 상품 언급</td></tr>
+      <tr><td>부담 — 역질문이 과도하지 않은가</td><td>확인 항목 5건 → 2건 축소</td></tr>
+      <tr><th rowspan="5">HyperCLOVA X<br><span class="tag tag-warn">의미</span></th>
+        <td>의미 정합성 — 숫자는 맞고 설명이 틀렸는가</td><td>연차 2종 혼동</td></tr>
+      <tr><td>답변 태도 — 신뢰 가능한 상담인가</td><td>과장·불안조장·무책임한 회피</td></tr>
+      <tr><td>의도 충족 — 실제로 알고자 한 것을 다뤘는가</td><td>형식적 응답</td></tr>
+      <tr><td>오해 유발 — 틀리진 않았으나 오해 소지</td><td>맥락 누락</td></tr>
+      <tr><td>확인 요청 우선순위 — 무엇이 결정적인가</td><td>핵심 2건 선별</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="box bad">
+    <div class="box-t">권한 계층 — 이 설계의 핵심 안전장치</div>
+    <p>LLM에게 감독을 맡기는 것은 위험을 동반합니다. 판정을 뒤집을 수 있으면
+    기존 방어선이 무력화되기 때문입니다. 그래서 <b>LLM 감사는 심각도를 올릴 수만 있고
+    내릴 수 없도록</b> 설계했습니다.</p>
+    <div class="snip" style="margin:12px 0">결정론적 BLOCK   → LLM이 무엇이라 해도 BLOCK 확정 (LLM 호출 생략)
+결정론적 REVISE  → LLM이 BLOCK 주장 시 BLOCK, APPROVE 주장해도 REVISE 유지
+결정론적 APPROVE → LLM이 문제 발견 시 상향, 아니면 APPROVE</div>
+    <p>이 <b>단조성(monotonicity)</b> 덕분에 LLM 감사를 추가해도 시스템이
+    기존보다 관대해지는 일이 <b>구조적으로 발생하지 않습니다.</b>
+    검증 결과: 결정론=REVISE + LLM=APPROVE → 최종 <b>REVISE</b> 유지 확인.</p>
+  </div>
+
+  <div class="box good">
+    <div class="box-t">감사 독립성 — 감사자는 생성 과정을 보지 않는다</div>
+    <p>의미 감사에 전달되는 것은 <b>질문 · 최종 답변 · 근거 문서 · 계산 결과</b>뿐입니다.
+    생성 시의 프롬프트와 추론 과정은 <b>의도적으로 제외</b>합니다.</p>
+    <p>생성 논리를 함께 보면 그 논리에 동조하게 되므로,
+    <b>독자의 입장에서 결과물만 보고 판단</b>하게 만드는 것입니다.
+    감사인이 경영진의 의사결정 논리가 아니라 재무제표를 보는 것과 같은 원리입니다.</p>
+  </div>
+
+  <h3>동작 검증 — 의미 감사가 잡아낸 것</h3>
+  <div class="snip">답변  "연금 개시 11년차이시면 퇴직소득세 감면율은 40%가 적용됩니다."
+계산  {"reduction_rate": 0.4, "source": "doc40"}
+근거  "연금실제수령연차 11~20년차는 이연퇴직소득세의 60%를 적용한다."
+
+결정론적 감사 → 전부 통과
+   · 수치 대조: 0.4는 계산 결과에 실재 ✓
+   · 준법: 단정 표현 없음 ✓
+   · 이상치: 범위 정상 ✓
+   · 적합성: 조건 불일치 없음 ✓
+
+HyperCLOVA X 의미 감사 → REVISE
+   [의미 정합성] 연금수령연차와 연금실제수령연차를 구분하지 않고 감면율을 단정
+   지시: 실제 인출 이력에 따라 감면 기준 연차가 달라짐을 명시할 것
+   확인 요청: ['연금 개시 이후 실제 인출한 연도 수']</div>
+
+  <div class="box warn">
+    <div class="box-t">이 사례가 증명하는 것</div>
+    <p><b>숫자는 근거에 실재하고, 규칙 위반도 없습니다.</b> 결정론적 계층은 전부 통과시킵니다.
+    그런데 <b>설명이 틀렸습니다</b> — 개시 11년차라도 실제 인출 이력이 없으면
+    감면 기준 연차가 쌓이지 않기 때문입니다(doc40이 직접 경고하는 함정 B1).</p>
+    <p>이것이 앞서 "수치 검증기가 막지 못한다"고 명시했던 <b>의미 오류</b>이며,
+    HyperCLOVA X 참여로 이 공백이 메워졌습니다.</p>
+  </div>
+
+  <h3>실패 처리 — 감사 미수행을 숨기지 않는다</h3>
+  <p>검증 중 실제 버그를 발견해 수정했습니다. LLM 호출이 실패했는데
+  기록이 "지적사항 없음"으로 표시되고 있었습니다.
+  <b>감사가 수행되지 않은 것과 문제가 없는 것은 다릅니다.</b></p>
+  <div class="snip">호출 실패  → "감독 심사 APPROVE — 지적 1건
+              [의미감사/CALL_FAIL] 의미 감사 호출 실패: timeout
+                                   결정론적 판정만 적용"
+
+파싱 실패  → "[의미감사/PARSE_FAIL] 감사 응답을 해석하지 못함
+                                   의미 감사가 수행되지 않음"
+
+결정론 BLOCK → "[의미감사/SKIPPED] 이미 차단 — 의미 감사 생략"</div>
+  <p>세 경우 모두 <b>think_trace에 명시적으로 기록</b>되어, 채점자가
+  어떤 감사가 실제로 수행됐는지 확인할 수 있습니다.</p>
+
+  <h3>판정 체계</h3>
+  <div class="snip">APPROVE    승인
+REVISE     시정 후 재생성 — 지시문을 Supervisor에 재주입 (1회 제한)
+DOWNGRADE  답변 등급 강등 — ANSWER → PARTIAL → ASK_BACK
+BLOCK      차단 — fallback 템플릿으로 대체
+
+여러 지적이 동시 발생 시 가장 무거운 판정을 채택한다.</div>
+
+  <h3>결정론적 감사 검증 — 7개 시나리오</h3>
+  <div class="snip">① "가장 유리합니다. 추천드립니다"
+   → REVISE  [준법/ASSERTIVE] 단정적 표현
+② "연금수령한도는 12,000,000만원입니다"
+   → BLOCK   [이상치/UNIT_SUSPECT] 원/만원 단위 혼동 의심
+③ "세액은 -50만원입니다"
+   → BLOCK   [이상치/NEGATIVE] 금액이 음수
+④ 역질문 5건 나열 (부분 답변 가능)
+   → REVISE  [부담/TOO_MANY_QUESTIONS] + [부담/AVOIDABLE_ASKBACK]
+             역질문 축소 → ['계좌유형', '연령']   ← 스스로 추려냄
+⑤ "C-RJ가 총보수 0.154%로 가장 저렴합니다" (연금저축 이용자)
+   → REVISE  [적합성/INELIGIBLE_PRODUCT] 가입 자격 없는 상품
+⑥ "11년차이시면 40% 감면됩니다" (B1 함정 감지됨)
+   → REVISE  [적합성/TRAP_UNADDRESSED] 교정 취지 없음
+⑦ 조건부 서술 + 근거 인용 + 확인 항목 1건
+   → APPROVE</div>
+  <p>④가 결정론적 감사의 성격을 잘 보여줍니다 — 역질문 5건을 감지하고
+  <b>스스로 2건으로 추려냈습니다.</b> 검사가 아니라 결정입니다.</p>
+
+  <h3>비용</h3>
+  <p>의미 감사는 LLM 호출 1회를 추가합니다. 다만 <b>결정론적 감사가 이미 BLOCK이면
+  호출을 생략</b>하므로, 명백한 오류 케이스에서는 비용이 발생하지 않습니다.</p>
+  <div class="snip">최선  L1 분석 + L5' 생성                 = 2회
+보통  L1 + L5' + L6 의미감사              = 3회
+최악  L1 + L5' + L6 + L5' 재생성          = 4회  (재생성 1회 제한)
+차단  L1 + L5' (의미감사 생략)            = 2회</div>
+  <p>재생성 1회 제한은 무한 루프와 레이턴시 폭증을 막기 위함입니다.
+  재생성 후에도 통과하지 못하면 fallback 템플릿으로 축퇴합니다.</p>
+
+  <div class="box">
+    <div class="box-t">남는 한계 — 정직하게 기록</div>
+    <p><b>동일 모델이 자신의 출력을 감사하므로 blind spot이 상관될 수 있습니다.</b>
+    생성 시 놓친 것을 감사 시에도 놓칠 가능성이 구조적으로 존재합니다.</p>
+    <p>따라서 의미 감사는 결정론적 감사를 <b>대체하지 않고 보완</b>합니다.
+    결정론적 계층이 여전히 1차 방어선이며, 권한 계층이 이를 제도적으로 보장합니다.
+    감사 독립성(생성 과정 미제공)은 이 상관성을 낮추는 완화책이지 해소책은 아닙니다.</p>
+  </div>
+
+  <div class="box">
+    <div class="box-t">감독 기록은 think_trace로</div>
+    <p>감사 결과는 <code>think_trace</code>에 그대로 기록됩니다.
+    채점자가 <b>"이 시스템이 무엇을 점검했는지"</b>를 직접 확인할 수 있으며,
+    정성평가의 기술완성도·리스크 관리 항목에 작용합니다.
+    지적사항이 없을 때도 승인 기록을 남겨 감독이 실제로 수행됐음을 보입니다.</p>
+  </div>
+</section>
+
+<!-- 8 -->
+<section class="reveal" id="s8">
+  <div class="sec-h"><span class="sec-n">10</span><h2>에이전트성 확보</h2></div>
+
+  <div class="box bad">
+    <div class="box-t">문제 — 세 Agent는 자율 판단을 하지 않는다</div>
+    <p>Exploration/Exploitation/Prediction은 각각 벡터검색·SQL필터·함수호출이며,
+    학술적 의미의 Agent(자율적 도구 선택·의사결정)가 아닙니다.
+    <b>"이게 왜 에이전트인가"</b>라는 질문에 방어가 필요합니다.</p>
+  </div>
+
+  <div class="box bad">
+    <div class="box-t">기각된 방안 — fallback 시 LLM 대응</div>
+    <p>① 트리거가 LLM 판단이 아니라 시스템 예외입니다. LLM은 복구 전략을 선택하지 않고
+    정해진 경로에서 문장만 생성합니다.<br>
+    ② 정상 경로에서는 자율성이 0이므로 <b>"고장났을 때만 에이전트"</b>가 됩니다.<br>
+    ③ fallback은 가장 테스트가 덜 된 경로입니다. 거기에 자율성을 두면
+    "검증이 가장 부족한 부분이 가장 자유롭게 동작"하게 되어 <b>안전성 지표와 충돌</b>합니다.</p>
+  </div>
+
+  <div class="box good">
+    <div class="box-t">채택 — 추가 LLM 호출 0회로 해결</div>
+    <p><b>방안 1 · Function calling을 '도구 선택'으로 격상</b><br>
+    LLM이 CALC_REGISTRY 15종 중 호출할 함수와 인자를 직접 선택.
+    이것이 tool-use agency의 표준 정의이며, 같은 호출의 스키마 확장만으로 달성됩니다.</p>
+    <p><b>방안 2 · 실행 계획 명시 산출</b><br>
+    같은 호출에서 실행 계획을 구조화 출력. <b>계획서가 그대로 think_trace</b>가 되어
+    응답 스키마 필수 필드를 동시에 채우고 "추론 논리성" 지표에 대응합니다.</p>
+    <p><b>방안 3 · 감독 계층 (§09)</b><br>
+    가장 결정적인 근거입니다. 감독 계층은 검사만 하지 않고
+    <b>시정을 지시하고, 답변 등급을 강등시키고, 역질문을 스스로 추려냅니다.</b>
+    행동을 선택하고 그 선택이 후속 실행(재생성 여부, 등급, 질문 개수)을 바꾸므로
+    에이전트의 정의를 온전히 충족합니다.</p>
+    <p>결과: <b>"LLM이 도구를 선택하고 계획을 세우며, 감독 계층이 결과를 심사하고
+    시정을 지시한다."</b> 방어가 아니라 설계 의도의 설명이 됩니다.</p>
+  </div>
+
+  <div class="box">
+    <div class="box-t">감독 계층이 채운 구조적 공백</div>
+    <p>기존 설계에는 <b>"이 답변을 내보내도 되는가"를 판단하는 주체가 없었습니다.</b>
+    수치 대조는 숫자만 봤고, 요구사항 검증은 누락만 봤습니다.
+    규칙 위반, 계산 이상치, 사용자 부적합, 과도한 역질문은 <b>어느 계층도 보지 않았습니다.</b></p>
+    <p>기업이 스스로 감사하지 않으면 법무팀과 사외이사가 그 역할을 하듯,
+    생성 계층과 분리된 독립 감독 기구가 필요합니다.
+    <b>생성하는 주체가 스스로를 심사하면 그것은 감독이 아닙니다.</b></p>
+  </div>
+
+  <div class="box">
+    <div class="box-t">발표 논리</div>
+    <p><b>자율적인 것</b>: 도구 선택, 실행 계획, 답변 생성 (Supervisor 단일 호출)<br>
+    <b>결정론적인 것</b>: 제약 검증, 수치 계산, 근거 필터, 답변가능성, 수치 대조, 인용, fallback</p>
+    <p>이 구분 자체가 논리입니다 — <b>"판단이 필요한 곳에는 자율성을,
+    정확성이 필요한 곳에는 결정론을 배치했다."</b> 특히 Exploitation을 일부러 결정론적으로
+    둔 것은 약점이 아니라 <b>설계 성숙도의 증거</b>입니다. 금융 도메인에서 하드 제약에
+    자율성을 주는 것은 위험합니다.</p>
+  </div>
+
+  <div class="box warn">
+    <div class="box-t">폐기 — "유한 속 무한" 슬로건</div>
+    <p>실제 구현이 depth cap을 건 유한 파이프라인이라 구현과 괴리됩니다.
+    대체 메시지는 <b>"자율적 도구 선택 + 결정론적 검증"</b>.</p>
+  </div>
+</section>
+
+<!-- 9 -->
+<section class="reveal" id="s9">
+  <div class="sec-h"><span class="sec-n">11</span><h2>구현 상태</h2></div>
+  <p class="sec-lead">AST 파싱 실측. 설계된 것과 동작하는 것을 구분합니다.</p>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>모듈</th><th>내용</th><th>상태</th></tr></thead>
+    <tbody>
+      <tr><th>pension_calc_functions.py</th><td>계산함수 15종 + 헬퍼</td><td><span class="tag tag-good">동작 검증</span></td></tr>
+      <tr><th>trap_rules.py</th><td>함정 규칙 26종 + 감지 로직</td><td><span class="tag tag-good">동작 검증</span></td></tr>
+      <tr><th>numeric_verifier.py</th><td>수치 대조 + 출처 명시 검사</td><td><span class="tag tag-good">동작 검증</span></td></tr>
+      <tr><th>citation_system.py</th><td>근거 인용 + 무결성 검사</td><td><span class="tag tag-good">동작 검증</span></td></tr>
+      <tr><th>supervisory_board.py</th><td>4대 감사 + 의미 감사 + 계획 감사</td><td><span class="tag tag-good">동작 검증</span></td></tr>
+      <tr><th>grounding_retrieval.py</th><td>L0 사전 검색 + 조기 거절</td><td><span class="tag tag-good">동작 검증</span></td></tr>
+      <tr><th>coverage_pipeline.py</th><td>슬롯·커버리지·타임아웃·trace</td><td><span class="tag tag-warn">일부 구현</span></td></tr>
+      <tr><th>— extract_query_spec</th><td>Function calling 스키마</td><td><span class="tag tag-bad">미구현</span></td></tr>
+      <tr><th>— retrieve_hybrid</th><td>pgvector + BM25</td><td><span class="tag tag-bad">미구현</span></td></tr>
+      <tr><th>— slot_evidence_matcher</th><td>슬롯-근거 매칭</td><td><span class="tag tag-bad">미구현</span></td></tr>
+      <tr><th>— calc_params_builder</th><td>슬롯 → 함수 인자</td><td><span class="tag tag-bad">미구현</span></td></tr>
+      <tr><th>— answer_covers_slot</th><td>답변의 슬롯 반영 여부 확인</td><td><span class="tag tag-bad">미구현</span></td></tr>
+      <tr><th>— generate_answer</th><td>Supervisor 프롬프트</td><td><span class="tag tag-bad">미구현</span></td></tr>
+      <tr><th>— verify_grounding</th><td>수치·의미 검증</td><td><span class="tag tag-warn">신규작성 불필요 — numeric_verifier + supervisory_board 연결로 대체</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="box bad">
+    <div class="box-t">가장 시급한 두 가지</div>
+    <p><b>calc_params_builder</b>가 없으면 계산함수 15종이 <b>전부 호출되지 않습니다.</b><br>
+    <b>slot_evidence_matcher</b>가 없으면 커버리지 판정과 답변가능성 판정이 무력화됩니다.</p>
+    <p>추가로 <code>decide_answerability</code>에 <b>REFUSE를 반환하는 경로가 없습니다.</b>
+    최고 가중치 지표가 "정보한계 대응"인데 거절 분기가 죽어 있는 것은 치명적입니다.</p>
+  </div>
+</section>
+
+<!-- 10 -->
+<section class="reveal" id="s10">
+  <div class="sec-h"><span class="sec-n">12</span><h2>역할 분담과 일정</h2></div>
+
+  <div class="role">
+    <div class="role-h"><span class="role-tag">MEMBER A</span><b>오케스트레이션 · Supervisor</b></div>
+    <ul>
+      <li>Function calling 스키마 — 슬롯 + 도구 선택 + 실행 계획 (§10 방안 1+2)</li>
+      <li>Supervisor 프롬프트 — 조건부 서술 강제, 금지 표현 목록, 숫자 생성 금지</li>
+      <li>REFUSE 분기 추가 — 도메인 무관·프롬프트 공격 대응</li>
+      <li><b>감독 계층 연결</b> — 재생성 1회 제한, 시정 지시 재주입 경로</li>
+      <li>fallback 응답 템플릿 정의 (특히 Prediction 실패 → 즉시 ASK_BACK)</li>
+      <li>think_trace 포맷 — 실행 계획을 서두에 배치</li>
+      <li><b>CLOVA API 키 확보 · LLM 범위 디스코드 확인</b> (최우선)</li>
+    </ul>
+  </div>
+
+  <div class="role">
+    <div class="role-h"><span class="role-tag">MEMBER B</span><b>Prediction · 수리 검증</b></div>
+    <ul>
+      <li><b>calc_params_builder 구현</b> — 없으면 계산 전체가 죽음</li>
+      <li>미해결 2건 확정 — 종신형+80세 우선순위, 이연퇴직소득 서술 선택</li>
+      <li>계산함수 15종 회귀 테스트 (기대값 고정, 반나절 소요)</li>
+      <li>단위 변환 경계 함수 (원 ↔ 만원) — 혼동 시 1만배 오차</li>
+      <li>함정 규칙 추가 시 오탐 회귀 확인</li>
+    </ul>
+  </div>
+
+  <div class="role">
+    <div class="role-h"><span class="role-tag">MEMBER C</span><b>인프라 · 검색</b></div>
+    <ul>
+      <li>FastAPI GET /answer — 응답 5필드 준수</li>
+      <li>pgvector + BM25(tsvector) 하이브리드 검색</li>
+      <li><b>문서 인제스트 시 메타데이터 생성</b> (§05 권장 스키마) — 인용 정확도 직결</li>
+      <li>구법 탐지를 Exploitation 필터에 연결 (현재 함수만 있고 호출 안 됨)</li>
+      <li>타임아웃 asyncio 전환 검토 — 현재 스레드 미종료 문제</li>
+      <li>NCP 배포 · 09.07~09.20 무중단 · 크레딧 초과 모니터링</li>
+    </ul>
+  </div>
+
+  <div class="box warn">
+    <div class="box-t">일정</div>
+    <p><b>09.03 코드 프리즈</b>, 이후 3일은 실제 GET 요청 리허설만.
+    09.06 이후 커밋·배포는 실격이므로 핫픽스 기회가 없습니다.</p>
+    <p>P0 4건 중 2건이 외부 의존(API 키, 대회 측 답변)입니다.
+    <b>키 없이 가능한 작업을 병렬로 최대한 밀어두십시오</b> —
+    스키마 초안, 검증 로직, 회귀 테스트, 이상적 답변 예시 작성은 전부 가능합니다.</p>
+  </div>
+</section>
+
+<!-- 11 -->
+<section class="reveal" id="s11">
+  <div class="sec-h"><span class="sec-n">13</span><h2>리스크</h2></div>
+
+  <div class="tw">
+  <table>
+    <thead><tr><th>리스크</th><th>내용</th><th>대응</th></tr></thead>
+    <tbody>
+      <tr><th>LLM 범위</th><td>임베딩·NLI 모델이 조건에 걸리는지 미확인</td>
+        <td>불허 시 BM25 + 메타데이터 필터 대안 준비</td></tr>
+      <tr><th>API 타임아웃</th><td>주최측 값 미공지. 현 설계 최대 15초</td>
+        <td>총 예산 8초로 보수적 재배분</td></tr>
+      <tr><th>API 키</th><td>미발급 — 프롬프트 작업 전체가 묶임</td><td>mock으로 파이프라인 선검증</td></tr>
+      <tr><th>서버 운영</th><td>09.20 이후 중단 가능 여부 불명확</td><td>크레딧 초과 모니터링</td></tr>
+      <tr><th>미구현 5종</th><td>P0/P1에 집중</td><td>신규 기능 중단, 기존 연결에 집중</td></tr>
+      <tr><th>사법 리스크</th><td>단정 추천 시 부당권유 소지</td><td>조건부 제시 + 면책 문구</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="box">
+    <div class="box-t">사법 리스크 — 일반적 고려사항</div>
+    <p><b>자본시장법</b> 특정 상품 투자판단 자문을 영업으로 제공 시 투자자문업 등록 대상.
+    → 조건부 제시 구조가 리스크를 낮춥니다.</p>
+    <p><b>금융소비자보호법</b> 불확실한 사항에 대한 단정적 판단 제공 금지.
+    → 안내서의 "단정적 추천 지양"이 이 조항의 반영으로 보입니다.
+    미래 변수를 '가정'으로만 다루는 설계가 정확히 부합합니다.</p>
+    <p><b>세무사법</b> 세무 상담의 업 영위는 자격 영역. 일반적 세제 정보 제공은 통상 해당하지 않음.
+    → 개인별 세액 확정 제시와 계산 구조 설명을 구분하고, ASK_BACK으로 경계를 지킵니다.</p>
+    <p><b>개인정보보호법</b> 질의에 나이·소득·가족관계 포함 가능. 로그 최소화·미저장 원칙 명시.</p>
+    <p>이는 일반적 고려사항이며 법률 자문이 아닙니다. 기술제안서에
+    <b>면책·정보제공목적 문구를 반드시 삽입</b>하십시오.</p>
+  </div>
+</section>
+
+<!-- 12 -->
+<section class="reveal" id="s12">
+  <div class="sec-h"><span class="sec-n">14</span><h2>참고 문헌</h2></div>
+  <p class="sec-lead">정식 게재본만. 링크는 전부 원문 확인했습니다.</p>
+
+  <div class="ref">
+    <div class="ref-top"><span class="ref-title">Detecting Hallucinations in Large Language Models Using Semantic Entropy</span>
+      <span class="tag tag-good">Nature 2024</span></div>
+    <div class="ref-meta">Farquhar, Kossen, Kuhn, Gal · Nature 630, 625–630 ·
+      <a href="https://www.nature.com/articles/s41586-024-07421-0" target="_blank">nature.com</a></div>
+    <div class="ref-desc">의미 클러스터 엔트로피로 confabulation 탐지. 환각 탐지 분야의 대표 논문.</div>
+  </div>
+
+  <div class="ref">
+    <div class="ref-top"><span class="ref-title">SelfCheckGPT: Zero-Resource Black-Box Hallucination Detection</span>
+      <span class="tag tag-good">EMNLP 2023</span></div>
+    <div class="ref-meta">Manakul, Liusie, Gales · pp. 9004–9017 ·
+      <a href="https://aclanthology.org/2023.emnlp-main.557/" target="_blank">ACL Anthology</a></div>
+    <div class="ref-desc">외부 지식 없이 샘플 일관성만으로 환각 탐지. 이 분야 표준 베이스라인.</div>
+  </div>
+
+  <div class="ref">
+    <div class="ref-top"><span class="ref-title">Language Models with Conformal Factuality Guarantees</span>
+      <span class="tag tag-good">ICML 2024</span></div>
+    <div class="ref-meta">Mohri &amp; Hashimoto · PMLR 235:36029–36047 ·
+      <a href="https://proceedings.mlr.press/v235/mohri24a.html" target="_blank">PMLR</a></div>
+    <div class="ref-desc">컨포멀 예측으로 사실성 보장. 답변가능성 임계값의 통계적 정당화 근거.</div>
+  </div>
+
+  <div class="ref">
+    <div class="ref-top"><span class="ref-title">Know Your Limits: A Survey of Abstention in Large Language Models</span>
+      <span class="tag tag-good">TACL 2025</span></div>
+    <div class="ref-meta">Wen, Yao, Feng, Xu, Tsvetkov, Howe, Wang · TACL 13:529–556 ·
+      <a href="https://aclanthology.org/2025.tacl-1.26/" target="_blank">ACL Anthology</a></div>
+    <div class="ref-desc">답변 보류를 질의·모델·인간가치 3관점으로 정리. "정보한계 대응"의 권위 인용처.</div>
+  </div>
+
+  <div class="ref">
+    <div class="ref-top"><span class="ref-title">HyST: LLM-Powered Hybrid Retrieval over Semi-Structured Tabular Data</span>
+      <span class="tag tag-good">RecSys 2025 W/S</span></div>
+    <div class="ref-meta">Myung, Park, Han · arXiv:2508.18048 · EARL Workshop 채택</div>
+    <div class="ref-desc">속성 단위 필터 + 임베딩 검색 하이브리드. Exploration/Exploitation 분리의 근거.</div>
+  </div>
+
+  <div class="ref">
+    <div class="ref-top"><span class="ref-title">LLMs as Orchestrators: Constraint-Compliant Multi-Agent Optimization</span>
+      <span class="tag tag-good">WWW Companion '26</span></div>
+    <div class="ref-meta">Zhang, Zhao, Friedman, Chu · DOI 10.1145/3774905.3795728</div>
+    <div class="ref-desc">Exploitation/Exploration 이중 에이전트. CDP(제약 우선 원칙)의 출처.
+    본 설계는 CDP 1원칙만 결정론적으로 근사 구현했습니다.</div>
+  </div>
+
+  <div class="ref">
+    <div class="ref-top"><span class="ref-title">FinPersona: LLM-Driven Conversational Agent for Personalized Financial Advising</span>
+      <span class="tag tag-info">ECIR 2025 · 본선용</span></div>
+    <div class="ref-meta">Takayanagi et al. · LNCS 15576, pp. 13–18</div>
+    <div class="ref-desc">다회차 대화 기반이라 단일 턴 평가와 구조적으로 충돌. 본선 확장 비전으로 보류.</div>
+  </div>
+</section>
+
+<footer>
+  연금 Agent · 종합 설계서 총본 · 2026년 8월<br>
+  수치·세율·계산 구조는 미래에셋 제공문서 대조와 역산 검증을 거쳤으며, 제공문서 밖 항목(연금소득공제·인적공제·국민연금)은 출처를 명시했습니다.<br>
+  구현 상태는 소스 AST 파싱 실측이며, 설계된 것과 동작하는 것을 구분해 표기했습니다.<br>
+  참고 문헌은 정식 게재본만 수록하고 링크를 원문 확인했습니다. 사법 리스크는 일반적 고려사항이며 법률 자문이 아닙니다.<br>
+  미확인 사항은 "확인 필요"로 표시했고, 추정을 사실로 단정한 서술은 포함하지 않았습니다.
+</footer>
+
+</div>
+<script>
+const io=new IntersectionObserver(es=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.05});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
