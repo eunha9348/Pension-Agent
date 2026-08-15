@@ -142,7 +142,11 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
         ParamSpec("X_pension_saving", _get("pension_saving_manwon"),
                   required=False, default=0.0,
                   assumption="연금저축 납입액이 확인되지 않아 0원으로 계산"),
-        ParamSpec("Y_irp_personal", _get("irp_manwon"),
+        # 합산액만 확인된 경우("합쳐서 900만원")도 여기로 들어온다.
+        # 합산 기준으로 계산했다는 사실은 conditions["condition_notes"]에 기록돼
+        # 답변의 [한계 고지]로 올라간다.
+        ParamSpec("Y_irp_personal", _first("irp_manwon",
+                                           "combined_contribution_manwon"),
                   required=False, default=0.0,
                   assumption="IRP 개인부담금이 확인되지 않아 0원으로 계산"),
         ParamSpec("r_tax_credit", _tax_credit_rate, variants=_RATE_VARIANTS,

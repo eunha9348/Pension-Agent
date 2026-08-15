@@ -149,7 +149,9 @@ def render_template_answer(query_spec: dict,
 
     if trap_context and trap_context.get("correction_notes"):
         for note in trap_context["correction_notes"][:2]:
-            lines.append(f"· 확인이 필요한 부분: {note}")
+            # "주의할 점"이라는 표현을 유지할 것 — L6 적합성 감사가 답변에
+            # 교정 취지가 담겼는지를 이런 표지어로 확인한다(TRAP_UNADDRESSED).
+            lines.append(f"· 주의할 점: {note}")
             body_written = True
 
     if not body_written:

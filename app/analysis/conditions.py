@@ -30,6 +30,9 @@ _PERIOD_SIGNALS = ("확정기간", "기간형", "정해진 기간")
 _LEGACY_JOIN_SIGNALS = ("2013년 이전", "2013.3.1 이전", "2013년 3월 이전",
                         "2012년에 가입", "2013년 전에")
 
+# 두 계좌의 납입액을 합쳐서 말하는 표현
+_COMBINED_SIGNALS = ("합쳐", "합산", "합해", "다 합", "총합", "같이 넣", "둘 다 합")
+
 
 def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[float]:
     """특정 키워드 주변(같은 절)에서 금액을 찾는다.
@@ -79,10 +82,22 @@ def derive_conditions(question: str,
         c["join_before_2013"] = True
 
     # ── 금액 ──
-    if (saving := _find_amount_near(q, ("연금저축", "연저축"))) is not None:
-        c["pension_saving_manwon"] = saving
-    if (irp := _find_amount_near(q, ("IRP", "irp", "개인형"))) is not None:
-        c["irp_manwon"] = irp
+    saving = _find_amount_near(q, ("연금저축", "연저축"))
+    irp = _find_amount_near(q, ("IRP", "irp", "개인형"))
+    if (saving is not None and saving == irp
+            and any(k in q for k in _COMBINED_SIGNALS)):
+        # "연금저축이랑 IRP 합쳐서 900만원" — 같은 절에서 두 계좌가 같은 금액으로
+        # 잡힌 경우는 '각각'이 아니라 '합산'이다. 각각으로 해석하면 납입액이
+        # 두 배가 되고, 연금저축 600만원 상한 판정도 틀어진다.
+        c["combined_contribution_manwon"] = saving
+        c.setdefault("condition_notes", []).append(
+            "연금저축과 IRP의 납입액 구분이 확인되지 않아 합산액 기준으로 계산했습니다. "
+            "연금저축 단독 납입액이 600만원을 넘으면 결과가 달라질 수 있습니다")
+    else:
+        if saving is not None:
+            c["pension_saving_manwon"] = saving
+        if irp is not None:
+            c["irp_manwon"] = irp
     if (sev := _find_amount_near(q, ("퇴직금", "퇴직급여", "명예퇴직", "명퇴"))) is not None:
         c["severance_manwon"] = sev
     if (av := _find_amount_near(q, ("평가액", "적립금", "잔고", "계좌에", "쌓여", "모았"))) is not None:
@@ -169,6 +184,7 @@ def describe_conditions(conditions: dict[str, Any]) -> str:
         "account_type": "계좌 유형", "age": "나이", "pension_year": "연금수령연차",
         "actual_receipt_year": "연금실제수령연차", "service_years": "근속연수",
         "pension_saving_manwon": "연금저축 납입액", "irp_manwon": "IRP 납입액",
+        "combined_contribution_manwon": "연금저축+IRP 합산 납입액",
         "severance_manwon": "퇴직급여", "account_value_manwon": "계좌 평가액",
         "total_income_manwon": "소득", "years_elapsed": "가입 후 경과연수",
         "private_pension_annual_manwon": "연간 연금수령액",
