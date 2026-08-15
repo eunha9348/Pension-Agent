@@ -142,7 +142,9 @@ def render_template_answer(query_spec: dict,
 
     for s in slots:
         if s.status == SlotStatus.COVERED and s.evidence_ids:
-            snippet = _evidence_snippet(evidence, s.evidence_ids)
+            from app.analysis.vocab import key_terms
+            snippet = _evidence_snippet(evidence, s.evidence_ids,
+                                        keywords=key_terms(s.description))
             if snippet:
                 lines.append(f"· {s.description}: {snippet}")
                 body_written = True
@@ -176,12 +178,26 @@ def render_template_answer(query_spec: dict,
 
 
 def _evidence_snippet(evidence: list[EvidenceChunk], doc_ids: list[str],
-                      width: int = 180) -> str:
-    """근거 문서에서 문장 단위로 짧게 인용. 원문을 변형하지 않는다."""
+                      keywords: Optional[set[str]] = None,
+                      width: int = 200) -> str:
+    """근거 문서에서 짧게 인용. 원문을 변형하지 않는다.
+
+    ⚠️ 앞에서부터 자르면 안 된다. 청크 앞부분이 다른 조항이면 정작 필요한
+       내용(세율표, 한도 수치)이 잘려 나가, 근거를 인용하고도 답이 비는
+       상황이 생긴다. 슬롯 핵심어가 처음 등장하는 지점을 중심으로 자른다.
+    """
     for c in evidence:
-        if c.doc_id in doc_ids:
-            text = " ".join(c.text.split())
-            return text[:width] + ("…" if len(text) > width else "")
+        if c.doc_id not in doc_ids:
+            continue
+        text = " ".join(c.text.split())
+        start = 0
+        for kw in sorted(keywords or (), key=len, reverse=True):
+            idx = text.find(kw)
+            if idx > 0:
+                start = max(0, idx - width // 4)
+                break
+        snippet = text[start:start + width]
+        return ("…" if start else "") + snippet + ("…" if start + width < len(text) else "")
     return ""
 
 

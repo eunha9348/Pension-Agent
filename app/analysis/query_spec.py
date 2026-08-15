@@ -136,6 +136,10 @@ class TopicRule:
     description: str
     calc_function: Optional[str] = None
     fact_description: Optional[str] = None   # 함께 필요한 사실 슬롯
+    # 이 단어가 있으면 이 규칙을 적용하지 않는다.
+    # "한도" 같은 일반어를 키워드로 쓰면 다른 주제(세액공제 한도)까지 끌어오므로,
+    # 넓은 키워드에는 반드시 배제어를 함께 둔다.
+    exclude: tuple[str, ...] = ()
 
 
 # 순서가 중요하다 — 앞의 규칙이 더 구체적인 주제다.
@@ -144,9 +148,10 @@ TOPIC_RULES: list[TopicRule] = [
               "toejik_gamnyeon", "연금실제수령연차에 따른 이연퇴직소득세 감면율",
               "퇴직소득세_감면율_계산", "이연퇴직소득세 감면 기준"),
     TopicRule("연금수령한도", ("수령한도", "인출한도", "얼마까지 인출", "얼마나 인출",
-                            "얼마까지 뽑", "한도가 얼마"),
+                            "얼마까지 뽑", "한도"),
               "suryeong_hando", "연금수령한도",
-              "연금수령한도_계산", "연금수령한도 산정 방식"),
+              "연금수령한도_계산", "연금수령한도 산정 방식",
+              exclude=("세액공제", "공제한도", "납입한도", "공제 한도")),
     TopicRule("연금수령연차", ("연차", "기산", "2013"),
               "suryeong_yeoncha", "연금수령연차 기산",
               "연금수령연차_계산", "연금수령연차 기산 규칙"),
@@ -160,7 +165,8 @@ TOPIC_RULES: list[TopicRule] = [
                         "얼마나 떼", "떼나요"),
               "wonchen", "연금소득 원천징수세율",
               "사적연금_원천징수_계산", "연령별 연금소득 원천징수세율"),
-    TopicRule("퇴직소득세", ("퇴직소득세", "퇴직금 세금", "퇴직급여 세금"),
+    TopicRule("퇴직소득세", ("퇴직소득세", "퇴직금 세금", "퇴직급여 세금",
+                          "근속연수공제", "환산급여", "퇴직소득 과세"),
               "toejik_se", "퇴직소득세 산출",
               "퇴직소득세_계산", "퇴직소득세 계산 구조"),
     TopicRule("상품_비교", ("총보수", "보수가 낮", "수수료 비교", "어떤 클래스",
@@ -184,7 +190,9 @@ _FALLBACK_SLOT = ("ilban", "질의 주제에 대한 제공 자료 근거")
 
 
 def _match_topics(question: str) -> list[TopicRule]:
-    hits = [r for r in TOPIC_RULES if any(k in question for k in r.keywords)]
+    hits = [r for r in TOPIC_RULES
+            if any(k in question for k in r.keywords)
+            and not any(x in question for x in r.exclude)]
     # 같은 계산함수를 두 번 넣지 않는다
     seen: set[str] = set()
     out: list[TopicRule] = []

@@ -29,12 +29,41 @@ TOP_K = 8
 RRF_K = 60          # RRF 표준 상수
 
 
-def _expand_query(query: str) -> str:
-    """도메인 동의어로 질의 확장. 원 질의를 앞에 두어 가중치를 유지한다."""
+# 동의어 확장 텀의 가중치. 원 질의어보다 낮아야 한다.
+EXPANSION_WEIGHT = 0.35
+
+
+def _expansion_terms(query: str) -> str:
+    """원 질의에 없는 동의어만 모은다."""
     extra = expand(content_terms(query)) - content_terms(query)
-    if not extra:
-        return query
-    return query + " " + " ".join(sorted(extra))
+    return " ".join(sorted(extra))
+
+
+def _weighted_lexical(store: DocumentStore, query: str, top_k: int,
+                      allowed: Optional[set[str]]) -> list[tuple[ChunkRecord, float]]:
+    """원 질의 + 동의어 확장을 **가중 합산**한다.
+
+    ⚠️ 확장 텀을 원 질의와 같은 비중으로 넣으면 안 된다.
+       "연금저축·IRP 세액공제" 질의에서 동의어(연금저축계좌·개인형퇴직연금)만
+       많이 포함한 짧은 청크(중도인출 조항)가, 정작 '세액공제'를 다루는 청크보다
+       위로 올라오는 현상이 실제로 발생했다. BM25는 짧은 문서를 선호하기 때문이다.
+       원 질의어에 온전한 가중치를 주고 확장은 보조로만 쓴다.
+    """
+    scores: dict[str, float] = {}
+    records: dict[str, ChunkRecord] = {}
+
+    for text, weight in ((query, 1.0), (_expansion_terms(query), EXPANSION_WEIGHT)):
+        if not text.strip():
+            continue
+        for rec, score in store.search_bm25(text, top_k=top_k * 3, allowed=allowed):
+            records[rec.chunk_id] = rec
+            scores[rec.chunk_id] = scores.get(rec.chunk_id, 0.0) + score * weight
+
+    if not scores:
+        return []
+    top = max(scores.values()) or 1.0
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])[:top_k]
+    return [(records[cid], round(sc / top, 6)) for cid, sc in ranked]
 
 
 def _entity_prefilter(store: DocumentStore, entities: dict) -> Optional[set[str]]:
@@ -89,9 +118,8 @@ def make_retrieve_hybrid(store: Optional[DocumentStore] = None,
             return []
 
         allowed = _entity_prefilter(s, (query_spec or {}).get("entities", {}))
-        expanded = _expand_query(query)
 
-        lexical = s.search_bm25(expanded, top_k=top_k * 2, allowed=allowed)
+        lexical = _weighted_lexical(s, query, top_k * 2, allowed)
         if not lexical:
             return []
 

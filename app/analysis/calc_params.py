@@ -43,6 +43,20 @@ class MissingCalcParams(Exception):
             f"'{function}' 계산에 필요한 조건 부족: {', '.join(missing)}")
 
 
+# 함수별 "최소 하나는 있어야 계산이 의미 있는" 조건 키.
+#
+# ⚠️ 왜 필요한가: 세액공제 계산은 두 납입액이 모두 없으면 기본값 0으로 굴러가
+#    "세액공제액 = 0만원"이라는 **맞지만 쓸모없고 오해를 부르는** 답을 낸다.
+#    납입액을 아예 안 밝힌 질문은 대개 '한도가 얼마냐'를 묻는 것이므로,
+#    계산을 접고 근거 문서의 한도를 설명하거나 되물어야 한다.
+REQUIRE_ANY: dict[str, tuple[tuple[str, ...], str]] = {
+    "사적연금_납입한도_세액공제_계산": (
+        ("pension_saving_manwon", "irp_manwon", "combined_contribution_manwon"),
+        "연금저축·IRP에 각각 얼마를 납입했는지(또는 납입 예정인지)",
+    ),
+}
+
+
 @dataclass
 class ParamSpec:
     """계산함수 인자 하나의 조달 방법."""
@@ -271,6 +285,13 @@ class CalcParamsBuilder:
             raise MissingCalcParams(
                 fn_name, ["인자 규격 미정의"],
                 [f"'{fn_name}' 계산에 필요한 조건"])
+
+        # 기본값만으로 계산이 굴러가 무의미한 결과를 내는 경우를 먼저 막는다
+        if fn_name in REQUIRE_ANY:
+            keys, ask = REQUIRE_ANY[fn_name]
+            if not any(self.conditions.get(k) is not None for k in keys):
+                self.ask_back.setdefault(slot.slot_id, []).append(ask)
+                raise MissingCalcParams(fn_name, list(keys), [ask])
 
         params: dict[str, Any] = {}
         missing: list[str] = []
