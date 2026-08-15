@@ -1,0 +1,19 @@
+# 연금 Agent 런타임 의존성
+# ─────────────────────────────────────────────────────────────
+# 원칙: 검증·검색 계층은 외부 모델 의존이 없어야 한다(대회 제약 1).
+#       따라서 임베딩/NLI 라이브러리(sentence-transformers 등)는 넣지 않는다.
+#       BM25는 순수 파이썬 구현(app/retrieval/bm25.py)이라 별도 의존성이 없다.
+
+fastapi==0.141.1
+uvicorn[standard]==0.32.1
+pydantic==2.12.4
+httpx==0.28.1
+
+# 선택 의존성 — PostgreSQL(pgvector/tsvector) 백엔드를 쓸 때만 필요.
+# 현재 기본 경로는 파일 기반 인덱스(app/ingest/store.py)이므로 없어도 동작한다.
+# 자세한 내용은 sql/schema.sql 및 README의 "검색 백엔드" 절 참고.
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+
+# 테스트
+pytest==8.3.4

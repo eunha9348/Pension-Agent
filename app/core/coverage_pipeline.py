@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
 
-from pension_calc_functions import PENSION_CALC_FUNCTIONS
+from app.core.pension_calc_functions import PENSION_CALC_FUNCTIONS
 
 
 # ════════════════════════════════════════════════════════════════
