@@ -114,7 +114,10 @@ def derive_conditions(question: str,
         c["rate"] = r
 
     # ── 판매 클래스 ──
-    if (m := re.search(r'\b([CS]-(?:P2E|P2|Pe|PE|RF|RJ|Re|[PRFW3])|Crp-e|Crp|S-I)\b', q)):
+    # ⚠️ \b 금지 — "C-P로" 처럼 뒤에 한글이 붙으면 단어 경계로 인식되지 않는다
+    if (m := re.search(
+            r'(?<![A-Za-z0-9-])([CS]-(?:P2E|P2|Pe|PE|RF|RJ|Re|[PRFW3])'
+            r'|Crp-e|Crp|S-I)(?![A-Za-z0-9-])', q)):
         c["fund_class"] = m.group(1)
 
     # ── 자녀 수 (출산크레딧) ──
