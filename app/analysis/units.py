@@ -60,25 +60,27 @@ _AMOUNT_TOKEN = re.compile(
 )
 
 
-def parse_amount_to_manwon(text: str) -> Optional[float]:
-    """자연어 금액 표현 → 만원 단위 float.
+def parse_amount_expressions(text: str) -> list[tuple[int, int, float]]:
+    """문자열에서 **금액 표현 단위**로 끊어 [(시작, 끝, 만원)] 를 반환.
 
-    "1억"        → 10000
-    "1억 2천만원" → 12000
-    "5,000만원"   → 5000
-    "50,000,000원" → 5000
-    "300만원"     → 300
+    ━━ 왜 '표현 단위'로 끊어야 하는가 ━━
+    예전에는 문자열 안의 모든 금액 토큰을 그냥 더했다. 그래서
+    "총급여 4000만원인데 연금저축에 600만원" 이 4,600만원 하나로 합쳐졌고,
+    연금저축 납입액이 4,600만원으로 잡혔다. 한도(600만원)에 걸려 결과가
+    우연히 맞는 경우가 있어 테스트도 통과했지만,
+    "총급여 5000만원 + 연금저축 600만원" 에서는 소득이 5,600만원이 되어
+    세액공제율 구간이 16.5% → 13.2% 로 뒤집힌다. 즉 **자신 있게 틀린 숫자**가 나온다.
 
-    ⚠️ 단위가 전혀 없는 맨 숫자(예: "1500")는 **원 단위로 해석하지 않는다.**
-       연금 도메인에서 맨 숫자는 대개 만원 단위 관용 표기이거나
-       연차·나이일 가능성이 높아, 오해석 위험이 크기 때문에 None을 준다.
-       호출 측이 문맥(연차/나이/금액)을 알고 있을 때만 직접 지정할 것.
+    반면 "1억 2천만원"은 두 토큰이지만 하나의 금액이므로 합쳐야 한다.
+    그래서 기준은 '공백만으로 이어져 있으면 같은 금액, 다른 글자가 끼면 다른 금액'이다.
     """
     if not text:
-        return None
+        return []
 
-    total_won = 0.0
-    matched_any = False
+    groups: list[tuple[int, int, float]] = []
+    cur_start = cur_end = -1
+    cur_won = 0.0
+
     for m in _AMOUNT_TOKEN.finditer(text):
         raw, unit = m.group(1), m.group(2)
         try:
@@ -86,16 +88,44 @@ def parse_amount_to_manwon(text: str) -> Optional[float]:
         except ValueError:
             continue
         if unit:
-            total_won += value * _UNIT_MULTIPLIER[unit]
-            matched_any = True
+            won = value * _UNIT_MULTIPLIER[unit]
         elif "원" in m.group(0):
-            # "50,000,000원" 처럼 단위어 없이 '원'만 붙은 경우
-            total_won += value
-            matched_any = True
+            won = value                       # "50,000,000원"
+        else:
+            continue                          # 단위 없는 맨 숫자는 금액이 아니다
 
-    if not matched_any:
-        return None
-    return round(won_to_manwon(total_won), 4)
+        # 앞 표현과 공백만으로 이어져 있으면 같은 금액으로 본다 ("1억 2천만원")
+        if cur_end >= 0 and text[cur_end:m.start()].strip() == "":
+            cur_won += won
+            cur_end = m.end()
+        else:
+            if cur_end >= 0:
+                groups.append((cur_start, cur_end, round(won_to_manwon(cur_won), 4)))
+            cur_start, cur_end, cur_won = m.start(), m.end(), won
+
+    if cur_end >= 0:
+        groups.append((cur_start, cur_end, round(won_to_manwon(cur_won), 4)))
+    return groups
+
+
+def parse_amount_to_manwon(text: str) -> Optional[float]:
+    """자연어 금액 표현 → 만원 단위 float. **첫 번째 금액 표현**을 반환한다.
+
+    "1억"        → 10000
+    "1억 2천만원" → 12000   (한 표현)
+    "5,000만원"   → 5000
+    "50,000,000원" → 5000
+    "300만원"     → 300
+
+    ⚠️ 여러 금액이 있으면 합치지 않는다. 합치면 서로 다른 항목의 금액이
+       뒤섞인다 (위 parse_amount_expressions 주석 참조).
+       어느 금액이 어느 항목인지는 호출 측이 문맥으로 골라야 한다.
+
+    ⚠️ 단위가 전혀 없는 맨 숫자(예: "1500")는 **금액으로 해석하지 않는다.**
+       연금 도메인에서 맨 숫자는 연차·나이일 가능성이 높아 오해석 위험이 크다.
+    """
+    exprs = parse_amount_expressions(text)
+    return exprs[0][2] if exprs else None
 
 
 # ── 연령·연차·기간 파싱 ──────────────────────────────────────

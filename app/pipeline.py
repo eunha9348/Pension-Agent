@@ -329,12 +329,33 @@ def answer_question(question_id: str, question: str,
                                 legacy_checker=detect_legacy_tax_content)
 
     # ── L6 · 감독 이사회 ──────────────────────────────────────
+    #
+    # mentioned_products는 '검색된 상품 후보'가 아니라 **답변이 실제로 언급한
+    # 상품**이어야 한다. 적합성 감사가 "가입 불가 상품이 답변에 등장했는가"를
+    # 보기 때문이다. 검색 후보를 그대로 넘기면
+    #   · 가입자격(eligible) 정보가 없어 함정 D1 감사가 무력화되고
+    #   · 답변이 상품을 언급하지도 않았는데 '조건 미확인 상태의 상품 제시'로
+    #     오판해 등급이 강등된다.
+    mentioned = _products_in_answer(draft, candidates, conditions)
+
+    # 부분 답변이 가능한데 되묻기만 하고 있는지를 감사가 판단할 수 있게 한다
+    # (근거나 계산이 하나라도 확보된 상태면 부분 답변이 가능하다)
+    partial_possible = any(
+        s.status in (SlotStatus.COVERED, SlotStatus.CALC_DONE) for s in slots)
+
+    # 감사자에게 '무엇을 조심해서 볼지'를 준다. 이게 없으면 의미 감사가
+    # 모델 내부 지식에 의존하게 되는데, 이 도메인은 그걸 신뢰할 수 없다.
+    audit_context = "\n".join(
+        f"· {f['fact']}" for f in trap_context.get("facts", [])[:4])
+
     verify_grounding = make_verify_grounding(
         question=question, slots=slots,
-        llm_call=llm_call_adapter(client) if deadline.allows(BUDGET_L6) else None,
+        llm_call=(llm_call_adapter(client, audit_context)
+                  if deadline.allows(BUDGET_L6) else None),
         citations=citations, user_conditions=conditions,
         ask_back_items=ask_back_items, answerability=decision.value,
-        trap_ids=trap_context["detected"], mentioned_products=candidates)
+        trap_ids=trap_context["detected"], mentioned_products=mentioned,
+        partial_answer_possible=partial_possible)
 
     verdict = verify_grounding(draft, evidence)
     trace.log("L6_감독심사", verdict.as_trace() or "심사 완료")
@@ -361,7 +382,14 @@ def answer_question(question_id: str, question: str,
                 recheck = verify_grounding(revised, evidence)
                 if recheck:
                     draft = revised.strip()
-                    trace.log("L6_재생성_반영", "재생성 답변이 검증을 통과해 채택")
+                    # ⚠️ 판정도 함께 갱신해야 한다. 예전에는 옛 verdict를 그대로
+                    #    들고 있어서, 재생성이 수치 오류를 고쳤는데도 아래
+                    #    "수치검증 실패 → 템플릿 축퇴" 분기에 걸려 **성공한
+                    #    재생성 결과를 그대로 버렸다.**
+                    verdict = recheck
+                    supervision = recheck.supervision
+                    trace.log("L6_재생성_반영",
+                              "재생성 답변이 검증을 통과해 채택 (판정도 갱신)")
                 else:
                     trace.log("L6_재생성_기각",
                               "재생성 답변도 검증에 실패 → 보수적으로 원본 유지")
@@ -455,6 +483,32 @@ def _used_evidence(evidence: list[EvidenceChunk],
         if c.doc_id in used_ids:
             out.append({"doc_id": c.doc_id, "text": c.text,
                         "supports": used_ids[c.doc_id]})
+    return out
+
+
+def _products_in_answer(answer: str, candidates: list[dict],
+                        conditions: dict) -> list[dict]:
+    """답변이 실제로 언급한 상품만, 가입자격 판정을 붙여서 반환.
+
+    적합성 감사(audit_fitness)가 기대하는 형태는
+    `{"name": ..., "eligible": bool}` 이다. 검색 후보를 그대로 넘기면
+    eligible 키가 없어 '가입 불가 상품 언급' 감사가 통과해 버린다
+    (함정 D1 — 총보수 최저 클래스가 가입 불가인 경우).
+    """
+    if not answer or not candidates:
+        return []
+    account_type = conditions.get("account_type")
+    out: list[dict] = []
+    for c in candidates:
+        fund_class = c.get("fund_class", "")
+        if not fund_class or fund_class not in answer:
+            continue
+        entry = {**c, "name": c.get("name") or fund_class}
+        if account_type:
+            verdict = check_class_eligibility(fund_class, account_type)
+            entry["eligible"] = verdict["eligible"]
+            entry["reason"] = verdict["reason"]
+        out.append(entry)
     return out
 
 

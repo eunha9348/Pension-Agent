@@ -25,7 +25,8 @@ from typing import Any, Callable, Optional
 from app.core.coverage_pipeline import EvidenceChunk, RequirementSlot, SlotStatus
 from app.core.numeric_verifier import (verify_numeric_grounding,
                                        verify_source_disclosure)
-from app.core.supervisory_board import SupervisionResult, Verdict, supervise_hybrid
+from app.core.supervisory_board import (Finding, SupervisionResult, Verdict,
+                                        supervise, supervise_hybrid)
 
 
 class GroundingVerdict(int):
@@ -67,6 +68,7 @@ def make_verify_grounding(question: str,
                           answerability: str = "ANSWER",
                           trap_ids: Optional[list[str]] = None,
                           mentioned_products: Optional[list[dict]] = None,
+                          partial_answer_possible: bool = False,
                           skip_semantic: bool = False):
     """(answer, evidence) -> GroundingVerdict 시그니처의 함수를 만든다."""
 
@@ -79,22 +81,40 @@ def make_verify_grounding(question: str,
         numeric = verify_numeric_grounding(answer, calc_results, evidence_texts)
         disclosure = verify_source_disclosure(answer, calc_results)
 
-        # ── 2. 의미 감사 (결정론적 4대 감사 + HyperCLOVA X) ──
-        supervision: Optional[SupervisionResult] = None
-        if not skip_semantic and llm_call is not None:
+        # ── 2. 감독 (결정론적 4대 감사 + HyperCLOVA X 의미 감사) ──
+        #
+        # ⚠️ **결정론적 4대 감사는 LLM 가용성과 무관하게 언제나 돈다.**
+        #    예전에는 llm_call이 없으면 supervise_hybrid 자체를 건너뛰어
+        #    준법·이상치·적합성·부담 감사까지 통째로 사라졌다. 즉 예산이
+        #    빠듯하거나 LLM이 죽었을 때 — 감독이 가장 필요한 순간에 —
+        #    감독이 0이 됐다. 설계상 결정론적 계층이 1차 방어선이고
+        #    LLM 감사는 '보완'이므로, 둘의 의존 방향이 정반대였다.
+        det_kwargs = dict(
+            calc_results=calc_results,
+            citations=citations or [],
+            user_conditions=user_conditions or {},
+            mentioned_products=mentioned_products or [],
+            ask_back_items=ask_back_items or [],
+            answerability=answerability,
+            trap_ids=trap_ids or [],
+            partial_answer_possible=partial_answer_possible,
+        )
+
+        if llm_call is not None and not skip_semantic:
             supervision = supervise_hybrid(
-                answer=answer,
-                question=question,
-                llm_call=llm_call,
-                evidence_texts=evidence_texts,
-                calc_results=calc_results,
-                citations=citations or [],
-                user_conditions=user_conditions or {},
-                mentioned_products=mentioned_products or [],
-                ask_back_items=ask_back_items or [],
-                answerability=answerability,
-                trap_ids=trap_ids or [],
-            )
+                answer=answer, question=question, llm_call=llm_call,
+                evidence_texts=evidence_texts, **det_kwargs)
+        else:
+            supervision = supervise(answer, **det_kwargs)
+            # 감사자가 응답을 못 준 것과 '문제없음'은 다르다 —
+            # 의미 감사가 수행되지 않았다는 사실을 반드시 남긴다.
+            supervision.findings.append(Finding(
+                "의미감사", "NOT_RUN", supervision.verdict,
+                ("의미 감사를 수행하지 않음 — "
+                 + ("호출자가 생략을 지정" if skip_semantic
+                    else "LLM 호출 예산 없음")
+                 + " (결정론적 4대 감사만 적용됨)"),
+                ""))
 
         ok = bool(numeric.passed)
         if supervision is not None and supervision.verdict in (Verdict.REVISE,

@@ -139,20 +139,35 @@ _DOMAIN_BOUNDS = {
 }
 
 _RATE_KEYS = ("rate", "세율", "r_", "공제율", "감면")
-_AMOUNT_KEYS = ("한도", "세액", "금액", "limit", "tax", "T_", "A_", "P_", "C_")
+# ⚠️ "공제"·"급여"·"과세표준"이 없으면 '근속연수공제=5500'(만원)이 키에 '근속'이
+#    들어있다는 이유로 근속연수(0~60)로 분류돼 BLOCK된다. 실제로 doc52 원문
+#    예시와 일치하는 정답(5,500만원)이 감독에서 차단되는 오탐이 있었다.
+#    금액 판정을 연수 판정보다 먼저 하고, 금액 어휘를 넓힌다.
+_AMOUNT_KEYS = ("한도", "세액", "금액", "공제", "급여", "과세표준", "산출",
+                "limit", "tax", "T_", "A_", "P_", "C_")
+
+
+# 수치이긴 하나 범위 감사 대상이 아닌 키 (연도·식별자 등)
+_NON_METRIC_KEYS = {"tax_year", "year", "doc_id", "source", "rate_source"}
 
 
 def _classify_key(key: str) -> Optional[str]:
     k = key.lower()
+    if k in _NON_METRIC_KEYS:
+        # 과세연도(2024)를 금액이나 연차로 분류하면 엉뚱한 이상치가 잡힌다
+        return None
     if any(t in key or t in k for t in _RATE_KEYS):
         return "세율"
     if any(t in key or t in k for t in _AMOUNT_KEYS):
         return "금액"
-    if "연차" in key:
+    # 영문 키도 분류한다 — 계산함수가 pension_year 같은 이름을 쓰므로
+    # 한글 키만 보면 연차 이상치가 감사를 그대로 통과한다.
+    # ⚠️ 단, tax_year(과세연도)는 연차가 아니다. 이름을 명시적으로 나열한다.
+    if "연차" in key or k in ("pension_year", "actual_receipt_year"):
         return "연차"
     if "연령" in key or "age" in k:
         return "연령"
-    if "근속" in key:
+    if "근속" in key or k in ("service_years",):
         return "근속연수"
     return None
 

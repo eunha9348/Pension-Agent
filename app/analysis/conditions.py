@@ -13,9 +13,9 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from app.analysis.units import (parse_age, parse_amount_to_manwon,
-                                parse_pension_year, parse_rate,
-                                parse_service_years, won_to_manwon)
+from app.analysis.units import (parse_age, parse_amount_expressions,
+                                parse_amount_to_manwon, parse_pension_year,
+                                parse_rate, parse_service_years, won_to_manwon)
 
 # ── 계좌 유형 인식 ────────────────────────────────────────────
 _ACCOUNT_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
@@ -34,19 +34,44 @@ _LEGACY_JOIN_SIGNALS = ("2013년 이전", "2013.3.1 이전", "2013년 3월 이�
 _COMBINED_SIGNALS = ("합쳐", "합산", "합해", "다 합", "총합", "같이 넣", "둘 다 합")
 
 
-def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[float]:
-    """특정 키워드 주변(같은 절)에서 금액을 찾는다.
+# 키워드 뒤 몇 글자까지를 '그 키워드에 딸린 금액'으로 볼 것인가
+_NEAR_WINDOW = 25
 
-    "연금저축에 400만원, IRP에 300만원" 처럼 금액이 여럿일 때
-    어느 금액이 어느 계좌 것인지 구분하기 위한 국소 탐색.
+
+def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[float]:
+    """키워드에 **가장 가까운 금액 표현 하나**를 고른다.
+
+    ⚠️ 절 단위로 잘라 그 안의 금액을 합치면 안 된다. 실제로
+       "총급여 4000만원인데 연금저축에 600만원"이 4,600만원 하나로 합쳐져
+       연금저축 납입액이 4,600만원으로 잡히는 버그가 있었다
+       ("연금저축에 400만원 IRP에 300만원"은 양쪽 다 700만원이 됐다).
+
+    규칙: 키워드 **뒤쪽**에 있는 가장 가까운 금액을 우선한다
+    ("연금저축에 600만원" — 한국어는 수식어가 앞에 온다).
+    뒤쪽 창 안에 없으면 앞쪽에서 가장 가까운 것을 본다("600만원을 연금저축에").
     """
-    # ⚠️ 쉼표로 절을 나누되 "4,000만원"의 자릿수 구분 쉼표는 나누면 안 된다.
-    for clause in re.split(r'(?<!\d),(?!\d)|[·\n]| 그리고 | 및 ', question or ""):
-        if any(k in clause for k in keywords):
-            amt = parse_amount_to_manwon(clause)
-            if amt is not None:
-                return amt
-    return None
+    text = question or ""
+    exprs = parse_amount_expressions(text)
+    if not exprs:
+        return None
+
+    best: Optional[tuple[int, float]] = None      # (거리, 금액)
+    for kw in keywords:
+        for m in re.finditer(re.escape(kw), text):
+            kw_end = m.end()
+            for start, end, value in exprs:
+                if start >= kw_end:
+                    distance = start - kw_end
+                    if distance > _NEAR_WINDOW:
+                        continue
+                    rank = distance                     # 뒤쪽 우선
+                else:
+                    rank = _NEAR_WINDOW + (m.start() - end)  # 앞쪽은 후순위
+                    if m.start() - end > _NEAR_WINDOW:
+                        continue
+                if best is None or rank < best[0]:
+                    best = (rank, value)
+    return best[1] if best else None
 
 
 def derive_conditions(question: str,

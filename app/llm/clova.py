@@ -296,11 +296,28 @@ def get_client(force_reload: bool = False):
     return _CLIENT
 
 
-def llm_call_adapter(client=None):
-    """supervise_hybrid(llm_call=...)가 기대하는 (system, user) -> str 어댑터."""
+def llm_call_adapter(client=None, audit_context: str = ""):
+    """supervise_hybrid(llm_call=...)가 기대하는 (system, user) -> str 어댑터.
+
+    audit_context : 감사자에게 함께 줄 도메인 유의사항(감지된 함정 사실 등).
+
+    ━━ 왜 이 자리에서 붙이는가 ━━
+    L6의 의미 감사는 "수치는 맞는데 설명이 틀린 경우"(연금수령연차 ↔
+    연금실제수령연차 혼동 등)를 잡으라고 있는 계층이다. 그런데 감사자가
+    받는 페이로드에는 **어떤 혼동을 조심해야 하는지가 들어 있지 않았다.**
+    그러면 감사자는 자기 내부 지식에 의존하게 되는데, 이 도메인은 법 개정이
+    잦아 모델 내부 지식을 신뢰할 수 없다는 것이 이 설계의 출발점이다.
+    (그래서 L0 접지 계층을 따로 둔 것이다.)
+
+    감사자에게 주는 것은 **판정 기준**이지 근거 문서가 아니므로,
+    근거(evidence_texts)와 섞지 않고 별도 블록으로 붙인다.
+    """
     c = client or get_client()
 
     def _call(system: str, user: str) -> str:
-        return c.call(system, user, purpose="l6_semantic_audit", max_tokens=800)
+        payload = user
+        if audit_context:
+            payload = f"{user}\n\n[도메인 유의사항 — 이 관점에서도 점검할 것]\n{audit_context}"
+        return c.call(system, payload, purpose="l6_semantic_audit", max_tokens=800)
 
     return _call
