@@ -1,0 +1,12 @@
+# 빌드 컨텍스트를 가볍게 유지 + 실수로라도 민감 파일이 섞이는 걸 방지.
+# (.env는 Dockerfile이 COPY하지 않아 이미지에 안 들어가지만, 이중 방어.)
+.git/
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/index/
+data/corpus_mock/
+docs/
+*.md

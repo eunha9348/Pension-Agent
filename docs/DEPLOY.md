@@ -134,7 +134,121 @@ curl "http://localhost:8000/answer?question_id=Q-001&question=연금저축 세�
 
 ---
 
-## 5. NCP 서버 배포
+## 5. AWS EC2 + Docker 배포 (태블릿·공용PC 등 로컬 저장이 안 되는 환경)
+
+**핵심 아이디어**: 로컬 기기(태블릿/사지방 PC)에는 아무것도 설치·저장하지 않습니다.
+전부 **EC2 인스턴스 안에서** 진행하고, 접속은 브라우저 기반 **EC2 Instance
+Connect**로 합니다 — SSH 클라이언트 설치가 필요 없어 태블릿에서도 됩니다.
+로컬 기기를 로그아웃해도 EC2 인스턴스 자체는 계속 살아 있습니다.
+
+### 5-A-1. EC2 인스턴스 생성 (AWS 콘솔, 브라우저)
+
+- AMI: **Ubuntu 22.04/24.04 LTS** (또는 Amazon Linux 2023)
+- 인스턴스 타입: `t3.small` 이상 권장 (인덱스 빌드 + uvicorn 구동)
+- 보안 그룹(인바운드):
+
+| 포트 | 용도 | 소스 |
+|---|---|---|
+| 22 | SSH (Instance Connect가 사용) | 가능하면 내 IP로 제한 |
+| 80 | 평가 요청 수신 | 0.0.0.0/0 |
+
+- **아웃바운드는 기본값(전체 허용) 그대로 두십시오.** CLOVA 도메인과 Docker Hub에
+  나가야 합니다 — 이 개발 컨테이너에서 막혔던 제약은 EC2에는 없습니다.
+
+### 5-A-2. 브라우저로 접속
+
+콘솔 → EC2 → 인스턴스 선택 → **연결(Connect)** → **EC2 Instance Connect** 탭 →
+연결. 새 탭에 터미널이 뜹니다. 이후 전부 이 터미널 안에서 진행합니다.
+
+### 5-A-3. Docker 설치
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io git
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+newgrp docker              # 그룹 반영 (또는 재접속)
+```
+
+### 5-A-4. 코드 받기 + 키 입력
+
+```bash
+git clone https://github.com/eunha9348/Pension-Agent.git
+cd Pension-Agent
+git checkout claude/claude-implementation-plan-hpz25z
+
+cp .env.example .env
+nano .env          # CLOVA_API_KEY=발급받은키   ← 이 터미널은 EC2 안이라
+                    #   태블릿을 로그아웃해도 지워지지 않습니다
+```
+
+### 5-A-5. 실제 문서 넣기
+
+태블릿에는 파일을 저장 못 하므로, 문서를 EC2로 직접 들여오는 방법이 필요합니다.
+
+- **다운로드 링크가 있는 경우**: EC2 터미널에서 바로 받습니다
+  ```bash
+  mkdir -p data/corpus
+  wget -P data/corpus/ "<제공받은 다운로드 URL>"
+  ```
+- **파일만 있고 링크가 없는 경우**: AWS 콘솔의 **S3**에 브라우저로 업로드(드래그 앤
+  드롭)한 뒤, EC2에서 받습니다
+  ```bash
+  aws s3 cp s3://<버킷>/<파일> data/corpus/ --recursive
+  ```
+  (S3 접근 권한이 필요하면 EC2에 IAM 역할을 붙이거나 `aws configure`로 자격 증명 입력)
+
+넣은 뒤 반드시 확인:
+
+```bash
+python3 -m venv /tmp/chk && source /tmp/chk/bin/activate
+pip install -q -r requirements.txt
+python -m app.ingest.check_corpus     # 몇 글자 읽혔는지 확인
+deactivate
+```
+
+### 5-A-6. 키 테스트 (컨테이너를 세우기 전에 먼저)
+
+이미지를 한 번 빌드해 두면, 서버를 안 띄우고도 키만 빠르게 검증할 수 있습니다.
+
+```bash
+docker build -t pension-agent .
+docker run --rm --env-file .env pension-agent python -m app.llm.smoke_test
+```
+
+401/403이면 키·헤더 형식(2절 참고), 404면 `CLOVA_ENDPOINT` 경로를 확인하십시오.
+
+### 5-A-7. 서버 구동 (재부팅에도 살아남게)
+
+```bash
+docker run -d --name pension-agent --restart=always \
+  -p 80:8000 --env-file .env \
+  pension-agent
+```
+
+`--restart=always`가 있으면 EC2가 재부팅돼도 컨테이너가 자동으로 다시 뜹니다.
+태블릿 창을 닫아도 상관없습니다 — 컨테이너는 EC2 안에서 독립적으로 돌아갑니다.
+
+### 5-A-8. 확인
+
+```bash
+curl -s http://localhost/health | python3 -m json.tool
+docker logs pension-agent --tail 30
+```
+
+외부에서: `http://<EC2 퍼블릭 IP>/health`
+
+문서를 나중에 추가하면 이미지를 다시 빌드해야 합니다:
+
+```bash
+docker stop pension-agent && docker rm pension-agent
+docker build -t pension-agent .        # data/corpus 최신 내용으로 인덱스 재생성
+docker run -d --name pension-agent --restart=always -p 80:8000 --env-file .env pension-agent
+```
+
+---
+
+## 5-B. NCP 서버 배포 (참고 — VM 직접 구동 방식)
 
 ### 5-1. 어떤 환경을 쓸 것인가
 
