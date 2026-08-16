@@ -207,44 +207,81 @@ python -m app.ingest.check_corpus     # 몇 글자 읽혔는지 확인
 deactivate
 ```
 
-### 5-A-6. 키 테스트 (컨테이너를 세우기 전에 먼저)
+### 5-A-6. docker compose로 구동
 
-이미지를 한 번 빌드해 두면, 서버를 안 띄우고도 키만 빠르게 검증할 수 있습니다.
-
-```bash
-docker build -t pension-agent .
-docker run --rm --env-file .env pension-agent python -m app.llm.smoke_test
-```
-
-401/403이면 키·헤더 형식(2절 참고), 404면 `CLOVA_ENDPOINT` 경로를 확인하십시오.
-
-### 5-A-7. 서버 구동 (재부팅에도 살아남게)
+`docker-compose.yml`이 준비돼 있습니다. 명령 세 개면 끝납니다.
 
 ```bash
-docker run -d --name pension-agent --restart=always \
-  -p 80:8000 --env-file .env \
-  pension-agent
+# ① 키가 통하는지 먼저 확인 (서버를 띄우기 전에)
+docker compose --profile tools run --rm smoke
+
+# ② 넣은 문서가 실제로 읽히는지 확인
+docker compose --profile tools run --rm check
+
+# ③ 서버 구동
+docker compose up -d --build
 ```
 
-`--restart=always`가 있으면 EC2가 재부팅돼도 컨테이너가 자동으로 다시 뜹니다.
-태블릿 창을 닫아도 상관없습니다 — 컨테이너는 EC2 안에서 독립적으로 돌아갑니다.
+`①`이 실패하면 401/403은 키·헤더 형식(2절), 404는 `CLOVA_ENDPOINT` 경로 문제입니다.
+`②`에서 "텍스트 0자"가 나오는 파일은 스캔본이라 OCR 결과가 따로 필요합니다.
+
+### 5-A-7. 구조 — 무엇이 어디에 있는가
+
+| 항목 | 위치 | 이유 |
+|---|---|---|
+| API 키 | 호스트 `.env` → `env_file`로 주입 | 이미지·저장소에 남지 않음 |
+| 제공 문서 | 호스트 `./data/corpus` → 읽기 전용 마운트 | 문서를 바꿔도 **이미지 재빌드 불필요** |
+| 검색 인덱스 | 호스트 `./data/index` → 마운트 | 재시작 시 재사용, 내용 직접 확인 가능 |
+
+**인덱스는 컨테이너가 뜰 때 만들어집니다**(이미 있으면 재사용).
+이미지에 굽지 않습니다 — 이미지 안에는 문서가 없어서, 빌드 시점에 인덱스를
+만들면 **mock 문서를 생성해 구워버리기** 때문입니다.
+
+안전장치 두 개가 들어 있습니다:
+
+- 코퍼스가 비어 있으면 **mock 인덱스를 만들지 않습니다.** 인덱스 없이 뜨고,
+  모든 질의를 "근거 문서 없음"으로 거절합니다 (지어낸 근거로 답하는 것보다 낫습니다)
+- 기존 인덱스가 mock으로 만들어졌는데 실제 문서가 들어와 있으면,
+  **자동으로 다시 만듭니다** (개발용 mock 인덱스가 남아 실물을 가리는 사고 방지)
 
 ### 5-A-8. 확인
 
 ```bash
 curl -s http://localhost/health | python3 -m json.tool
-docker logs pension-agent --tail 30
+docker compose logs -f          # 기동 로그 (mock 경고가 있는지 확인)
 ```
 
 외부에서: `http://<EC2 퍼블릭 IP>/health`
 
-문서를 나중에 추가하면 이미지를 다시 빌드해야 합니다:
+### 5-A-9. 문서를 나중에 추가·교체할 때
+
+이미지를 다시 빌드할 필요가 없습니다.
 
 ```bash
-docker stop pension-agent && docker rm pension-agent
-docker build -t pension-agent .        # data/corpus 최신 내용으로 인덱스 재생성
-docker run -d --name pension-agent --restart=always -p 80:8000 --env-file .env pension-agent
+# 호스트의 ./data/corpus/ 에 파일을 넣거나 바꾼 뒤
+docker compose --profile tools run --rm reindex   # 인덱스만 다시 생성
+docker compose restart                            # 서버가 새 인덱스를 읽게
 ```
+
+코드를 바꿨을 때만 재빌드합니다:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+### 5-A-10. 자주 쓰는 명령
+
+| 목적 | 명령 |
+|---|---|
+| 시작 | `docker compose up -d` |
+| 중지 | `docker compose down` |
+| 로그 | `docker compose logs -f` |
+| 재시작 | `docker compose restart` |
+| 키 검증 | `docker compose --profile tools run --rm smoke` |
+| 문서 점검 | `docker compose --profile tools run --rm check` |
+| 인덱스 재생성 | `docker compose --profile tools run --rm reindex` |
+| 다른 포트로 | `HOST_PORT=8080 docker compose up -d` |
 
 ---
 

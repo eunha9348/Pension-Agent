@@ -31,12 +31,20 @@ curl "http://localhost:8000/answer?question_id=Q-001&question=연금저축과 IR
 응답은 항상 5필드 JSON입니다 — `question_id`, `question`, `retrieved_context`,
 `think_trace`, `answer`. 내부에서 어떤 예외가 나도 이 스키마는 깨지지 않습니다.
 
-### Docker
+### Docker (권장)
 
 ```bash
-docker build -t pension-agent .
-docker run --rm -p 8000:8000 --env-file .env pension-agent
+cp .env.example .env                              # CLOVA_API_KEY 입력
+mkdir -p data/corpus && cp <제공 문서> data/corpus/
+
+docker compose --profile tools run --rm smoke     # ① 키 검증
+docker compose --profile tools run --rm check     # ② 문서 판독 확인
+docker compose up -d --build                      # ③ 구동
 ```
+
+문서는 볼륨으로 마운트되므로, 문서를 바꿔도 이미지를 다시 빌드할 필요가 없습니다
+(`... run --rm reindex` 후 `docker compose restart`).
+자세한 내용은 [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ### 테스트
 
