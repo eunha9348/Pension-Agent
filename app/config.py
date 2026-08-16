@@ -74,7 +74,7 @@ def get_settings() -> Settings:
         clova_request_id=os.environ.get("CLOVA_REQUEST_ID", "").strip(),
         clova_endpoint=os.environ.get(
             "CLOVA_ENDPOINT",
-            "https://clovastudio.stream.ntruss.com/testapp/v1/chat-completions/HCX-005",
+            "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005",
         ).strip(),
         llm_mode=os.environ.get("LLM_MODE", "auto").strip().lower(),
         clova_timeout_sec=_float("CLOVA_TIMEOUT_SEC", 8.0),

@@ -48,13 +48,21 @@ python -m pytest -q
 
 ## 2. CLOVA API 키 넣는 자리 (단 한 곳)
 
+> **키는 GitHub에 올리지 않습니다.** `.env`는 `.gitignore`에 있어 추적되지 않고,
+> 저장소에는 값이 빈 `.env.example`만 있습니다. 키는 **서버에서 직접** 넣습니다.
+
 `.env` 파일의 `CLOVA_API_KEY` **한 곳만** 채우면 됩니다.
 
 ```
 CLOVA_API_KEY=<여기에 발급받은 키>
-CLOVA_ENDPOINT=https://clovastudio.stream.ntruss.com/testapp/v1/chat-completions/HCX-005
+CLOVA_ENDPOINT=https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005
 LLM_MODE=auto
 ```
+
+엔드포인트는 v3가 기본값입니다. v1(`/testapp/v1/...`)을 쓰면 요청 파라미터
+이름이 다른데, **코드가 URL을 보고 자동으로 맞춥니다** — 경로만 바꾸면 됩니다.
+
+배포(로컬·NCP 서버·Docker) 전체 절차는 **[docs/DEPLOY.md](docs/DEPLOY.md)** 참고.
 
 - `LLM_MODE=auto`(기본) — 키가 있으면 실제 호출, 없으면 자동으로 mock
 - 키를 넣은 뒤 **가장 먼저** 스모크 테스트로 응답 형식과 지연시간을 측정하세요:

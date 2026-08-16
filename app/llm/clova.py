@@ -122,11 +122,18 @@ class ClovaClient:
                     raise ClovaError(f"CLOVA status {status_code}: "
                                      f"{(data.get('status') or {}).get('message')}")
                 result = data.get("result") or {}
-                USAGE.record(purpose,
-                             result.get("inputLength", 0),
-                             result.get("outputLength", 0))
+                # 토큰 사용량 키는 버전에 따라 다르다
+                # (v1: inputLength/outputLength · v3: usage.promptTokens 등)
+                usage = result.get("usage") or {}
+                in_tok = (result.get("inputLength")
+                          or usage.get("promptTokens")
+                          or usage.get("inputTokens") or 0)
+                out_tok = (result.get("outputLength")
+                           or usage.get("completionTokens")
+                           or usage.get("outputTokens") or 0)
+                USAGE.record(purpose, in_tok, out_tok)
                 log.info("[clova] %s ok %dms in=%s out=%s", purpose, elapsed,
-                         result.get("inputLength"), result.get("outputLength"))
+                         in_tok, out_tok)
                 return result
             except Exception as e:  # noqa: BLE001 — 재시도 후 그대로 올린다
                 last_err = e
@@ -135,6 +142,38 @@ class ClovaClient:
         raise ClovaError(f"{purpose} 호출 실패: {last_err}")
 
     # ── 공개 인터페이스 ──────────────────────────────────────
+    @property
+    def is_v3(self) -> bool:
+        """엔드포인트가 v3인지. 버전에 따라 요청 파라미터 이름이 다르다.
+
+        v3 : /v3/chat-completions/{model}   — repetitionPenalty · stop
+        v1 : /testapp/v1/chat-completions/{model} — repeatPenalty · stopBefore
+                                                    · includeAiFilters
+        이름을 틀리면 400이 나거나 파라미터가 조용히 무시된다.
+        """
+        return "/v3/" in self.endpoint
+
+    def _common_params(self, max_tokens: int, temperature: float, kw: dict) -> dict:
+        if self.is_v3:
+            return {
+                "topP": kw.get("top_p", 0.8),
+                "topK": kw.get("top_k", 0),
+                "maxTokens": max_tokens,
+                "temperature": temperature,
+                "repetitionPenalty": kw.get("repeat_penalty", 1.1),
+                "stop": kw.get("stop", []),
+            }
+        return {
+            "topP": kw.get("top_p", 0.8),
+            "topK": kw.get("top_k", 0),
+            "maxTokens": max_tokens,
+            "temperature": temperature,
+            "repeatPenalty": kw.get("repeat_penalty", 1.1),
+            "stopBefore": kw.get("stop", []),
+            "includeAiFilters": True,
+            "seed": kw.get("seed", 0),      # 재현성 — 채점 리허설 시 유용
+        }
+
     def call(self, system: str, user: str, purpose: str = "generic",
              max_tokens: int = 1200, temperature: float = 0.1,
              **kw) -> str:
@@ -144,14 +183,7 @@ class ClovaClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "topP": kw.get("top_p", 0.8),
-            "topK": kw.get("top_k", 0),
-            "maxTokens": max_tokens,
-            "temperature": temperature,
-            "repeatPenalty": kw.get("repeat_penalty", 1.1),
-            "stopBefore": kw.get("stop_before", []),
-            "includeAiFilters": True,
-            "seed": kw.get("seed", 0),   # 재현성 — 채점 리허설 시 유용
+            **self._common_params(max_tokens, temperature, kw),
         }
         result = self._post(body, purpose)
         message = result.get("message") or {}
@@ -165,9 +197,13 @@ class ClovaClient:
         ⚠️ Function calling / Structured Outputs / Thinking은 동시 사용 불가.
            이 메서드는 tools만 지정한다.
 
+        ⚠️ CLOVA Studio 문서상 **tool calling은 maxTokens가 1024보다 커야**
+           동작한다. 기본값을 1200으로 둔 이유이며, 낮추지 말 것.
+
         반환: {"arguments": dict | None, "name": str | None, "raw": str}
               모델이 함수를 부르지 않고 텍스트만 반환한 경우 arguments=None.
         """
+        max_tokens = max(max_tokens, 1100)      # tool calling 최소 요건 보장
         body = {
             "messages": [
                 {"role": "system", "content": system},
@@ -175,9 +211,7 @@ class ClovaClient:
             ],
             "tools": tools,
             "toolChoice": "auto",
-            "maxTokens": max_tokens,
-            "temperature": 0.0,      # 분석 단계는 흔들리면 안 된다
-            "seed": 0,
+            **self._common_params(max_tokens, 0.0, {}),   # 분석은 흔들리면 안 된다
         }
         result = self._post(body, purpose)
         message = result.get("message") or {}
