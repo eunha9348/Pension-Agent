@@ -117,17 +117,41 @@ PostgreSQL(pgvector/tsvector)로 전환하려면 `sql/schema.sql`로 초기화�
 
 ## 5. 문서 인제스트
 
-제공 문서는 **PDF가 아니라 페이지별 JPEG + OCR 텍스트가 담긴 zip**입니다.
+제공 문서의 기본 형태는 **PDF가 아니라 페이지별 JPEG + OCR 텍스트가 담긴 zip**입니다.
 일반 PDF 라이브러리로 열면 안 됩니다 — `zipfile`로 구조를 먼저 확인합니다.
 
+### 실제 문서를 넣는 순서
+
 ```bash
-python -m app.ingest.inspect_zip data/corpus/doc39.zip   # 구조만 덤프
-python -m app.ingest.build_index                          # 전체 인제스트
+mkdir -p data/corpus
+cp <제공받은 파일들> data/corpus/          # 하위 디렉터리 그대로 넣어도 됩니다
+
+python -m app.ingest.check_corpus          # ① 무엇이 읽히는지 먼저 확인 (필수)
+python -m app.ingest.build_index           # ② 인덱스 생성
 ```
 
-실제 문서를 받으면 `data/corpus/`에 zip을 그대로 넣고 재빌드하면 됩니다.
-현재는 구조를 흉내낸 **mock zip**(`python -m app.ingest.make_mock_corpus`)으로
-파서를 검증한 상태입니다.
+**`check_corpus`를 건너뛰지 마십시오.** 파일을 넣었다는 것과 그 내용이
+검색된다는 것은 다릅니다. 스캔본 PDF처럼 텍스트 레이어가 없는 파일은
+넣어도 0자로 읽히고, 그 상태로 평가를 받으면 근거 없이 거절만 하게 됩니다.
+
+`data/corpus/`에 파일이 하나라도 있으면 **mock 코퍼스는 절대 사용되지 않습니다.**
+판독 가능한 파일이 하나도 없으면 인덱스를 만들지 않고 실패합니다
+(지어낸 문서로 답변하는 사고를 막기 위해서입니다).
+
+### 형식별 지원
+
+| 형식 | 지원 | 비고 |
+|---|---|---|
+| `.zip` (JPEG+OCR) | ✅ | 레이아웃 4종 자동 인식 |
+| `.txt` `.md` `.csv` `.tsv` `.json` `.html` | ✅ | 표준 라이브러리만 사용 |
+| `.xlsx` | ✅ | `openpyxl` 필요 (requirements에 포함) |
+| `.pdf` | ✅ | `pypdf` 필요. **스캔본은 텍스트가 없어 OCR 결과가 별도로 필요** |
+| `.hwp` `.docx` `.pptx` | ❌ | PDF/텍스트로 변환 후 넣으십시오 |
+
+판독하지 못한 파일은 조용히 넘어가지 않고 빌드 로그와 `GET /health`의
+`corpus.skipped_files`에 남습니다.
+
+개발용 mock 코퍼스는 `python -m app.ingest.make_mock_corpus`로 만듭니다.
 
 ---
 

@@ -57,6 +57,55 @@ REQUIRE_ANY: dict[str, tuple[tuple[str, ...], str]] = {
 }
 
 
+# ── 인자 값 범위 검증 ──────────────────────────────────────────
+#
+# ⚠️ 왜 필요한가: 계산함수는 순수함수라 값을 검증하지 않는다. 그래서
+#    "연금수령 0년차"(존재하지 않는 연차)나 음수 나이가 그대로 들어가
+#    그럴듯한 숫자를 뱉는다. 실제로 0년차 → 한도 1,090만원, 나이 -5세 →
+#    기타소득세 16.5%가 계산됐다. **틀린 숫자를 내느니 되묻는 게 낫다.**
+#
+#    검증은 계산함수(검증 완료 모듈)가 아니라 이 경계층에서 한다.
+_VALID: dict[str, tuple] = {
+    # 인자명: (하한, 상한, 되물을 문구)
+    "pension_year": (1, 60, "연금수령연차 (연금개시 가능한 해가 1년차입니다)"),
+    "actual_receipt_year": (1, 60, "연금실제수령연차 (실제로 인출한 해 기준)"),
+    "years_elapsed": (0, 60, "연금개시 가능 시점 이후 경과 연수"),
+    "Age": (1, 120, "연금 수령 시점의 나이"),
+    "service_years": (1, 60, "근속연수"),
+    "account_value": (0, None, "연금계좌 평가액"),
+    "severance_pay": (0, None, "퇴직급여 총액"),
+    "X_pension_saving": (0, None, "연금저축 납입액"),
+    "Y_irp_personal": (0, None, "IRP 개인부담금"),
+    "P_private_monthly": (0, None, "월 연금수령액"),
+    "P_private_pension_annual": (0, None, "연간 사적연금 수령액"),
+    "P_np_annual": (0, None, "국민연금 연 수령액"),
+    "I_monthly": (0, None, "월 기준소득월액"),
+    "I_final_monthly": (0, None, "가입기간 평균 기준소득월액"),
+    "rate": (0, 1, "세율 (0~100% 범위)"),
+    "r_tax_credit": (0, 1, "세액공제율"),
+    "r_irr": (0, 1, "소득대체율"),
+    "N": (0, 20, "전체 자녀 수"),
+    "N0": (0, 20, "2007.12.31 이전 출생 자녀 수"),
+    "N1": (0, 20, "2008.1.1~2025.12.31 출생 자녀 수"),
+    "N2": (0, 20, "2026.1.1 이후 출생 자녀 수"),
+}
+
+
+def validate_param(name: str, value: Any) -> Optional[str]:
+    """범위를 벗어나면 되물을 문구를 반환. 정상이면 None."""
+    rule = _VALID.get(name)
+    if rule is None or value is None or isinstance(value, bool):
+        return None
+    if not isinstance(value, (int, float)):
+        return None
+    low, high, ask = rule
+    if low is not None and value < low:
+        return ask
+    if high is not None and value > high:
+        return ask
+    return None
+
+
 @dataclass
 class ParamSpec:
     """계산함수 인자 하나의 조달 방법."""
@@ -303,6 +352,12 @@ class CalcParamsBuilder:
             value = spec.resolve(self.conditions)
 
             if value is not None:
+                # 범위를 벗어난 값으로 계산하면 '그럴듯하지만 틀린 숫자'가 나온다.
+                # 값이 없는 것과 똑같이 취급해 되묻는다.
+                if (bad := validate_param(spec.name, value)) is not None:
+                    missing.append(spec.name)
+                    asks.append(bad)
+                    continue
                 params[spec.name] = value
                 continue
 

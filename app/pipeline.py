@@ -127,14 +127,18 @@ def _exploit(evidence: list[EvidenceChunk], query_spec: dict,
                         "현행 기준 문서만 근거로 사용했습니다")
 
     # ── 2. 엔티티 충돌 (+ 점수 임계값) ──
-    before = len(kept)
+    # ⚠️ 폴백 대상은 반드시 '구법 필터를 통과한' after_legacy 여야 한다.
+    #    원본 evidence로 되돌리면, 세제 질의에서 방금 제외한 구법 문서가
+    #    그대로 되살아난다(함정 C5 재발). 완화해도 되는 건 점수 임계값뿐이고,
+    #    구법 제외는 완화 대상이 아니다.
+    after_legacy = list(kept)
     kept = filter_irrelevant_evidence(kept, query_spec, trace=trace)
-    if not kept and before:
-        # 전부 걸러지면 답변 자체가 불가능해진다 — 임계값을 낮춰 한 번 더
+    if not kept and after_legacy:
         kept = filter_irrelevant_evidence(
-            evidence, query_spec, score_threshold=0.0, trace=None)[:3]
+            after_legacy, query_spec, score_threshold=0.0, trace=None)[:3]
         trace.log("L4_필터_완화",
-                  "필터 후 근거가 0건이 되어 점수 임계값을 낮춰 상위 3건만 유지")
+                  "필터 후 근거가 0건이 되어 점수 임계값만 낮춰 상위 3건 유지 "
+                  "(구법 제외는 유지)")
 
     # ── 3. 가입자격 ──
     fund_class = conditions.get("fund_class")
@@ -516,6 +520,10 @@ def health_info() -> dict:
             "kind": store.corpus_kind,
             "documents": len(store.docs),
             "chunks": len(store.chunks),
+            # 판독 실패한 파일을 여기 드러낸다 — "넣었는데 검색이 안 된다"의
+            # 원인이 대부분 여기 있고, 로그를 안 보면 알 수 없기 때문
+            "skipped_files": store.skipped_files[:10],
+            "skipped_count": len(store.skipped_files),
             "warning": ("⚠️ mock 코퍼스 — 실제 제공 문서가 아닙니다"
                         if store.corpus_kind == "mock" else ""),
         },

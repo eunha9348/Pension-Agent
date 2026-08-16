@@ -50,6 +50,7 @@ class DocumentStore:
     docs: dict[str, dict] = field(default_factory=dict)
     bm25: BM25Index = field(default_factory=BM25Index)
     corpus_kind: str = "unknown"       # "real" | "mock" | "empty"
+    skipped_files: list[str] = field(default_factory=list)  # 판독 실패 목록
 
     # ── 조회 ────────────────────────────────────────────────
     @property
@@ -89,7 +90,8 @@ class DocumentStore:
             {cid: c.__dict__ for cid, c in self.chunks.items()},
             ensure_ascii=False), encoding="utf-8")
         (d / "docs.json").write_text(json.dumps(
-            {"corpus_kind": self.corpus_kind, "docs": self.docs},
+            {"corpus_kind": self.corpus_kind, "docs": self.docs,
+             "skipped_files": self.skipped_files},
             ensure_ascii=False, indent=1), encoding="utf-8")
         (d / "bm25.json").write_text(json.dumps(
             self.bm25.to_dict(), ensure_ascii=False), encoding="utf-8")
@@ -109,6 +111,7 @@ class DocumentStore:
         docs_blob = json.loads((d / "docs.json").read_text(encoding="utf-8"))
         store.docs = docs_blob.get("docs", {})
         store.corpus_kind = docs_blob.get("corpus_kind", "unknown")
+        store.skipped_files = docs_blob.get("skipped_files", [])
 
         store.bm25 = BM25Index.from_dict(
             json.loads((d / "bm25.json").read_text(encoding="utf-8")))
