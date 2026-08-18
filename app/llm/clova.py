@@ -87,17 +87,47 @@ class ClovaClient:
         self.endpoint = self.s.clova_endpoint
         self.timeout = self.s.clova_timeout_sec
         self.max_retry = self.s.clova_max_retry
+        # v3 엔드포인트는 Bearer(nv-*) 키만 받는다. 구형 콘솔 키
+        # (X-NCP-CLOVASTUDIO-API-KEY 방식, 'nv-'로 시작하지 않음)로
+        # v3 URL을 치면 헤더를 아무리 맞춰도 40104(Invalid Key)로 거절된다.
+        # 401을 받은 뒤에야 이걸 깨닫게 하지 않기 위해 기동 시점에 미리 막는다.
+        if not self._is_new_style_key and "/v3/" in self.endpoint:
+            raise ClovaError(
+                "CLOVA_API_KEY가 'nv-'로 시작하지 않는 구형 콘솔 키입니다. "
+                "이 키는 v3 엔드포인트(Bearer 인증 전용)에서 쓸 수 없습니다. "
+                "CLOVA Studio 콘솔에서 해당 테스트앱/서비스앱의 실제 호출 URL"
+                "(예: .../testapp/v1/chat-completions/<앱ID> 또는 "
+                ".../serviceapp/v1/chat-completions/<앱ID>)을 CLOVA_ENDPOINT에 "
+                "넣으십시오. 콘솔에 'API Gateway Key'가 별도로 있다면 "
+                "CLOVA_APIGW_KEY에도 넣으십시오."
+            )
 
     # ── 내부 ────────────────────────────────────────────────
+    @property
+    def _is_new_style_key(self) -> bool:
+        """신형(Bearer, nv-*) 키인지. 아니면 구형 3-헤더 방식으로 간주한다."""
+        return self.s.clova_api_key.startswith("nv-")
+
     def _headers(self) -> dict[str, str]:
-        h = {
-            # CLOVA Studio 신규 인증(Bearer). 구형 콘솔 키를 쓰는 경우
-            # X-NCP-CLOVASTUDIO-API-KEY 헤더로 바꿔야 할 수 있다 —
-            # 스모크 테스트에서 401이 나오면 이 부분을 먼저 확인할 것.
-            "Authorization": f"Bearer {self.s.clova_api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        key = self.s.clova_api_key
+        if self._is_new_style_key:
+            h = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+        else:
+            # 구형 콘솔 키 — Bearer가 아니라 전용 헤더로 인증한다.
+            # 테스트앱/서비스앱 생성 시 발급되는 API Key(+ API Gateway Key)가
+            # 이 형식이며, 'ncp'류 접두라 자칭 IAM 키로 오인하기 쉽지만
+            # 실제로는 CLOVA Studio 자체 헤더 인증이다.
+            h = {
+                "X-NCP-CLOVASTUDIO-API-KEY": key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+            if self.s.clova_apigw_key:
+                h["X-NCP-APIGW-API-KEY"] = self.s.clova_apigw_key
         if self.s.clova_request_id:
             h["X-NCP-CLOVASTUDIO-REQUEST-ID"] = self.s.clova_request_id
         return h

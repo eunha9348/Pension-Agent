@@ -8,8 +8,13 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.config import Settings
-from app.llm.clova import MockClovaClient, _loads_lenient, llm_call_adapter
+from app.llm.clova import ClovaClient, ClovaError, MockClovaClient, _loads_lenient, llm_call_adapter
+
+V3_ENDPOINT = "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005"
+V1_ENDPOINT = "https://clovastudio.stream.ntruss.com/testapp/v1/chat-completions/abc123"
 
 
 def test_mock_은_감사_호출에_APPROVE_JSON을_준다():
@@ -50,3 +55,44 @@ def test_json_회수_파서():
     assert _loads_lenient('```json\n{"a":1}\n```') == {"a": 1}
     assert _loads_lenient('설명입니다 {"a": 2} 끝') == {"a": 2}
     assert _loads_lenient("완전 텍스트") is None
+
+
+# ── 인증 방식 자동 판별 (nv-* Bearer vs 구형 3-헤더) ─────────────
+
+def test_nv_접두_키는_v3에서_Bearer_헤더를_쓴다():
+    c = ClovaClient(Settings(clova_api_key="nv-abc123", clova_endpoint=V3_ENDPOINT))
+    h = c._headers()
+    assert h["Authorization"] == "Bearer nv-abc123"
+    assert "X-NCP-CLOVASTUDIO-API-KEY" not in h
+
+
+def test_구형_키는_v1_엔드포인트에서_전용_헤더를_쓴다():
+    c = ClovaClient(Settings(clova_api_key="ncpXYZ", clova_endpoint=V1_ENDPOINT))
+    h = c._headers()
+    assert h["X-NCP-CLOVASTUDIO-API-KEY"] == "ncpXYZ"
+    assert "Authorization" not in h
+
+
+def test_구형_키에_APIGW_키가_있으면_함께_실린다():
+    c = ClovaClient(Settings(clova_api_key="ncpXYZ", clova_apigw_key="gw-999",
+                              clova_endpoint=V1_ENDPOINT))
+    h = c._headers()
+    assert h["X-NCP-APIGW-API-KEY"] == "gw-999"
+
+
+def test_구형_키에_APIGW_키가_없으면_헤더도_없다():
+    c = ClovaClient(Settings(clova_api_key="ncpXYZ", clova_endpoint=V1_ENDPOINT))
+    h = c._headers()
+    assert "X-NCP-APIGW-API-KEY" not in h
+
+
+def test_구형_키로_v3_엔드포인트를_쓰면_기동_시점에_거절한다():
+    """v3는 Bearer(nv-*) 전용이라, 구형 키로는 헤더를 어떻게 맞춰도 401이 난다.
+    401을 받고 나서야 알아채지 않도록 생성 시점에 바로 막아야 한다."""
+    with pytest.raises(ClovaError, match="nv-"):
+        ClovaClient(Settings(clova_api_key="ncpXYZ", clova_endpoint=V3_ENDPOINT))
+
+
+def test_nv_키는_v1_엔드포인트에서도_문제없이_생성된다():
+    c = ClovaClient(Settings(clova_api_key="nv-abc123", clova_endpoint=V1_ENDPOINT))
+    assert c._headers()["Authorization"] == "Bearer nv-abc123"

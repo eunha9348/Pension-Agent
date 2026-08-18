@@ -6,6 +6,35 @@
 
 ---
 
+## 0-AA. 실배포 중 발견 — CLOVA 키 형식 2종 미지원 (2026-08-18)
+
+실물 코퍼스(158문서)로 재색인 후 첫 실배포 질의에서 L1·L5'·L6 세 LLM 호출이
+전부 `HTTP 401 "Invalid Key - Please use new API Key that starts with 'nv-*'"`로
+실패. 원인: `app/llm/clova.py`의 `_headers()`가 신형 `nv-` Bearer 인증만
+구현하고 있었는데, 실제 발급받은 키는 `nv-`가 아닌 구형 콘솔 키 형식이었음.
+
+CLOVA Studio 키는 발급 시기에 따라 두 형식이 있고 서로 호환되지 않는다:
+
+| 형식 | 인증 방식 | 엔드포인트 |
+|---|---|---|
+| `nv-` 접두 (신형) | `Authorization: Bearer` | v3 |
+| 그 외 (구형) | `X-NCP-CLOVASTUDIO-API-KEY` 헤더 (+선택 `X-NCP-APIGW-API-KEY`) | v1 (해당 앱의 실제 URL) |
+
+**수정**: `ClovaClient`가 키 접두사(`nv-` 여부)를 보고 인증 헤더를 자동
+판별하도록 함. 구형 키인데 엔드포인트가 여전히 `/v3/`이면(이 조합은 헤더를
+아무리 맞춰도 401이 남) **클라이언트 생성 시점에 즉시 에러**로 막아 401을
+받고 나서야 원인을 찾는 일을 방지. `.env.example`·`README.md`·
+`docs/DEPLOY.md`에 두 형식의 설정 예시를 모두 추가하고,
+`CLOVA_APIGW_KEY` 환경변수(구형 키에 동봉되는 API Gateway Key용, 선택)를
+새로 뒀다. 회귀 테스트 6건 추가(`tests/test_llm_client.py`).
+
+⚠️ **아직 실제 CLOVA Studio 서버로 검증 전** — 구형 헤더 스킴은 개발 컨테이너의
+네트워크 차단으로 실호출 테스트를 못 했다. 배포 서버에서 `.env`의
+`CLOVA_ENDPOINT`를 콘솔에 표시된 해당 앱의 실제 URL로 맞춘 뒤
+`python -m app.llm.smoke_test`로 반드시 재확인할 것.
+
+---
+
 ## 0-Z. 설계 대조 감사 (3차) — 결함 7건 발견·수정
 
 "설계대로 안 된 부분"과 "HyperCLOVA X가 감독을 제대로 할 수 있는가"를 대조한 결과.

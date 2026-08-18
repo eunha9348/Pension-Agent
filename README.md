@@ -70,6 +70,24 @@ LLM_MODE=auto
 엔드포인트는 v3가 기본값입니다. v1(`/testapp/v1/...`)을 쓰면 요청 파라미터
 이름이 다른데, **코드가 URL을 보고 자동으로 맞춥니다** — 경로만 바꾸면 됩니다.
 
+### 키가 두 종류입니다 — `nv-`로 시작하지 않으면 엔드포인트도 바꿔야 합니다
+
+CLOVA Studio 키는 발급 시기/방식에 따라 형식이 다릅니다.
+
+| 키 형식 | 인증 방식 | 쓸 수 있는 엔드포인트 |
+|---|---|---|
+| `nv-`로 시작 | `Authorization: Bearer` | v3 (`/v3/chat-completions/HCX-005`) |
+| 그 외 (구형 콘솔 키) | `X-NCP-CLOVASTUDIO-API-KEY` 헤더 | v1 — 콘솔에서 발급받은 **그 테스트앱/서비스앱의 실제 호출 URL** (`/testapp/v1/...` 또는 `/serviceapp/v1/...`) |
+
+`app/llm/clova.py`가 키 접두사를 보고 인증 헤더를 자동으로 고릅니다 — 코드를
+고칠 필요는 없습니다. 다만 **엔드포인트는 자동으로 못 바꿔줍니다.** v3는
+Bearer(`nv-`) 키만 받기 때문에, 구형 키로 v3 URL을 그대로 두면 헤더를 아무리
+맞춰도 401(`Invalid Key`)이 납니다 — 이 조합이면 클라이언트 생성 시점에
+바로 에러 메시지로 알려줍니다. 이 경우 `CLOVA_ENDPOINT`를 콘솔에 표시된
+해당 앱의 실제 요청 URL로 바꾸십시오. 콘솔에 `API Gateway Key`가 API Key와
+별도로 함께 발급돼 있다면 `CLOVA_APIGW_KEY`에도 넣으십시오(신형 키에는 필요
+없습니다).
+
 배포(로컬·NCP 서버·Docker) 전체 절차는 **[docs/DEPLOY.md](docs/DEPLOY.md)** 참고.
 
 - `LLM_MODE=auto`(기본) — 키가 있으면 실제 호출, 없으면 자동으로 mock

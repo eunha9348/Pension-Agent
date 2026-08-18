@@ -38,6 +38,19 @@ CLOVA Studio 콘솔에서 API 키를 발급합니다. 키는 두 종류입니다
 서비스 앱/서비스 키로 가는 것이 안전합니다. 테스트 앱은 실험용이라 제약이 있을 수
 있으니, 콘솔에서 본인 계정의 한도를 직접 확인하십시오.
 
+### ⚠️ 키 형식이 두 가지입니다 — 발급 시기에 따라 다릅니다
+
+| 형식 | 인증 방식 | 짝이 되는 엔드포인트 |
+|---|---|---|
+| `nv-`로 시작 (신형) | `Authorization: Bearer nv-...` | v3 — `/v3/chat-completions/{model}` |
+| 그 외 (예: `ncp`류 접두, 구형 콘솔 키) | `X-NCP-CLOVASTUDIO-API-KEY: ...` 전용 헤더 | v1 — 그 테스트앱/서비스앱을 **만들 때 콘솔에 표시된 실제 요청 URL** (`/testapp/v1/...` 또는 `/serviceapp/v1/...`) |
+
+두 형식은 섞어 쓸 수 없습니다. `nv-`가 아닌 키로 v3 URL을 호출하면
+`Invalid Key - Please use new API Key that starts with 'nv-*'`(HTTP 401)가
+납니다 — "키가 틀렸다"는 뜻이 아니라 "이 키는 이 엔드포인트 형식이 아니다"는
+뜻입니다. 어느 쪽인지는 아래 2절에서 코드가 자동으로 헤더를 골라 주지만,
+**엔드포인트 URL만은 직접 맞는 것으로 넣어야** 합니다.
+
 ---
 
 ## 2. 키를 넣는 자리 (파일 1개, 줄 1개)
@@ -46,20 +59,38 @@ CLOVA Studio 콘솔에서 API 키를 발급합니다. 키는 두 종류입니다
 cp .env.example .env
 ```
 
-`.env` 파일을 열어 **11번째 줄**을 채웁니다:
+`.env` 파일을 열어 채웁니다. **키가 `nv-`로 시작하면** 그대로 v3 엔드포인트를
+쓰면 됩니다:
 
 ```bash
 CLOVA_API_KEY=nv-xxxxxxxxxxxxxxxxxxxxxxxxxxxx     # ← ★ 여기 ★
+CLOVA_APIGW_KEY=                                   # nv- 키는 비워둠
 CLOVA_REQUEST_ID=                                  # 선택 (콘솔에서 발급)
 CLOVA_ENDPOINT=https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005
 LLM_MODE=auto
 ```
 
-이게 전부입니다. 코드 어디도 고칠 필요가 없습니다.
+**키가 `nv-`로 시작하지 않으면**(구형 콘솔 키) 엔드포인트를 콘솔에 표시된
+그 앱의 실제 URL로 바꿔야 합니다. 콘솔에 API Key와 별도로 "API Gateway Key"가
+함께 발급돼 있으면 `CLOVA_APIGW_KEY`에도 넣으십시오:
+
+```bash
+CLOVA_API_KEY=ncpXXXXXXXXXXXXXXXXXXXXXXXX          # ← ★ 여기 ★
+CLOVA_APIGW_KEY=                                    # 콘솔에 별도 키가 있으면 여기
+CLOVA_REQUEST_ID=
+CLOVA_ENDPOINT=https://clovastudio.stream.ntruss.com/testapp/v1/chat-completions/<앱ID>
+LLM_MODE=auto
+```
+
+이게 전부입니다. 코드 어디도 고칠 필요가 없습니다 — 인증 헤더는 키 접두사를
+보고 자동으로 골라집니다. (구형 키로 v3 URL을 그대로 두면 `python -m
+app.llm.smoke_test` 실행 시 클라이언트 생성 단계에서 바로 에러 메시지로
+알려줍니다 — 401을 받고 나서야 원인을 찾지 않도록 한 것입니다.)
 
 - `LLM_MODE=auto` — 키가 있으면 실호출, 없으면 자동으로 mock
-- 키를 읽는 곳은 `app/config.py:73` 한 곳이고,
-  실제 헤더에 실리는 곳은 `app/llm/clova.py:97` 한 곳입니다
+- 키를 읽는 곳은 `app/config.py`의 `get_settings()` 한 곳이고,
+  헤더를 자동 판별해 싣는 곳은 `app/llm/clova.py`의 `ClovaClient._headers()`
+  한 곳입니다
 
 ### 엔드포인트 버전
 
@@ -90,7 +121,7 @@ python -m app.llm.smoke_test
 
 | 증상 | 확인할 것 |
 |---|---|
-| 401 / 403 | 키 종류(테스트/서비스)와 엔드포인트가 맞는 조합인지. `app/llm/clova.py`의 `_headers()` |
+| 401 / 403 | 키 형식(`nv-` vs 구형)과 엔드포인트가 맞는 조합인지 (위 "키 형식이 두 가지" 참고). 구형 키+v3 조합은 클라이언트 생성 시점에 이미 걸러지므로, 여기까지 왔다면 엔드포인트의 앱ID나 CLOVA_APIGW_KEY를 다시 확인 |
 | 404 | `CLOVA_ENDPOINT`의 버전 경로와 모델명 |
 | toolCalls 파싱 실패 | 응답 원문을 보고 `call_with_functions()` 파싱부를 실제 스키마에 맞출 것 |
 | 타임아웃 | `.env`의 `CLOVA_TIMEOUT_SEC` 상향 |

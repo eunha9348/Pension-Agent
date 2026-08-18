@@ -75,8 +75,10 @@ def main() -> int:
         except ClovaError as e:
             print(f"❌ {i+1}회차 호출 실패: {e}")
             print("\n확인 순서:")
-            print("  · 401/403 → 인증 헤더 형식. app/llm/clova.py _headers() 참고")
-            print("    (Bearer 방식이 아니라 X-NCP-CLOVASTUDIO-API-KEY 일 수 있음)")
+            print("  · 401/403 → 키와 엔드포인트 조합 확인. 'nv-'로 시작하지 않는")
+            print("    구형 키는 v3 URL에서 쓸 수 없다(생성 시점에 이미 걸러졌을")
+            print("    것이다). CLOVA_ENDPOINT를 콘솔의 테스트앱/서비스앱 URL로,")
+            print("    필요하면 CLOVA_APIGW_KEY도 함께 채웠는지 확인할 것")
             print("  · 404     → CLOVA_ENDPOINT 의 모델 경로 확인")
             print("  · timeout → CLOVA_TIMEOUT_SEC 상향")
             return 1

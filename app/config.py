@@ -44,6 +44,7 @@ def _float(name: str, default: float) -> float:
 @dataclass
 class Settings:
     clova_api_key: str = ""
+    clova_apigw_key: str = ""
     clova_request_id: str = ""
     clova_endpoint: str = ""
     llm_mode: str = "auto"           # auto | real | mock
@@ -71,6 +72,7 @@ def get_settings() -> Settings:
     load_dotenv()
     return Settings(
         clova_api_key=os.environ.get("CLOVA_API_KEY", "").strip(),
+        clova_apigw_key=os.environ.get("CLOVA_APIGW_KEY", "").strip(),
         clova_request_id=os.environ.get("CLOVA_REQUEST_ID", "").strip(),
         clova_endpoint=os.environ.get(
             "CLOVA_ENDPOINT",
