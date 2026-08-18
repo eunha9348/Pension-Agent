@@ -3,10 +3,10 @@
 제10회 미래에셋증권 AI Festival · 연금 Agent 트랙 출품작.
 자연어 연금 질의에 대해 **제공 문서 근거로만** 조회·분석·설명하는 AI 에이전트.
 
-> ⚠️ **현재 상태: CLOVA Studio 실연동 미완료 (mock 모드로 동작 중)**
-> 개발 컨테이너에서 `clovastudio.stream.ntruss.com` 접속이 네트워크 정책으로
-> 차단돼 실제 호출을 검증하지 못했습니다. `.env`에 `CLOVA_API_KEY`를 넣으면
-> 코드 수정 없이 실제 호출로 전환됩니다. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
+> ✅ **현재 상태: CLOVA Studio 실연동 확인 완료 (2026-08-18)**
+> 실제 코퍼스(158문서)·실제 API 키로 L1·L5'·L6 세 곳 모두 HyperCLOVA X
+> 실호출이 성공하는 것을 배포 환경에서 확인했습니다. 자세한 내용은
+> [PROGRESS.md](PROGRESS.md).
 
 ---
 
