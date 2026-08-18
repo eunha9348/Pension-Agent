@@ -69,18 +69,21 @@ from app.retrieval.coarse import make_coarse_search
 from app.retrieval.hybrid import make_retrieve_hybrid
 
 # 전체 요청 예산(초). 평가 API는 단일 GET 안에서 끝나야 한다.
-TOTAL_BUDGET_SEC = 25.0
-# 단계별 예산 — 이 시점까지 남은 시간이 없으면 해당 LLM 단계를 건너뛴다.
 #
-# 2026-08-18 실배포 스모크 테스트 실측치로 갱신(이전엔 검증 전 추정치였다):
-#   단일 호출 중앙값 554ms / 최대 844ms (python -m app.llm.smoke_test).
-# L1은 function calling 호출 1회, L5'/재생성은 근거·프롬프트가 훨씬 길고
-# 출력 토큰도 더 많아 실측치보다 여유를 크게 둔다. max_retry=1이라 재시도가
-# 붙으면 최대 2배까지 갈 수 있어 그 여지도 포함했다.
-BUDGET_L1 = 2.5
-BUDGET_L5 = 4.5
-BUDGET_L6 = 2.5
-BUDGET_REGEN = 4.5
+# 2026-08-18 실코퍼스(158문서) 대상 실배포 로그로 재갱신:
+#   smoke_test의 짧은 프로브(554ms~844ms)와 달리, 근거 문서가 실린 실제
+#   프롬프트(입력 3000토큰 안팎)는 L5'/L6가 5~8초씩 걸렸다. REVISE 재생성이
+#   붙고 그 중 한 번이라도 타임아웃→재시도를 타면 L1+L5+L6+regen(L5)+L6
+#   전체 경로가 30초를 넘길 수 있다(실측: 정상 완료 31160ms). 25초는 이
+#   정상 경로조차 못 담아 조기에 잘라내므로 상향한다.
+TOTAL_BUDGET_SEC = 45.0
+# 단계별 예산 — 이 시점까지 남은 시간이 없으면 해당 LLM 단계를 건너뛴다.
+# CLOVA_TIMEOUT_SEC(기본 15초)를 함께 올렸으므로, 정상적인 대형 프롬프트
+# 호출(5~8초)이 타임아웃으로 오인돼 재시도되는 일을 줄이는 게 우선이다.
+BUDGET_L1 = 7.0
+BUDGET_L5 = 10.0
+BUDGET_L6 = 3.0
+BUDGET_REGEN = 10.0
 
 # 세제 관련 질의에서 구법 문서를 근거로 쓰지 않기 위한 신호
 _TAX_INTENTS = {"세액공제", "과세방식", "원천징수", "퇴직소득세", "퇴직소득세_감면"}

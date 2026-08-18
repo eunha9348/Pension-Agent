@@ -48,7 +48,7 @@ class Settings:
     clova_request_id: str = ""
     clova_endpoint: str = ""
     llm_mode: str = "auto"           # auto | real | mock
-    clova_timeout_sec: float = 8.0
+    clova_timeout_sec: float = 15.0
     clova_max_retry: int = 1
     database_url: str = ""
     index_path: str = "data/index"
