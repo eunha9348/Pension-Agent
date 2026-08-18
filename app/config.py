@@ -79,7 +79,7 @@ def get_settings() -> Settings:
             "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005",
         ).strip(),
         llm_mode=os.environ.get("LLM_MODE", "auto").strip().lower(),
-        clova_timeout_sec=_float("CLOVA_TIMEOUT_SEC", 8.0),
+        clova_timeout_sec=_float("CLOVA_TIMEOUT_SEC", 15.0),
         clova_max_retry=int(_float("CLOVA_MAX_RETRY", 1)),
         database_url=os.environ.get("DATABASE_URL", "").strip(),
         index_path=os.environ.get("INDEX_PATH", "data/index").strip(),
