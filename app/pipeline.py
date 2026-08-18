@@ -71,10 +71,16 @@ from app.retrieval.hybrid import make_retrieve_hybrid
 # 전체 요청 예산(초). 평가 API는 단일 GET 안에서 끝나야 한다.
 TOTAL_BUDGET_SEC = 25.0
 # 단계별 예산 — 이 시점까지 남은 시간이 없으면 해당 LLM 단계를 건너뛴다.
-BUDGET_L1 = 4.0
-BUDGET_L5 = 10.0
-BUDGET_L6 = 6.0
-BUDGET_REGEN = 8.0
+#
+# 2026-08-18 실배포 스모크 테스트 실측치로 갱신(이전엔 검증 전 추정치였다):
+#   단일 호출 중앙값 554ms / 최대 844ms (python -m app.llm.smoke_test).
+# L1은 function calling 호출 1회, L5'/재생성은 근거·프롬프트가 훨씬 길고
+# 출력 토큰도 더 많아 실측치보다 여유를 크게 둔다. max_retry=1이라 재시도가
+# 붙으면 최대 2배까지 갈 수 있어 그 여지도 포함했다.
+BUDGET_L1 = 2.5
+BUDGET_L5 = 4.5
+BUDGET_L6 = 2.5
+BUDGET_REGEN = 4.5
 
 # 세제 관련 질의에서 구법 문서를 근거로 쓰지 않기 위한 신호
 _TAX_INTENTS = {"세액공제", "과세방식", "원천징수", "퇴직소득세", "퇴직소득세_감면"}
