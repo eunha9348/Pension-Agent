@@ -45,6 +45,19 @@ _EXCLUDE_CONTEXT = [
 # 무시할 사소한 수치 (순서, 개수 등으로 쓰이는 한 자리 수)
 _TRIVIAL_MAX = 12
 
+# ⚠️ 작은 수라도 **단위가 붙으면 주장이다** — 반드시 대조한다.
+#
+# 실제 사고: "단기는 만기 3개월~3년, 중장기는 1년~7년에 투자합니다"라는
+# 답변이 나왔는데 근거 문서 어디에도 없는 수치였다. 그런데 3·7·1이 전부
+# _TRIVIAL_MAX 이하라 **검증 시도조차 되지 않았고**, 트레이스에는
+# "0개 수치 전부 근거 확인"이 통과로 찍혔다(Q-002 실패).
+#
+# 연차·나이·등급·기간은 이 도메인에서 답변의 핵심 주장이다. 반면
+# 조문번호(제12조)·목록순서(1.)는 여전히 제외해야 하므로, '단위가 붙었는가'로
+# 가른다. 조문·연도는 아래 _EXCLUDE_CONTEXT에서 이미 걸러진 뒤다.
+_UNIT_BEARING = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(?:%|퍼센트|년차|년|개월|달|세|등급|배|회|건|명|주|일)')
+
 
 def _strip_excluded(text: str) -> str:
     """연도·조문번호 등 대조 불필요 구간을 마스킹."""
@@ -54,17 +67,36 @@ def _strip_excluded(text: str) -> str:
     return out
 
 
+def _unit_bearing_values(cleaned: str) -> set[float]:
+    """단위가 붙은 수치 — 작아도 검증 대상이다."""
+    out: set[float] = set()
+    for raw in _UNIT_BEARING.findall(cleaned):
+        try:
+            out.add(float(raw.replace(',', '')))
+        except ValueError:
+            continue
+    return out
+
+
 def extract_numbers(text: str, include_trivial: bool = False) -> set[float]:
-    """텍스트에서 수치를 추출해 float 집합으로 반환."""
+    """텍스트에서 수치를 추출해 float 집합으로 반환.
+
+    include_trivial=False 여도 **단위가 붙은 작은 수는 포함**한다.
+    (근거 쪽 추출은 include_trivial=True로 부르므로 영향이 없고,
+     답변 쪽 추출에서만 대조 범위가 넓어진다.)
+    """
     cleaned = _strip_excluded(text)
+    keep_small = set() if include_trivial else _unit_bearing_values(cleaned)
+
     result: set[float] = set()
     for raw in _NUM.findall(cleaned):
         try:
             v = float(raw.replace(',', ''))
         except ValueError:
             continue
-        if not include_trivial and v.is_integer() and abs(v) <= _TRIVIAL_MAX:
-            continue          # 1~12 정수는 순서·개월 등으로 쓰이므로 기본 제외
+        if (not include_trivial and v.is_integer() and abs(v) <= _TRIVIAL_MAX
+                and v not in keep_small):
+            continue          # 순서·개월 등으로 쓰이는 작은 정수는 제외
         result.add(v)
     return result
 
@@ -131,6 +163,12 @@ class VerificationResult:
     reason: str = ""
 
     def as_trace(self) -> str:
+        # ⚠️ 대조를 **건너뛴 것**과 대조해서 **통과한 것**을 같은 말로
+        #    쓰면 안 된다. 예전에는 검사 대상이 0건일 때도 "통과"로 찍혀서,
+        #    사실 아무것도 확인하지 않은 답변이 검증을 통과한 것처럼 보였다.
+        #    트레이스를 근거로 신뢰를 판단하는 심사에서는 치명적이다.
+        if self.checked_count == 0:
+            return "수치 대조 — 답변에 대조할 수치가 없어 검사하지 않음 (통과 아님)"
         if self.passed:
             return f"수치 대조 검증 통과 — {self.checked_count}개 수치 전부 근거 확인"
         return (f"수치 대조 검증 실패 — 근거 없는 수치 {len(self.ungrounded)}건: "

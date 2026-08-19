@@ -67,6 +67,7 @@ def make_verify_grounding(question: str,
                           ask_back_items: Optional[list[str]] = None,
                           answerability: str = "ANSWER",
                           trap_ids: Optional[list[str]] = None,
+                          trap_checks: Optional[list[dict]] = None,
                           mentioned_products: Optional[list[dict]] = None,
                           partial_answer_possible: bool = False,
                           skip_semantic: bool = False):
@@ -97,6 +98,7 @@ def make_verify_grounding(question: str,
             ask_back_items=ask_back_items or [],
             answerability=answerability,
             trap_ids=trap_ids or [],
+            trap_checks=trap_checks or [],
             partial_answer_possible=partial_answer_possible,
         )
 

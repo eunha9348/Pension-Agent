@@ -256,8 +256,14 @@ _ACCOUNT_MISMATCH = {
 def audit_fitness(answer: str,
                    user_conditions: Optional[dict] = None,
                    mentioned_products: Optional[list[dict]] = None,
-                   trap_ids: Optional[list[str]] = None) -> list[Finding]:
-    """적합성 감사. 사용자 조건과 답변 내용이 어긋나지 않는지 본다."""
+                   trap_ids: Optional[list[str]] = None,
+                   trap_checks: Optional[list[dict]] = None) -> list[Finding]:
+    """적합성 감사. 사용자 조건과 답변 내용이 어긋나지 않는지 본다.
+
+    trap_checks : 규칙별 검증 정보([{id, severity, verify_any, ...}]).
+                  주어지면 함정 해소 여부를 **규칙 단위로** 판정한다.
+                  없으면 trap_ids만으로 예전 방식(전체 일괄)으로 돌아간다.
+    """
     findings: list[Finding] = []
     uc = user_conditions or {}
 
@@ -298,8 +304,34 @@ def audit_fitness(answer: str,
             "계좌 유형 확인을 먼저 요청하고, 유형별 후보를 조건부로 제시할 것",
         ))
 
-    # critical 함정이 감지됐는데 답변에 교정 취지가 없는 경우
-    if trap_ids:
+    # ── 감지된 함정이 답변에서 실제로 다뤄졌는가 ──────────────
+    #
+    # ⚠️ 예전에는 "다릅니다·구분·별개·주의·아닙니다" 중 아무거나 하나만
+    #    있으면 감지된 함정 **전부**가 해소된 것으로 봤다. 그래서
+    #    "유동성 관리에는 주의가 필요합니다" 한 문장이 전혀 무관한
+    #    D2(운용사 간 위험등급 비교)까지 통과시켰다(Q-002 실패).
+    #    지금은 규칙마다 자기 핵심어로 따로 판정한다.
+    if trap_checks:
+        from app.core.trap_rules import unaddressed_traps
+
+        missed = unaddressed_traps(answer, trap_checks)
+        if missed:
+            crit = [m["id"] for m in missed if m.get("severity") == "critical"]
+            rest = [m["id"] for m in missed if m.get("severity") != "critical"]
+            # 무엇을 어떻게 바로잡아야 하는지까지 준다 — 지시가 구체적이어야
+            # 재생성이 성공한다. 예전의 뭉뚱그린 지시는 재생성도 실패했다.
+            directive = " / ".join(
+                f"[{m['id']}] {m.get('correction') or m.get('title', '')}"
+                for m in missed[:3])
+            findings.append(Finding(
+                "적합성", "TRAP_UNADDRESSED",
+                Verdict.REVISE if crit else Verdict.DOWNGRADE,
+                f"감지된 함정 중 답변에서 다뤄지지 않은 것: "
+                f"{crit + rest} (critical {len(crit)}건)",
+                f"다음을 답변에 명시적으로 반영할 것 — {directive}",
+            ))
+    elif trap_ids:
+        # 규칙별 정보가 없을 때의 예전 경로 (하위 호환)
         correction_markers = ("다릅니다", "구분", "별개", "주의", "아닙니다", "해당하지 않")
         if not any(m in answer for m in correction_markers):
             findings.append(Finding(
@@ -397,6 +429,7 @@ def supervise(answer: str,
               ask_back_items: Optional[list[str]] = None,
               answerability: str = "ANSWER",
               trap_ids: Optional[list[str]] = None,
+              trap_checks: Optional[list[dict]] = None,
               partial_answer_possible: bool = False) -> SupervisionResult:
     """4대 감사를 실행하고 종합 판정 + 시정 지시를 산출한다.
 
@@ -408,7 +441,8 @@ def supervise(answer: str,
 
     findings += audit_compliance(answer, citations or [], has_calculation=bool(calc_results))
     findings += audit_anomaly(calc_results, user_conditions)
-    findings += audit_fitness(answer, user_conditions, mentioned_products, trap_ids)
+    findings += audit_fitness(answer, user_conditions, mentioned_products,
+                              trap_ids, trap_checks)
     burden_findings, revised_items = audit_burden(
         answer, ask_back_items, answerability, partial_answer_possible)
     findings += burden_findings

@@ -482,6 +482,88 @@ def detect_traps(query: str, severity_filter: str | None = None) -> list[TrapRul
     return hits
 
 
+# ════════════════════════════════════════════════════════════════
+# 함정별 검증 핵심어 — "이 함정이 실제로 답변에서 다뤄졌는가"
+# ════════════════════════════════════════════════════════════════
+#
+# ━━ 왜 규칙마다 따로 두는가 ━━
+# 예전에는 답변에 "다릅니다·구분·별개·주의·아닙니다" 중 **아무거나 하나**만
+# 있으면 감지된 함정 전부가 해소된 것으로 처리했다. 그래서 위험등급 질의에서
+# "유동성 관리에는 주의가 필요합니다"라는 문장 하나가, 전혀 다른 얘기인
+# D2(운용사 간 위험등급 비교 불가)까지 통과시켰다(Q-002 실패).
+#
+# 이제는 규칙마다 자기 핵심어를 갖고, 그 개념이 답변에 실제로 등장했는지를
+# 따로 본다. 5건이 감지되면 5건을 각각 판정한다.
+#
+# ━━ 한계를 분명히 해 둔다 ━━
+# 이건 어휘 검사지 의미 검사가 아니다. "공적연금은 포함됩니다"라고 **틀리게**
+# 써도 C2의 핵심어에는 걸린다. 그 판정은 L6 의미 감사(HyperCLOVA X)의 몫이고,
+# 여기서는 미해소로 의심되는 규칙을 감사자에게 넘겨 주는 것까지가 역할이다.
+# 그래서 지나치게 일반적인 낱말("선택", "주의")은 핵심어에서 뺐다 —
+# 그런 단어는 아무 답변에나 있어서 검사를 무력화한다.
+_VERIFY_TERMS: dict[str, list[str]] = {
+    "A1": ["부득이", "저율과세", "기타소득세"],
+    "A2": ["법정 사유", "사유 제한", "사유와 무관", "열거"],
+    "A3": ["DB", "확정급여"],
+    "A4": ["6개월", "3개월"],
+    "A5": ["임금총액", "12.5"],
+    "A6": ["1회", "횟수"],
+    "A7": ["전액 해지", "전액해지", "부분 인출", "부분인출"],
+    "A8": ["6개월", "서류"],
+    "B1": ["실제수령연차", "실제 수령연차", "실제로 인출"],
+    "B2": ["11년", "한도가 적용되지", "한도 없"],
+    "B3": ["2013", "기산"],
+    "C1": ["전액"],
+    "C2": ["공적연금", "이연퇴직소득"],
+    "C3": ["지방소득세"],
+    "C4": ["600만", "900만"],
+    "C5": ["개정", "현행", "구법", "종전"],
+    "C6": ["이연퇴직소득", "감면율"],
+    "D1": ["가입자격", "가입 자격", "가입 가능", "가입할 수"],
+    "D2": ["운용사", "집합투자업자", "내부기준", "내부 기준"],
+    "E1": ["법정 외", "법정외", "의무이전", "의무 이전"],
+    "E2": ["급여계좌", "DC 계좌", "지급 경로", "입금되"],
+    "E3": ["예외", "직접 수령", "개인계좌"],
+    "E4": ["60일", "환급"],
+    "E5": ["되돌", "역방향", "한 방향"],
+    "E6": ["합산", "정산특례", "세액정산"],
+    "E7": ["ISA", "전환금액", "한도 외"],
+}
+
+# 영문·숫자 핵심어는 낱말 경계로 본다. "DB"를 부분 문자열로 찾으면
+# "DB형"은 맞지만 엉뚱한 영문 안에서도 걸린다.
+_ASCII_TERM = re.compile(r'^[A-Za-z0-9.]+$')
+
+
+def verify_terms_for(trap_id: str) -> list[str]:
+    return list(_VERIFY_TERMS.get(trap_id, ()))
+
+
+def term_present(text: str, term: str) -> bool:
+    """핵심어가 답변에 등장했는가.
+
+    한국어는 조사가 붙으므로 부분 문자열로 본다. 영문·숫자는 낱말 경계를
+    지킨다 — 짧은 약어(DB, DC)가 다른 단어 안에서 잡히면 오탐이 된다.
+    """
+    if not text or not term:
+        return False
+    if _ASCII_TERM.match(term):
+        return re.search(rf'(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])',
+                         text) is not None
+    return term in text
+
+
+def unaddressed_traps(answer: str, checks: list[dict]) -> list[dict]:
+    """감지된 함정 중 답변에서 다뤄지지 않은 것만 골라낸다."""
+    out: list[dict] = []
+    for c in checks or []:
+        terms = c.get("verify_any") or []
+        if terms and any(term_present(answer, t) for t in terms):
+            continue
+        out.append(c)
+    return out
+
+
 def build_trap_context(query: str) -> dict:
     """Supervisor 컨텍스트에 주입할 함정 경고 블록 생성.
 
@@ -509,6 +591,10 @@ def build_trap_context(query: str) -> dict:
         "correction_notes": [r.correction for r in hits if r.correction],
         "ask_back_candidates": [r.ask_back for r in hits if r.ask_back],
         "retrieval_steer": steer,
+        # L6 적합성 감사가 규칙별로 해소 여부를 따지는 데 쓴다
+        "checks": [{"id": r.id, "severity": r.severity, "title": r.title,
+                    "correction": r.correction,
+                    "verify_any": verify_terms_for(r.id)} for r in hits],
         "trace": (f"함정 후보 {len(hits)}건 감지 (critical {len(critical)}건): "
                   f"{[r.id for r in hits]}" if hits else "함정 후보 없음"),
     }

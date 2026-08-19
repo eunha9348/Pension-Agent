@@ -375,7 +375,9 @@ def answer_question(question_id: str, question: str,
                   if deadline.allows(BUDGET_L6) else None),
         citations=citations, user_conditions=conditions,
         ask_back_items=ask_back_items, answerability=decision.value,
-        trap_ids=trap_context["detected"], mentioned_products=mentioned,
+        trap_ids=trap_context["detected"],
+        trap_checks=trap_context.get("checks") or [],
+        mentioned_products=mentioned,
         partial_answer_possible=partial_possible)
 
     verdict = verify_grounding(draft, evidence)
