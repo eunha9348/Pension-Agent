@@ -47,6 +47,14 @@ TRAP_RESERVED = 3
 # 동의어 확장 텀의 가중치. 원 질의어보다 낮아야 한다.
 EXPANSION_WEIGHT = 0.35
 
+# L1이 다시 쓴 검색어(search_terms)의 가중치.
+#
+# ⚠️ 원 질의를 **대체하지 않는다.** 재작성이 빗나가면 엉뚱한 문서를 검색하게
+#    되므로, 원 질의에 온전한 가중치(1.0)를 주고 재작성은 보조로만 더한다.
+#    동의어 확장(0.35)보다는 높게 둔다 — 사전에 없는 오타·구어체까지
+#    문서 용어로 옮겨 준 것이라 신호가 더 정확하기 때문이다.
+REWRITE_WEIGHT = 0.6
+
 
 def _expansion_terms(query: str) -> str:
     """원 질의에 없는 동의어만 모은다."""
@@ -55,19 +63,28 @@ def _expansion_terms(query: str) -> str:
 
 
 def _weighted_lexical(store: DocumentStore, query: str, top_k: int,
-                      allowed: Optional[set[str]]) -> list[tuple[ChunkRecord, float]]:
-    """원 질의 + 동의어 확장을 **가중 합산**한다.
+                      allowed: Optional[set[str]],
+                      rewritten: Optional[list[str]] = None
+                      ) -> list[tuple[ChunkRecord, float]]:
+    """원 질의 + 동의어 확장 + L1 재작성 검색어를 **가중 합산**한다.
 
     ⚠️ 확장 텀을 원 질의와 같은 비중으로 넣으면 안 된다.
        "연금저축·IRP 세액공제" 질의에서 동의어(연금저축계좌·개인형퇴직연금)만
        많이 포함한 짧은 청크(중도인출 조항)가, 정작 '세액공제'를 다루는 청크보다
        위로 올라오는 현상이 실제로 발생했다. BM25는 짧은 문서를 선호하기 때문이다.
        원 질의어에 온전한 가중치를 주고 확장은 보조로만 쓴다.
+
+    rewritten : L1이 사용자 구어체·오타를 문서 용어로 옮긴 검색어.
+                같은 이유로 이것도 보조 신호다 — 원 질의를 대체하지 않는다.
     """
     scores: dict[str, float] = {}
     records: dict[str, ChunkRecord] = {}
 
-    for text, weight in ((query, 1.0), (_expansion_terms(query), EXPANSION_WEIGHT)):
+    sources = [(query, 1.0), (_expansion_terms(query), EXPANSION_WEIGHT)]
+    if rewritten:
+        sources.append((" ".join(rewritten), REWRITE_WEIGHT))
+
+    for text, weight in sources:
         if not text.strip():
             continue
         for rec, score in store.search_bm25(text, top_k=top_k * 3, allowed=allowed):
@@ -192,13 +209,17 @@ def make_retrieve_hybrid(store: Optional[DocumentStore] = None,
 
         # 재순위가 실제로 고를 수 있도록 후보를 넉넉히 확보한다.
         # 중복·저정보 청크가 걸러지고 나면 후보가 크게 줄기 때문이다.
-        lexical = _weighted_lexical(s, query, top_k * 3, allowed)
+        rewritten = [str(t) for t in (spec.get("search_terms") or [])]
+        lexical = _weighted_lexical(s, query, top_k * 3, allowed, rewritten)
 
         by_id: dict[str, tuple[ChunkRecord, float]] = {
             rec.chunk_id: (rec, score) for rec, score in lexical}
         lexical_rank = [rec.chunk_id for rec, _ in lexical]
 
-        vector_rank = _vector_rank(s, query, allowed)
+        # 의미 검색에도 재작성을 반영한다 — 오타가 섞인 원문보다
+        # 문서 용어로 정리된 쪽이 더 나은 벡터를 만든다.
+        vector_query = f"{query} {' '.join(rewritten)}" if rewritten else query
+        vector_rank = _vector_rank(s, vector_query, allowed)
         if vector_rank:
             from app.config import get_settings
             w = get_settings().embedding_weight

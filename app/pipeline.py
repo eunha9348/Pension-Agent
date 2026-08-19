@@ -264,6 +264,8 @@ def answer_question(question_id: str, question: str,
     backend = ("BM25 + 임베딩 RRF 융합" if embedding_enabled()
                else "BM25 단독 (임베딩 미사용)")
     detail = f"후보 근거 {len(raw_evidence)}건 확보 ({backend})"
+    if rewritten := query_spec.get("search_terms"):
+        detail += f" · 검색어 재작성: {', '.join(rewritten[:5])}"
     if steered_docs := query_spec.get("_steered_docs"):
         detail += f" · 함정 유도로 {', '.join(steered_docs)} 예약 확보"
     if rr := query_spec.get("_rerank_trace"):

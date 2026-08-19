@@ -68,6 +68,59 @@ GENERIC_TERMS: set[str] = {
 }
 
 
+# ── 절대 뒤바뀌면 안 되는 용어쌍 ──────────────────────────────
+#
+# ━━ 왜 따로 두는가 ━━
+# L1이 질의를 검색어로 다시 쓸 때(search_terms), 사용자의 오타·구어체를
+# 문서 용어로 옮기는 것은 좋지만 **다른 제도를 같은 것으로 합치면** 답이
+# 통째로 뒤집힌다. 특히 한 글자 차이인 용어들은 LLM이 오타로 오인하기 쉽다.
+#
+#   "연금실제수령연차" → (오타로 판단) → "연금수령연차"
+#
+# 이건 trap_rules의 B1이 경고하는 바로 그 혼동이다. 전자는 퇴직소득세
+# 감면율을, 후자는 연금수령한도를 결정한다. 그래서 재작성 결과를
+# 결정론적으로 검사해, 이런 뒤바꿈이 있으면 재작성을 통째로 버린다.
+# ("판단은 코드, 문장은 LLM" — CLAUDE.md)
+DISTINCT_PAIRS: list[tuple[str, set[str], set[str]]] = [
+    ("연차 2종 (B1)",
+     {"연금실제수령연차", "실제수령연차", "실제 수령연차"},
+     {"연금수령연차"}),
+    ("인출 사유 2종 (A1)",
+     {"부득이한사유", "부득이한 사유", "부득이"},
+     {"중도인출", "중도 인출"}),
+    ("퇴직급여 법정/법정외 (E1)",
+     {"법정외", "법정 외", "명예퇴직", "명퇴"},
+     {"법정퇴직급여", "법정 퇴직급여"}),
+    ("과세 범위 (C1)",
+     {"전액"},
+     {"초과분", "초과 금액"}),
+]
+
+
+def _has_any(text: str, terms: set[str]) -> bool:
+    return any(t in text for t in terms)
+
+
+def conflates_distinct_terms(original: str,
+                             rewritten: list[str]) -> str:
+    """재작성이 구분해야 할 용어를 뒤바꿨는가.
+
+    반환: 뒤바꾼 쌍의 이름(문제 있음) 또는 "" (문제 없음)
+
+    한쪽만 있던 질의가 재작성 후 **반대쪽으로 바뀐** 경우만 잡는다.
+    양쪽을 다 언급하는 것(비교 질의)은 정상이므로 통과시킨다.
+    """
+    joined = " ".join(rewritten or ())
+    for name, side_a, side_b in DISTINCT_PAIRS:
+        q_a, q_b = _has_any(original, side_a), _has_any(original, side_b)
+        r_a, r_b = _has_any(joined, side_a), _has_any(joined, side_b)
+        if q_a and not q_b and r_b and not r_a:
+            return name
+        if q_b and not q_a and r_a and not r_b:
+            return name
+    return ""
+
+
 def expand(terms: set[str]) -> set[str]:
     """동의어 그룹으로 용어 집합을 확장."""
     out = set(terms)

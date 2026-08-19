@@ -101,6 +101,17 @@ QUERY_SPEC_TOOL = [{
                         "plan_type": {"type": "string"},
                     },
                 },
+                "search_terms": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "문서 검색에 쓸 **문서 어휘**. 사용자의 구어체·오타·줄임말을 "
+                        "제공 문서에서 실제로 쓰는 정식 용어로 바꿔 적는다. "
+                        "예: '아이알피 세엑공제 얼마' → ['IRP', '개인형퇴직연금', '세액공제']. "
+                        "⚠️ 비슷해 보여도 다른 제도는 절대 합치지 말 것 — "
+                        "'연금수령연차'와 '연금실제수령연차'는 다른 개념이므로 "
+                        "질문에 있는 쪽을 그대로 둔다."),
+                },
                 "plan": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -120,7 +131,15 @@ L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기�
 2. 질문에 없는 조건을 지어내지 마십시오. 확인되지 않은 조건은 비워 두십시오.
 3. 연금수령연차와 연금실제수령연차는 다른 개념입니다. 질문이 어느 쪽을 말하는지
    불분명하면 임의로 정하지 말고 비워 두십시오.
-4. 금액 단위에 주의하십시오. 계산함수는 만원 단위를 씁니다."""
+4. 금액 단위에 주의하십시오. 계산함수는 만원 단위를 씁니다.
+5. search_terms에는 **문서에서 쓰는 용어**를 적으십시오.
+   사용자는 구어체로 묻고 오타도 냅니다("세엑공제", "아이알피", "연저축",
+   "깨면 손해", "얼마나 떼요"). 문서는 법령체입니다("세액공제",
+   "개인형퇴직연금", "중도해지", "원천징수세율").
+   질문의 표현을 문서 쪽 표현으로 옮겨 적어야 검색이 됩니다.
+   다만 **다른 제도를 같은 것으로 합치지 마십시오** — 특히
+   연금수령연차/연금실제수령연차, 중도인출/부득이한사유 인출처럼
+   한 글자 차이로 결과가 달라지는 용어는 질문에 있는 쪽을 유지하십시오."""
 
 
 # ════════════════════════════════════════════════════════════════
@@ -312,7 +331,36 @@ def sanitize_spec(spec: dict, question: str) -> dict:
     out["user_conditions"] = derive_conditions(question, out.get("user_conditions"))
     out["entities"] = {k: v for k, v in (out.get("entities") or {}).items() if v}
     out["plan"] = [str(p) for p in (out.get("plan") or [])][:6]
+    out["search_terms"] = sanitize_search_terms(
+        out.get("search_terms"), question)
     return out
+
+
+# 검색어는 보조 신호다 — 너무 많으면 원 질의를 묻어 버린다
+MAX_SEARCH_TERMS = 8
+
+
+def sanitize_search_terms(terms, question: str) -> list[str]:
+    """L1이 만든 검색어를 검증한다. 문제가 있으면 통째로 버린다.
+
+    ━━ 왜 부분 수리가 아니라 전량 폐기인가 ━━
+    재작성이 구분해야 할 용어를 뒤바꿨다면(연금수령연차 ↔ 연금실제수령연차),
+    그 재작성은 질의를 잘못 이해했다는 뜻이다. 문제가 된 항목만 빼고 나머지를
+    쓰면, 같은 오해가 남은 항목에도 스며 있을 수 있다. 원 질의만으로 검색해도
+    기존 동의어 확장이 돌아가므로, 의심스러우면 버리는 쪽이 안전하다.
+    """
+    from app.analysis.vocab import conflates_distinct_terms
+
+    cleaned: list[str] = []
+    for t in (terms or []):
+        s_ = str(t).strip()
+        if 2 <= len(s_) <= 40 and s_ not in cleaned:
+            cleaned.append(s_)
+    cleaned = cleaned[:MAX_SEARCH_TERMS]
+
+    if conflates_distinct_terms(question, cleaned):
+        return []          # 사유는 호출 측에서 trace에 남긴다
+    return cleaned
 
 
 # ════════════════════════════════════════════════════════════════
@@ -441,6 +489,17 @@ def make_extract_query_spec(client=None,
             spec["source"] = "llm+rule"
         if not spec.get("plan"):
             spec["plan"] = fallback["plan"]
+
+        # 검색어 재작성이 구분해야 할 용어를 뒤바꿨다면 버렸다는 사실을 남긴다.
+        # 조용히 버리면 "왜 검색이 그대로지"를 추적할 수 없다.
+        if trace_log and (args.get("search_terms") and not spec.get("search_terms")):
+            from app.analysis.vocab import conflates_distinct_terms
+            reason = conflates_distinct_terms(
+                question, [str(t) for t in (args.get("search_terms") or [])])
+            if reason:
+                trace_log("검색어_재작성_폐기",
+                          f"L1이 만든 검색어가 구분해야 할 용어를 뒤바꿈({reason}) "
+                          f"→ 재작성을 버리고 원 질의로만 검색")
 
         # ⚠️ 도메인 판단은 규칙이 이긴다. LLM이 제도를 잘못 짚어도
         #    (Q-001: 명퇴수당 → '세액공제') 여기서 되돌린다.
