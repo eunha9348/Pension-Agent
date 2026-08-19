@@ -23,7 +23,7 @@ import time
 from app.config import get_settings
 from app.ingest.store import DEFAULT_INDEX_DIR, get_store
 from app.ingest.vector_store import VectorStore, text_hash
-from app.retrieval.embedding import EmbeddingError, embed_one
+from app.retrieval.embedding import EmbeddingError, RateLimitError, embed_one
 
 # 이 간격마다 중간 저장한다. 너무 잦으면 느리고, 너무 뜸하면 중단 시 손해가 크다.
 CHECKPOINT_EVERY = 100
@@ -31,6 +31,12 @@ CHECKPOINT_EVERY = 100
 # 임베딩 입력 길이 상한(문자). bge-m3는 8,192토큰까지 받지만 청크가 그보다
 # 훨씬 짧고, 지나치게 긴 입력은 요금과 지연만 늘린다.
 MAX_CHARS = 4000
+
+# 요청 사이 기본 텀(초). CLOVA 임베딩은 초당 호출 제한이 있어서, 쉬지 않고
+# 쏘면 거의 다 429(Too Many Requests)로 튕긴다 — 실제로 8,195건 중 대다수가
+# 이렇게 실패한 적이 있다. embed_one이 429를 만나면 알아서 몇 초씩 쉬며
+# 재시도하지만, 애초에 이 텀만큼 예방적으로 쉬면 429 자체가 크게 줄어든다.
+PACING_SEC = 0.3
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,12 +92,23 @@ def main(argv: list[str] | None = None) -> int:
     print()
     t0 = time.time()
     done = failed = 0
+    rate_limited = False
     try:
         for i, c in enumerate(todo, 1):
             try:
                 vec = embed_one(c.text[:MAX_CHARS])
                 vs.add(c.chunk_id, vec, text_hash(c.text))
                 done += 1
+            except RateLimitError as e:
+                # embed_one이 이미 몇십 초씩 여러 번 쉬며 재시도한 뒤에도
+                # 안 풀린 것이다 — 계정 전체 한도에 걸렸을 가능성이 높다.
+                # 여기서 계속 밀어붙이면 남은 수천 건도 똑같이 실패하며
+                # 시간만 태운다. 실패로 세지 않고 바로 멈춘다.
+                rate_limited = True
+                print(f"\n⏸  {c.chunk_id}: {e}")
+                print("   호출 속도 제한이 계속 걸립니다. 잠시 후(수 분) 다시 "
+                      "실행하면 여기부터 이어서 만듭니다.")
+                break
             except EmbeddingError as e:
                 failed += 1
                 print(f"  ❌ {c.chunk_id}: {e}")
@@ -102,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
                 if failed > 20 and failed > done:
                     print("\n❌ 실패가 너무 많아 중단합니다.")
                     break
+            finally:
+                time.sleep(PACING_SEC)     # 다음 호출까지 예방적으로 쉰다
 
             if i % CHECKPOINT_EVERY == 0:
                 vs.save(args.index)
@@ -117,11 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f" 생성 {done}건 · 실패 {failed}건 · 총 보유 {len(vs)}건 (차원 {vs.dim})")
     print(f" 저장 → {out}")
-    if failed:
+    if rate_limited:
+        print(" ⏸  호출 속도 제한으로 중간에 멈췄습니다. 같은 명령을 다시 실행하면")
+        print("    이어서 만듭니다(이미 만든 것은 다시 안 만듭니다).")
+    elif failed:
         print(" ⚠️  실패분은 다시 실행하면 재시도합니다.")
-    if done and not failed:
+    if len(vs) >= len(chunks) and not rate_limited:
         print("\n✅ 완료. .env 의 USE_EMBEDDING=true 로 두고 서버를 재시작하십시오.")
-    return 0 if done or not failed else 1
+    return 0 if (done or not failed) and not rate_limited else 1
 
 
 if __name__ == "__main__":

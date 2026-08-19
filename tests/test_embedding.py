@@ -182,3 +182,100 @@ def test_가중치_0이면_벡터가_순위에_영향을_주지_않는다():
     only_lex = _rrf_merge((["a", "b"], 1.0))
     with_zero = _rrf_merge((["a", "b"], 1.0), (["b", "a"], 0.0))
     assert only_lex == with_zero
+
+
+# ════════════════════════════════════════════════════════════════
+# 429 (호출 속도 제한) — 인증 오류와 다르게 다뤄야 한다
+# ════════════════════════════════════════════════════════════════
+#
+# 실제 사고: build_embeddings 8,195건 중 대부분이 429로 실패했다.
+# 재시도 간격이 0.4초라 재시도해도 곧바로 또 429가 났다. 인증 오류처럼
+# "재시도해도 어차피 안 된다"가 아니라 "충분히 쉬면 풀린다"는 점이 다르다.
+
+_ENDPOINT = "https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2"
+
+
+def test_429는_RateLimitError로_구분된다(monkeypatch):
+    import httpx
+    import app.retrieval.embedding as emb
+
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True, clova_api_key="nv-k",
+                                         clova_embedding_endpoint=_ENDPOINT))
+    monkeypatch.setattr(emb.time, "sleep", lambda s: None)   # 백오프 대기 생략
+
+    class _Resp:
+        status_code = 429
+        text = '{"status":{"code":"42901","message":"Too many requests"}}'
+
+    class _Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw): return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    with pytest.raises(emb.RateLimitError):
+        emb.embed_one("텍스트", max_retry=0)
+
+
+def test_429는_여러_번_쉬며_재시도한_뒤에_실패한다(monkeypatch):
+    """한 번 튕겼다고 바로 포기하면 안 된다 — 백오프 예산을 다 써야 한다."""
+    import httpx
+    import app.retrieval.embedding as emb
+    from app.config import Settings
+
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True, clova_api_key="nv-k",
+                                         clova_embedding_endpoint=_ENDPOINT))
+    sleeps: list[float] = []
+    monkeypatch.setattr(emb.time, "sleep", lambda s: sleeps.append(s))
+
+    class _Resp:
+        status_code = 429
+        text = "rate limited"
+
+    class _Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw): return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    with pytest.raises(emb.RateLimitError):
+        emb.embed_one("텍스트")
+
+    assert len(sleeps) == len(emb._RATE_LIMIT_BACKOFF)
+    assert sleeps == list(emb._RATE_LIMIT_BACKOFF)
+
+
+def test_429는_일반_재시도_예산을_소모하지_않는다(monkeypatch):
+    """max_retry=0 이어도 429 백오프는 별도로 돈다 — 인증 오류와 취급이 다르다."""
+    import httpx
+    import app.retrieval.embedding as emb
+    from app.config import Settings
+
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True, clova_api_key="nv-k",
+                                         clova_embedding_endpoint=_ENDPOINT))
+    monkeypatch.setattr(emb.time, "sleep", lambda s: None)
+
+    calls = {"n": 0}
+
+    class _Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw):
+            calls["n"] += 1
+            class R:
+                status_code = 429 if calls["n"] <= 2 else 200
+                def json(self):
+                    return {"status": {"code": "20000"}, "result": {"embedding": [0.1]}}
+                text = "rate limited"
+            return R()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    vec = emb.embed_one("텍스트", max_retry=0)
+    assert vec == [0.1]
+    assert calls["n"] == 3     # 429 두 번 + 성공 한 번, max_retry=0인데도 성공

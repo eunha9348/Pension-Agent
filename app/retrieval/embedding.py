@@ -71,9 +71,24 @@ def _headers() -> dict[str, str]:
     return h
 
 
+class RateLimitError(EmbeddingError):
+    """429 — 인증·데이터 문제가 아니라 호출 속도 문제. 회복 가능하다."""
+
+
+# 429는 재시도해도 0.4초 뒤엔 또 걸린다 — 실제로 발생한 사고다
+# (build_embeddings 8,195건 중 대부분이 연속 429로 실패했다). 지수 백오프로
+# 충분히 쉬어야 풀린다. 초당 호출 제한이 명시돼 있지 않아 보수적으로 잡는다.
+_RATE_LIMIT_BACKOFF = (3.0, 6.0, 12.0, 20.0, 20.0)   # 초 단위, 재시도 순서대로
+
+
 def embed_one(text: str, *, timeout: Optional[float] = None,
               max_retry: int = 1) -> list[float]:
-    """텍스트 1건 → 벡터. 실패하면 EmbeddingError를 올린다."""
+    """텍스트 1건 → 벡터. 실패하면 EmbeddingError를 올린다.
+
+    429(Too Many Requests)는 max_retry와 별도로, 그 자체 재시도 예산
+    (_RATE_LIMIT_BACKOFF)을 쓴다. 인증 실패처럼 다시 시도해도 똑같이 실패할
+    오류가 아니라, 충분히 쉬면 회복되는 오류이기 때문이다.
+    """
     import httpx
 
     s = get_settings()
@@ -86,10 +101,25 @@ def embed_one(text: str, *, timeout: Optional[float] = None,
         raise EmbeddingError("빈 텍스트는 임베딩할 수 없습니다.")
 
     last: Optional[Exception] = None
-    for attempt in range(max_retry + 1):
+    rate_limit_attempt = 0
+    attempt = 0
+    while attempt <= max_retry:
         try:
             with httpx.Client(timeout=timeout or s.clova_timeout_sec) as c:
                 resp = c.post(endpoint, headers=_headers(), json=body)
+
+            if resp.status_code == 429:
+                if rate_limit_attempt >= len(_RATE_LIMIT_BACKOFF):
+                    raise RateLimitError(
+                        f"HTTP 429 — {len(_RATE_LIMIT_BACKOFF)}번 쉬어도 여전히 "
+                        f"속도 제한: {resp.text[:150]}")
+                wait = _RATE_LIMIT_BACKOFF[rate_limit_attempt]
+                log.warning("[embedding] 429 — %.0f초 대기 후 재시도 (%d/%d)",
+                           wait, rate_limit_attempt + 1, len(_RATE_LIMIT_BACKOFF))
+                time.sleep(wait)
+                rate_limit_attempt += 1
+                continue      # attempt는 그대로 — 일반 재시도 예산을 깎지 않는다
+
             if resp.status_code != 200:
                 raise EmbeddingError(f"HTTP {resp.status_code}: {resp.text[:200]}")
             data = resp.json()
@@ -102,10 +132,13 @@ def embed_one(text: str, *, timeout: Optional[float] = None,
             if not vec:
                 raise EmbeddingError(f"응답에 embedding이 없습니다: {str(data)[:200]}")
             return [float(v) for v in vec]
+        except RateLimitError:
+            raise
         except Exception as e:      # noqa: BLE001 — 재시도 후 그대로 올린다
             last = e
-            if attempt < max_retry:
-                time.sleep(0.4 * (attempt + 1))
+            attempt += 1
+            if attempt <= max_retry:
+                time.sleep(0.4 * attempt)
     raise EmbeddingError(str(last))
 
 
