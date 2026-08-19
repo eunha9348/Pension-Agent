@@ -456,6 +456,12 @@ def supervise(answer: str,
     downgraded = None
     if worst == Verdict.DOWNGRADE:
         downgraded = _DOWNGRADE_CHAIN.get(answerability, answerability)
+    elif worst == Verdict.REVISE and answerability == "ANSWER":
+        # ⚠️ REVISE는 "고쳐서 내라"는 뜻이지 "이대로 확신 있게 내라"가 아니다.
+        #    재생성이 성공하면 판정이 갱신되면서 이 강등도 함께 사라진다.
+        #    실패하면 강등된 등급이 남아, 확인 조건을 함께 제시하게 된다.
+        #    (CLAUDE.md — "모르면 되묻는다", 최고 가중치 지표)
+        downgraded = _DOWNGRADE_CHAIN.get(answerability, answerability)
 
     return SupervisionResult(
         verdict=worst,

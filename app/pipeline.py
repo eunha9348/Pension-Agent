@@ -387,6 +387,11 @@ def answer_question(question_id: str, question: str,
     if supervision is not None and supervision.revised_ask_back:
         ask_back_items = supervision.revised_ask_back[:2]
 
+    # 감독이 지적한 문제가 끝내 해소되지 않았는가.
+    # ⚠️ 이 값이 True인 채로 그냥 답변을 내보내면 안 된다 —
+    #    "틀릴 수 있다는 걸 알면서 확신 있게 답하는" 상태가 되기 때문이다.
+    unresolved = False
+
     # ── REVISE → 재생성 1회 ───────────────────────────────────
     if supervision is not None and supervision.verdict == Verdict.REVISE:
         if deadline.allows(BUDGET_REGEN) and not getattr(client, "is_mock", False):
@@ -414,11 +419,18 @@ def answer_question(question_id: str, question: str,
                     trace.log("L6_재생성_반영",
                               "재생성 답변이 검증을 통과해 채택 (판정도 갱신)")
                 else:
+                    unresolved = True
                     trace.log("L6_재생성_기각",
-                              "재생성 답변도 검증에 실패 → 보수적으로 원본 유지")
+                              "재생성 답변도 검증에 실패 → 원본을 유지하되, "
+                              "검증을 통과하지 못했다는 사실을 답변에 고지하고 "
+                              "답변 등급을 낮춘다")
+            else:
+                unresolved = True
         else:
+            unresolved = True
             trace.log("L6_재생성_생략",
-                      "재생성 예산이 없거나 mock 모드 — 한계 고지를 덧붙여 진행")
+                      "재생성 예산이 없거나 mock 모드 — 검증 미통과 사실을 고지하고 "
+                      "등급을 낮춘 채로 진행")
 
     # ── BLOCK → 축퇴 ─────────────────────────────────────────
     if supervision is not None and supervision.verdict == Verdict.BLOCK:
@@ -440,6 +452,34 @@ def answer_question(question_id: str, question: str,
         trace.log("답변등급_강등",
                   f"{decision.value} → {supervision.downgraded_answerability}")
         decision = Answerability(supervision.downgraded_answerability)
+
+    # ── 검증을 통과하지 못한 답변은 그 사실을 밝힌다 ──────────
+    #
+    # ⚠️ 이 블록이 이 시스템에서 가장 중요한 부분일지도 모른다.
+    #    예전에는 감독이 초안과 재생성을 모두 반려해 놓고도, 원본을 그대로
+    #    "보수적으로 유지"라는 이름으로 내보냈다. 사용자에게는 아무 표시도
+    #    없었다. 즉 **시스템이 자기 답변의 부적절함을 두 번 확인하고도
+    #    확신에 찬 어조로 답한 것**이다(Q-001). 틀린 답보다 나쁘다.
+    #
+    #    감독이 있다는 주장은, 감독 결과가 사용자에게 도달할 때만 참이다.
+    if unresolved and supervision is not None:
+        if decision == Answerability.ANSWER:
+            trace.log("답변등급_강등",
+                      "ANSWER → PARTIAL (감독 지적이 해소되지 않음)")
+            decision = Answerability.PARTIAL
+
+        notice, extra_asks = _unresolved_notice(supervision)
+        if notice:
+            draft += f"\n\n{notice}"
+        # 해소되지 않은 지적은 되물을 항목으로 돌린다 —
+        # 확인이 필요한 사항을 사용자가 알아야 다음 수를 둘 수 있다.
+        for a in extra_asks:
+            if a not in ask_back_items:
+                ask_back_items.append(a)
+        ask_back_items = ask_back_items[:2]      # 확인 항목은 최대 2건 (CLAUDE.md)
+        trace.log("검증_미통과_고지",
+                  "감독 지적이 남은 채로 답변이 나가므로, 그 사실을 답변 본문에 "
+                  "명시하고 확인 항목으로 전환했다")
 
     if decision in (Answerability.PARTIAL, Answerability.ASK_BACK) and ask_back_items:
         draft += ("\n\n확인해 주시면 더 정확히 안내드릴 수 있습니다: "
@@ -579,6 +619,37 @@ def _compose_trace(query_spec: dict, trace: TraceLogger) -> str:
     lines.append("[판단 과정]")
     lines.append(trace.as_text())
     return "\n".join(lines)
+
+
+def _unresolved_notice(supervision) -> tuple[str, list[str]]:
+    """해소되지 않은 감독 지적을 사용자용 고지문과 확인 항목으로 바꾼다.
+
+    ━━ 왜 내부 용어를 그대로 쓰지 않는가 ━━
+    "TRAP_UNADDRESSED", "REVISE" 같은 말은 우리 쪽 사정이다. 사용자에게
+    필요한 것은 "이 답변의 어느 부분을 그대로 믿으면 안 되는가"이다.
+    그래서 코드가 아니라 **무엇을 더 확인해야 하는지**로 옮겨 적는다.
+
+    반환: (답변에 덧붙일 고지문, 확인 항목으로 추가할 것들)
+    """
+    unresolved = [f for f in getattr(supervision, "findings", [])
+                  if f.severity in (Verdict.REVISE, Verdict.BLOCK)]
+    if not unresolved:
+        return "", []
+
+    lines = ["※ 이 답변은 내부 검증을 완전히 통과하지 못했습니다. "
+             "아래 항목은 반드시 별도로 확인해 주십시오."]
+    asks: list[str] = []
+    for f in unresolved[:2]:
+        # 시정 지시가 있으면 그게 가장 구체적이다
+        detail = (f.directive or f.detail or "").strip()
+        if not detail:
+            continue
+        lines.append(f"· {detail}")
+        asks.append(detail[:80])
+
+    if len(lines) == 1:      # 담을 내용이 없으면 고지문도 만들지 않는다
+        return "", []
+    return "\n".join(lines), asks
 
 
 def health_info() -> dict:
