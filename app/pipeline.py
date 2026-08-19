@@ -513,8 +513,15 @@ def _used_evidence(evidence: list[EvidenceChunk],
                    query_spec: Optional[dict] = None) -> list[dict]:
     """**사용한** 근거만 인용 대상으로 추린다 (검색된 전부가 아니라).
 
-    슬롯에 매핑된 근거가 하나도 없으면, 답변이 검색 결과 위에서 만들어졌으므로
-    상위 2건만 남긴다 — 인용 없는 답변을 만들지 않기 위해서다.
+    ⚠️ 슬롯에 매핑된 근거가 하나도 없으면 **아무것도 인용하지 않는다.**
+       예전에는 "인용 없는 답변을 만들지 않으려고" 상위 2건을 '검색 근거'라는
+       이름으로 붙였다. 그 결과 "연금 말고 부동산 조언 좀"이라는 질의에
+       판매 클래스 가입자격 문서가 근거로 달렸다. BM25는 무엇을 물어도
+       상위 k건을 돌려주므로, 관련성 판단 없이 붙이면 반드시 이렇게 된다.
+
+       근거가 없는 것보다 **무관한 근거가 있는 척하는 것이 훨씬 나쁘다.**
+       인용이 비면 retrieved_context에 "근거 문서 없음"이 명시되고,
+       그것이 정직한 상태다.
     """
     used_ids: dict[str, list[str]] = {}
     for s in slots:
@@ -538,8 +545,7 @@ def _used_evidence(evidence: list[EvidenceChunk],
                     break        # 계산 1건당 대표 근거 1건이면 충분하다
 
     if not used_ids:
-        return [{"doc_id": c.doc_id, "text": c.text, "supports": ["검색 근거"]}
-                for c in evidence[:2]]
+        return []
 
     out = []
     for c in evidence:
