@@ -102,12 +102,18 @@ def _entity_prefilter(store: DocumentStore, entities: dict) -> Optional[set[str]
     return allowed or None
 
 
-def _rrf_merge(*ranked_lists: list[str]) -> dict[str, float]:
-    """Reciprocal Rank Fusion — 점수 스케일이 다른 순위들을 합친다."""
+def _rrf_merge(*ranked: tuple[list[str], float]) -> dict[str, float]:
+    """Reciprocal Rank Fusion — 점수 스케일이 다른 순위들을 합친다.
+
+    각 항목은 (순위 목록, 가중치)다. BM25는 1.0을 기준으로 두고, 벡터 쪽은
+    EMBEDDING_WEIGHT(기본 0.5)로 조절한다 — 이 도메인은 조문·수치처럼
+    **정확한 어휘 일치가 중요한 질의**가 많아서 벡터를 동등하게 두면
+    엉뚱한 문서가 올라온다. 의미 검색은 어휘 검색의 보완으로 쓴다.
+    """
     fused: dict[str, float] = {}
-    for lst in ranked_lists:
+    for lst, weight in ranked:
         for rank, key in enumerate(lst, 1):
-            fused[key] = fused.get(key, 0.0) + 1.0 / (RRF_K + rank)
+            fused[key] = fused.get(key, 0.0) + weight / (RRF_K + rank)
     return fused
 
 
@@ -194,7 +200,10 @@ def make_retrieve_hybrid(store: Optional[DocumentStore] = None,
 
         vector_rank = _vector_rank(s, query, allowed)
         if vector_rank:
-            fused = _rrf_merge(lexical_rank, vector_rank[:top_k * 3])
+            from app.config import get_settings
+            w = get_settings().embedding_weight
+            fused = _rrf_merge((lexical_rank, 1.0),
+                               (vector_rank[:top_k * 3], w))
             order = sorted(fused, key=lambda k: -fused[k])
             # RRF 점수는 스케일이 다르므로 0~1로 다시 정규화해 둔다
             top_fused = max(fused.values()) or 1.0

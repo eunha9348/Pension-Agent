@@ -157,3 +157,28 @@ def test_벡터가_없으면_BM25_단독으로_돈다(monkeypatch):
     monkeypatch.setattr(hy, "embedding_enabled", lambda: True)
     monkeypatch.setattr(hy, "_vectors", lambda: VectorStore())
     assert hy._vector_rank(None, "질의", None) == []
+
+
+# ════════════════════════════════════════════════════════════════
+# RRF 융합 가중치
+# ════════════════════════════════════════════════════════════════
+
+def test_RRF_가중치가_실제로_반영된다():
+    """설정만 있고 코드가 안 쓰면, 값을 바꿔도 효과 없는 손잡이가 된다 —
+    튜닝하는 사람이 원인을 찾지 못한다."""
+    from app.retrieval.hybrid import _rrf_merge
+
+    lex = ["a", "b"]
+    vec = ["b", "a"]
+    equal = _rrf_merge((lex, 1.0), (vec, 1.0))
+    lex_heavy = _rrf_merge((lex, 1.0), (vec, 0.1))
+
+    assert abs(equal["a"] - equal["b"]) < 1e-9      # 대칭이면 동점
+    assert lex_heavy["a"] > lex_heavy["b"]          # 어휘 순위가 이긴다
+
+
+def test_가중치_0이면_벡터가_순위에_영향을_주지_않는다():
+    from app.retrieval.hybrid import _rrf_merge
+    only_lex = _rrf_merge((["a", "b"], 1.0))
+    with_zero = _rrf_merge((["a", "b"], 1.0), (["b", "a"], 0.0))
+    assert only_lex == with_zero
