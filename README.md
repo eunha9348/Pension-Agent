@@ -112,7 +112,7 @@ L0  사전 검색      app/retrieval/coarse.py + core/grounding_retrieval.py   L
 L1  질의 분석      app/analysis/query_spec.py                              HyperCLOVA X
 1.5 계획 감사      core/supervisory_board.supervise_plan()                 LLM 없음
 L2  함정 감지      core/trap_rules.py (26종)                               LLM 없음
-L3  Exploration    app/retrieval/hybrid.py (BM25, 임베딩 경로는 격리)      LLM 없음
+L3  Exploration    app/retrieval/hybrid.py + rerank.py (BM25+벡터 RRF)     LLM 없음
 L4  Exploitation   app/pipeline.py _exploit()                              LLM 없음
 L5  Prediction     core/pension_calc_functions.py (15종)                   LLM 없음
 L5' Supervisor     app/generation/answer_prompt.py                         HyperCLOVA X
@@ -138,14 +138,37 @@ PostgreSQL(pgvector/tsvector)로 전환하려면 `sql/schema.sql`로 초기화�
 `.env`의 `DATABASE_URL`을 채우십시오. 검색 인터페이스가 동일하므로
 `app/retrieval/hybrid.py`의 백엔드만 교체하면 됩니다.
 
-### 임베딩 사용 여부
+### 임베딩 (주최측 확인 결과 사용 허용)
 
-대회 제약 "LLM은 HyperCLOVA X만 사용"에 **임베딩 모델이 포함되는지 미확인**이라,
-기본값은 **임베딩 없이 BM25 단독**입니다(가장 보수적인 가정).
+**CLOVA Studio 임베딩(bge-m3)만** 사용합니다. 네이버 클라우드가 제공하는
+모델이라 "LLM은 HyperCLOVA X만" 제약 안에 확실히 들어옵니다. 외부 오픈소스
+임베딩은 허용 여부가 다시 불확실해지므로 도입하지 않았습니다.
 
-허용이 확인되면 `.env`의 `USE_EMBEDDING=true`로 바꾸고
-`app/retrieval/embedding.py`의 `embed_texts()` 한 함수만 구현하면 됩니다.
-임베딩 의존 코드는 전부 그 파일 하나에 격리돼 있습니다.
+```bash
+python -m app.ingest.build_index        # ① 인덱스
+python -m app.ingest.build_embeddings   # ② 청크 벡터 (20~40분, 중단해도 이어서)
+```
+
+임베딩 API가 **텍스트 1건당 1회 호출**이라 인제스트와 분리된 별도 단계입니다.
+청크 본문 해시가 같으면 다시 만들지 않으므로, 문서를 일부만 바꿔도 그 부분만
+갱신됩니다. 벡터는 `data/index/vectors.bin`에 float32로 저장됩니다(numpy 불필요).
+
+**벡터가 없으면 자동으로 BM25 단독으로 돌아갑니다** — 에러가 아니므로
+급하면 임베딩 없이 먼저 띄워도 됩니다. 현재 상태는 `GET /health`의
+`retrieval` 항목에서 확인하십시오.
+
+### 검색 후처리
+
+BM25/벡터 순위를 그대로 근거로 쓰지 않습니다(`app/retrieval/rerank.py`):
+
+- **중복 제거** — 투자설명서 158건에 같은 조항이 반복돼, 안 하면 근거 8칸을
+  한 문장이 독점합니다
+- **문서 다양성** — 한 문서에서 최대 2청크 (후보가 모자라면 완화)
+- **연혁·목차 강등** — 제거가 아니라 강등입니다. "언제 신설됐나요" 같은
+  질의에서는 연혁이 정답이기 때문입니다
+- **함정 유도 검색** — L2가 감지한 함정의 근거 문서를 별도로 훑어 슬롯을
+  예약합니다. 함정 규칙은 자기 근거 문서를 알고 있고(`TrapRule.source`),
+  L2가 L3보다 먼저 돌기 때문에 가능합니다
 
 ---
 

@@ -12,6 +12,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 COPY sql/ ./sql/
+# 평가셋도 넣는다 — 배포한 그 환경에서 실물 코퍼스로 품질을 재기 위해서다.
+# (`docker compose --profile tools run --rm eval`)
+# 로컬에서만 돌리면 실물 문서 기준 점수를 영영 알 수 없다.
+COPY tests/ ./tests/
 COPY scripts/docker-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

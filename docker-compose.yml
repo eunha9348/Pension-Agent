@@ -91,6 +91,39 @@ services:
     entrypoint: []
     command: ["python", "-m", "app.ingest.check_corpus"]
 
+  # 청크 임베딩 생성 (CLOVA Studio). 인덱스를 만든 뒤 실행한다.
+  # 호출이 건당 1회라 8,195청크면 20~40분 걸린다. 중단해도 이어서 만든다.
+  embed:
+    profiles: ["tools"]
+    image: pension-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data/corpus:/app/data/corpus:ro
+      - ./data/index:/app/data/index
+    entrypoint: []
+    command: ["python", "-m", "app.ingest.build_embeddings"]
+
+  # 자체 평가셋 42문항 (실물 코퍼스에서 돌려야 의미가 있다)
+  eval:
+    profiles: ["tools"]
+    image: pension-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data/corpus:/app/data/corpus:ro
+      - ./data/index:/app/data/index
+    entrypoint: []
+    command: ["python", "-m", "tests.eval_set"]
+
   # 인덱스만 다시 만들기 (서버 재시작 없이)
   reindex:
     profiles: ["tools"]

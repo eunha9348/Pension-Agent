@@ -126,6 +126,55 @@ python -m app.llm.smoke_test
 | toolCalls 파싱 실패 | 응답 원문을 보고 `call_with_functions()` 파싱부를 실제 스키마에 맞출 것 |
 | 타임아웃 | `.env`의 `CLOVA_TIMEOUT_SEC` 상향 |
 
+### 3-B. 청크 임베딩 만들기 (검색 품질)
+
+주최측에서 임베딩 모델 사용을 **허용**받았습니다. CLOVA Studio 임베딩만
+쓰므로 "LLM은 HyperCLOVA X만" 제약 안에 그대로 들어옵니다.
+
+```bash
+python -m app.ingest.build_embeddings
+```
+
+- **인덱스를 만든 뒤에** 실행합니다 (`build_index` → `build_embeddings` 순서)
+- CLOVA 임베딩 API는 **텍스트 1건당 1회 호출**입니다. 8,195청크면 호출도
+  8,195회라 **20~40분** 걸립니다. 크레딧도 그만큼 소모됩니다
+- **중단해도 안전합니다.** 100건마다 저장하므로 Ctrl+C로 끊거나 네트워크가
+  끊겨도, 다시 실행하면 남은 것부터 이어서 만듭니다
+- 문서를 바꿔도 **내용이 그대로인 청크는 다시 만들지 않습니다**(본문 해시 비교)
+- 먼저 소량으로 시험해 보려면: `--limit 20`
+
+만든 뒤 `.env`에서 `USE_EMBEDDING=true`로 두고 재시작하면 BM25와 벡터 검색이
+RRF로 합쳐집니다. **벡터가 없으면 자동으로 BM25 단독으로 돌아가므로**
+(에러가 아닙니다) 급하면 임베딩 없이 먼저 띄워도 됩니다.
+
+상태 확인은 `GET /health`의 `retrieval` 항목을 보십시오:
+
+```json
+"retrieval": { "embedding_enabled": true, "vectors": 8195,
+               "mode": "BM25 + 벡터 RRF", "warning": "" }
+```
+
+`warning`이 비어 있지 않으면 임베딩이 켜져 있는데 실제로는 안 쓰이는
+상태입니다 — 그 문구가 원인과 해결 방법을 알려 줍니다.
+
+Docker를 쓴다면:
+
+```bash
+docker compose --profile tools run --rm embed
+```
+
+---
+
+## 3-C. 평가셋으로 품질 확인
+
+```bash
+python -m tests.eval_set
+```
+
+42문항(함정 26종 + 실배포 오답 2건 + 거절·되묻기)을 돌려 통과율을 냅니다.
+**실물 코퍼스에서 돌려야 의미가 있습니다** — mock에서는 일부 문항을
+건너뜁니다. 개선 전후 통과율 비교가 발표 자료의 근거가 됩니다.
+
 > Function calling은 `maxTokens`가 1024보다 커야 동작합니다.
 > 코드에서 최소 1100으로 보장하고 있으니 낮추지 마십시오.
 
