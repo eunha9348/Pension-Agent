@@ -66,6 +66,88 @@ def _text_key(text: str) -> str:
         re.sub(r'\s+', ' ', (text or "")).strip().encode("utf-8")).hexdigest()
 
 
+# 근중복 판정 임계값(토큰 집합 Jaccard).
+NEAR_DUP_THRESHOLD = 0.90
+
+# 길이 버킷 폭(문자). 근중복은 길이가 비슷하므로 이걸로 비교 대상을 좁힌다.
+_LEN_BUCKET = 120
+
+# 한 버킷에서 비교할 최대 개수 — 병적으로 큰 버킷에서 O(n²)이 터지지 않게
+_MAX_BUCKET = 400
+
+
+def group_near_duplicates(chunks: list) -> list[list]:
+    """같거나 사실상 같은 본문끼리 묶는다. 묶인 것들은 벡터를 공유한다.
+
+    ━━ 왜 완전 일치만으로는 부족한가 ━━
+    반복되는 조항이라도 글자까지 같지는 않다. 같은 세액공제 조항에도 중간에
+    펀드명("키움더드림단기채증권투자신탁[채권]")과 페이지 번호가 끼어 있어
+    해시가 달라진다. 실제 코퍼스 8,075건에서 완전 일치로는 **한 건도**
+    묶이지 않았다.
+
+    ━━ 잘못 묶으면 검색이 조용히 틀려진다 ━━
+    이 도메인은 작은 차이가 전부다 — "연금저축 600만원"과 "IRP 900만원"은
+    문장이 90% 같아도 완전히 다른 사실이다. 두 청크를 묶으면 같은 벡터를
+    쓰게 되어 의미 검색이 둘을 구분하지 못한다. 그래서 유사도만 보지 않고
+    **등장하는 수치 집합이 완전히 같을 때만** 묶는다. 수치가 하나라도
+    다르면 아무리 문장이 비슷해도 따로 호출한다.
+
+    비교 대상은 길이 버킷으로 좁힌다(근중복은 길이가 비슷하다).
+    """
+    from app.core.numeric_verifier import extract_numbers
+    from app.retrieval.rerank import jaccard
+    from app.retrieval.tokenize import content_terms
+
+    terms_of: dict[str, set[str]] = {}
+    nums_of: dict[str, frozenset] = {}
+    buckets: dict[int, list] = {}
+    for c in chunks:
+        terms_of[c.chunk_id] = content_terms(c.text)
+        nums_of[c.chunk_id] = frozenset(extract_numbers(c.text, include_trivial=True))
+        buckets.setdefault(len(c.text) // _LEN_BUCKET, []).append(c)
+
+    def _mergeable(a, b) -> bool:
+        # 수치가 다르면 절대 묶지 않는다 (600 ↔ 900 사고 방지)
+        if nums_of[a.chunk_id] != nums_of[b.chunk_id]:
+            return False
+        return jaccard(terms_of[a.chunk_id], terms_of[b.chunk_id]) >= NEAR_DUP_THRESHOLD
+
+    groups: list[list] = []
+    for key in sorted(buckets):
+        # 경계에 걸친 근중복을 놓치지 않도록 인접 버킷도 함께 본다
+        pending = buckets[key] + [c for c in buckets.get(key + 1, [])
+                                  if len(c.text) % _LEN_BUCKET < _LEN_BUCKET // 4]
+        pending = pending[:_MAX_BUCKET] + []
+        claimed: set[str] = set()
+        for i, head in enumerate(pending):
+            if head.chunk_id in claimed:
+                continue
+            same = [head]
+            claimed.add(head.chunk_id)
+            for other in pending[i + 1:]:
+                if other.chunk_id in claimed:
+                    continue
+                if _mergeable(head, other):
+                    same.append(other)
+                    claimed.add(other.chunk_id)
+            groups.append(same)
+        # 버킷 상한을 넘겨 잘린 것들은 개별 처리
+        for c in buckets[key][_MAX_BUCKET:]:
+            if c.chunk_id not in claimed:
+                groups.append([c])
+
+    # 인접 버킷에서 중복 편입된 청크 정리 — 한 청크는 한 묶음에만 속해야 한다
+    seen: set[str] = set()
+    cleaned: list[list] = []
+    for g in groups:
+        members = [c for c in g if c.chunk_id not in seen]
+        if not members:
+            continue
+        seen.update(c.chunk_id for c in members)
+        cleaned.append(members)
+    return cleaned
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="청크 임베딩 생성 (CLOVA Studio)")
     ap.add_argument("--index", default=str(DEFAULT_INDEX_DIR))
@@ -74,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pace", type=float, default=PACING_SEC,
                     help=f"요청 사이 대기(초). 429가 잦으면 늘리십시오 "
                          f"(기본 {PACING_SEC}, 429를 만나면 자동으로도 늘어남)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="API를 호출하지 않고 '몇 회 호출이 필요한지'만 즉시 계산")
     args = ap.parse_args(argv)
 
     s = get_settings()
@@ -108,22 +192,33 @@ def main(argv: list[str] | None = None) -> int:
     todo = [c for c in chunks if args.rebuild or vs.needs_embedding(c.chunk_id, c.text)]
     print(f" 전체 청크 {len(chunks)}건 · 기존 벡터 {len(vs)}건 · 생성 대상 {len(todo)}건")
 
-    # ── 같은 본문끼리 묶는다 ─────────────────────────────────
+    # ── 사실상 같은 본문끼리 묶는다 ──────────────────────────
     # 투자설명서 158건에 같은 조항이 반복되므로, 실제 호출해야 할 고유 본문은
-    # 청크 수보다 훨씬 적다. 대표 1건만 호출하고 나머지는 벡터를 복사한다.
-    groups: dict[str, list] = {}
-    for c in todo:
-        groups.setdefault(_text_key(c.text), []).append(c)
+    # 청크 수보다 적다. 대표 1건만 호출하고 나머지는 벡터를 복사한다.
+    print(" 근중복 묶는 중...", flush=True)
+    grouped = group_near_duplicates(todo)
+    member_of: dict[str, list] = {g[0].chunk_id: g for g in grouped}
 
-    saved = len(todo) - len(groups)
+    saved = len(todo) - len(grouped)
     if saved > 0:
-        print(f" 같은 본문 묶음 — 실제 호출 {len(groups)}회 "
+        print(f" 같은 본문 묶음 — 실제 호출 {len(grouped)}회 "
               f"(중복 {saved}건은 벡터 복사, 호출 {saved/max(len(todo),1)*100:.0f}% 절감)")
+    else:
+        print(" 근중복 없음 — 청크마다 따로 호출해야 합니다")
 
-    reps = [g[0] for g in groups.values()]
+    reps = [g[0] for g in grouped]
     if args.limit:
         reps = reps[:args.limit]
         print(f" (--limit 적용 — 이번 실행은 {len(reps)}회 호출만)")
+
+    if args.dry_run:
+        # 2시간을 쓰기 전에 '쓸 가치가 있는지'부터 알려 준다.
+        for pace_try in (0.3, 1.0, 2.0):
+            est = len(reps) * (pace_try + 0.35) / 60      # 0.35초 ≈ 호출 자체 지연
+            print(f"   --pace {pace_try:<4} → 약 {est:.0f}분 (429 없을 때)")
+        print("\n dry-run 이므로 API를 호출하지 않았습니다.")
+        return 0
+
     if not todo:
         removed = vs.prune({c.chunk_id for c in chunks})
         if removed:
@@ -144,8 +239,8 @@ def main(argv: list[str] | None = None) -> int:
         for i, c in enumerate(reps, 1):
             try:
                 vec = embed_one(c.text[:MAX_CHARS])
-                # 대표에게 받은 벡터를 같은 본문 청크 전체에 복사한다
-                for member in groups[_text_key(c.text)]:
+                # 대표에게 받은 벡터를 같은 묶음 전체에 복사한다
+                for member in member_of[c.chunk_id]:
                     vs.add(member.chunk_id, vec, text_hash(member.text))
                     if member.chunk_id != c.chunk_id:
                         copied += 1

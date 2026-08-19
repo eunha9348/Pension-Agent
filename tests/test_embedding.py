@@ -339,3 +339,71 @@ def test_신호는_읽으면_초기화된다(monkeypatch):
     emb._RATE_LIMIT_SEEN = True
     assert emb.rate_limit_seen() is True
     assert emb.rate_limit_seen() is False
+
+
+# ════════════════════════════════════════════════════════════════
+# 근중복 묶기 — 안전이 속도보다 우선
+# ════════════════════════════════════════════════════════════════
+
+def _c(cid, text):
+    from app.ingest.store import ChunkRecord
+    return ChunkRecord(chunk_id=cid, doc_id=f"d_{cid}", text=text)
+
+
+_CLAUSE = ("[면제사유] 천재지변, 저축자의 사망, 퇴직, 해외이주, 폐업\n"
+           "① 세액공제 - 연금계좌에 납입한 금액은 종합소득이 있는 거주자가 "
+           "해당 연도의 연금계좌에 납입한 금액과 연 900만원 중 적은 금액으로 "
+           "합니다. 13.2% 세액공제")
+
+
+def test_같은_조항은_한_묶음이_된다():
+    """반복되는 조항에 펀드명이 덧붙은 형태 — 실제 코퍼스의 주된 중복 양상."""
+    from app.ingest.build_embeddings import group_near_duplicates
+    groups = group_near_duplicates([
+        _c("c1", _CLAUSE),
+        _c("c2", _CLAUSE + "\n키움더드림단기채증권투자신탁[채권]"),
+    ])
+    assert [sorted(x.chunk_id for x in g) for g in groups] == [["c1", "c2"]]
+
+
+def test_수치가_다르면_아무리_비슷해도_묶지_않는다():
+    """⚠️ 이 테스트를 느슨하게 고치지 말 것.
+
+    '연금저축 600만원'과 'IRP 900만원'은 문장이 90% 넘게 같아도 완전히 다른
+    사실이다. 묶이면 같은 벡터를 공유하게 되어 의미 검색이 둘을 구분하지
+    못한다. 이 도메인은 작은 수치 차이가 답의 정오를 가른다.
+    """
+    from app.ingest.build_embeddings import group_near_duplicates
+    groups = group_near_duplicates([
+        _c("c900", _CLAUSE),
+        _c("c600", _CLAUSE.replace("900만원", "600만원")),
+    ])
+    assert len(groups) == 2, "수치가 다른 청크가 묶였다 — 검색이 조용히 틀려진다"
+
+
+def test_내용이_다르면_묶이지_않는다():
+    from app.ingest.build_embeddings import group_near_duplicates
+    groups = group_near_duplicates([
+        _c("c1", _CLAUSE),
+        _c("c2", "연금수령한도는 평가액을 11에서 연금수령연차를 뺀 수로 "
+                 "나눈 뒤 120%를 곱한다"),
+    ])
+    assert len(groups) == 2
+
+
+def test_한_청크는_한_묶음에만_속한다():
+    """길이 버킷 경계에서 청크가 두 묶음에 들어가면 벡터를 두 번 쓴다."""
+    from app.ingest.build_embeddings import group_near_duplicates
+    chunks = [_c(f"c{i}", _CLAUSE + f"\n부속문서 {'가' * i}") for i in range(30)]
+    groups = group_near_duplicates(chunks)
+    seen = [x.chunk_id for g in groups for x in g]
+    assert len(seen) == len(set(seen)) == 30
+
+
+def test_묶인_결과가_원본을_빠짐없이_담는다():
+    """하나라도 빠지면 그 청크는 벡터 없이 남는다."""
+    from app.ingest.build_embeddings import group_near_duplicates
+    chunks = [_c(f"c{i}", f"서로 다른 내용 {i} " * (i + 3)) for i in range(25)]
+    groups = group_near_duplicates(chunks)
+    assert sorted(x.chunk_id for g in groups for x in g) == sorted(
+        c.chunk_id for c in chunks)
