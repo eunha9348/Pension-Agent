@@ -53,9 +53,15 @@ class Settings:
     database_url: str = ""
     index_path: str = "data/index"
     use_embedding: bool = False
-    # 임베딩은 CLOVA Studio 것만 쓴다 — 대회 제약("LLM은 HyperCLOVA X만")
-    # 안에 확실히 들어오는 선택지이기 때문이다. 외부 오픈소스 임베딩은
-    # 허용 여부가 다시 불확실해지므로 도입하지 않는다.
+    # 임베딩 백엔드: "local"(기본) | "clova"
+    #
+    # 타사 임베딩 모델 사용은 2026-08-19 확인 완료(CLAUDE.md 제약 1 참고).
+    # 검색 순위용 벡터일 뿐 답변 문장을 만들지 않으므로 제약 밖이다.
+    # local을 기본으로 두는 이유는 단순하다 — CLOVA 임베딩은 건당 1회 호출에
+    # 속도 제한이 걸려 8천 청크에 2시간 넘게 걸리고 429로 자주 끊긴다.
+    # 로컬 모델은 한 번 내려받으면 제한 없이 배치로 몇 분 만에 끝난다.
+    embedding_backend: str = "local"
+    local_embedding_model: str = "intfloat/multilingual-e5-small"
     clova_embedding_endpoint: str = ""
     embedding_weight: float = 0.5    # RRF 융합 시 벡터 순위 가중치
 
@@ -89,6 +95,10 @@ def get_settings() -> Settings:
         database_url=os.environ.get("DATABASE_URL", "").strip(),
         index_path=os.environ.get("INDEX_PATH", "data/index").strip(),
         use_embedding=_bool("USE_EMBEDDING", False),
+        embedding_backend=os.environ.get(
+            "EMBEDDING_BACKEND", "local").strip().lower(),
+        local_embedding_model=os.environ.get(
+            "LOCAL_EMBEDDING_MODEL", "intfloat/multilingual-e5-small").strip(),
         clova_embedding_endpoint=os.environ.get(
             "CLOVA_EMBEDDING_ENDPOINT",
             "https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2",

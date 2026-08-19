@@ -18,6 +18,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # 로컬 임베딩을 쓰려면 true. 이미지가 커지므로 기본은 false.
+        #   WITH_EMBEDDING=true docker compose up -d --build
+        WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
     image: pension-agent:latest
     container_name: pension-agent
     restart: always
@@ -47,6 +51,8 @@ services:
       - ./data/corpus:/app/data/corpus:ro
       # 인덱스 — 호스트에 남겨 재시작 시 재사용하고, 내용도 직접 볼 수 있게
       - ./data/index:/app/data/index
+      # 임베딩 모델 캐시 — 컨테이너를 지워도 다시 안 받도록 호스트에 둔다
+      - ./data/models:/app/data/models
 
     healthcheck:
       test: ["CMD", "python", "-c",
@@ -91,20 +97,26 @@ services:
     entrypoint: []
     command: ["python", "-m", "app.ingest.check_corpus"]
 
-  # 청크 임베딩 생성 (CLOVA Studio). 인덱스를 만든 뒤 실행한다.
-  # 호출이 건당 1회라 8,195청크면 20~40분 걸린다. 중단해도 이어서 만든다.
+  # 청크 임베딩 생성. 인덱스를 만든 뒤 실행한다.
+  # 기본(local 백엔드)은 배치 처리라 몇 분이면 끝난다. 다만 로컬 모델을 쓰려면
+  # 이미지를 WITH_EMBEDDING=true 로 빌드해야 한다:
+  #   WITH_EMBEDDING=true docker compose build embed agent
+  # 중단해도 이어서 만든다.
   embed:
     profiles: ["tools"]
     image: pension-agent:latest
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
     env_file:
       - path: .env
         required: false
     volumes:
       - ./data/corpus:/app/data/corpus:ro
       - ./data/index:/app/data/index
+      - ./data/models:/app/data/models
     entrypoint: []
     command: ["python", "-m", "app.ingest.build_embeddings"]
 
@@ -121,6 +133,7 @@ services:
     volumes:
       - ./data/corpus:/app/data/corpus:ro
       - ./data/index:/app/data/index
+      - ./data/models:/app/data/models
     entrypoint: []
     command: ["python", "-m", "tests.eval_set"]
 

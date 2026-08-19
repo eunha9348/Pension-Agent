@@ -1,29 +1,34 @@
 """청크 임베딩 생성 — 인덱스와 분리된 별도 단계.
 
-    python -m app.ingest.build_embeddings              # 증분 (권장)
-    python -m app.ingest.build_embeddings --pace 1.0   # 429가 잦으면 더 천천히
+    python -m app.ingest.build_embeddings              # 기본(로컬 모델), 몇 분
+    python -m app.ingest.build_embeddings --dry-run    # 호출 수·예상 시간만 확인
     python -m app.ingest.build_embeddings --limit 200  # 일부만 (시험용)
     python -m app.ingest.build_embeddings --rebuild    # 전부 다시
 
+━━ 백엔드 두 가지 (EMBEDDING_BACKEND) ━━
+· local (기본) — sentence-transformers 로컬 모델. 배치로 한 번에 돌리므로
+  8천 건이 몇 분에 끝난다. 호출 제한도 API 키도 없다.
+· clova        — CLOVA Studio 임베딩 API. 건당 1회 호출이라 8,195건이면
+  8,195회고, 속도 제한(429) 때문에 실측 2시간을 넘겼다. 아래 --pace 관련
+  장치는 전부 이 경로를 위한 것이다.
+
+임베딩 모델은 타사 모델을 써도 된다(2026-08-19 확인). 검색 순위용 벡터일 뿐
+답변 문장을 만들지 않기 때문이다. **답변을 만드는 L1·L5'·L6만** HyperCLOVA X
+전용이며 거기 타사 모델을 넣으면 실격이다.
+
 ━━ 왜 build_index와 분리했나 ━━
-CLOVA 임베딩 API는 텍스트 1건당 1회 호출이다. 8,195청크면 호출도 8,195회고,
-시간과 크레딧이 모두 든다. 문서를 하나 고칠 때마다 이걸 다시 돌리면 안 되므로
-인제스트와 떼어 놓고, 청크 본문 해시가 같으면 기존 벡터를 재사용한다.
+문서를 하나 고칠 때마다 전체를 다시 임베딩하면 안 되므로 인제스트와 떼어
+놓고, 청크 본문 해시가 같으면 기존 벡터를 재사용한다(증분).
 
-━━ 같은 본문은 한 번만 호출한다 ━━
-제공 자료는 투자설명서 158건이라 세액공제 조항 같은 문구가 **글자까지 똑같이**
-반복된다. 같은 텍스트는 임베딩도 같으므로, 본문을 정규화해 묶고 대표 1건만
-호출한 뒤 나머지에는 그 벡터를 복사한다. 호출 수가 그만큼 줄고, 429(속도 제한)에
-걸릴 일도 줄어든다.
-
-━━ 429는 벤더를 바꿔서 풀지 않는다 ━━
-대회 절대 제약이 "LLM은 HyperCLOVA X만 사용"이고, 위반하면 평가 대상에서
-제외된다. 임베딩 사용은 허용받았지만 그건 기법에 대한 허용이지 타사 모델
-허용이 아니다. 속도 제한은 호출 수를 줄이고(위) 간격을 늘려서(--pace) 푼다.
+━━ 같은 조항은 한 번만 인코딩한다 ━━
+투자설명서 158건에 같은 조항이 반복된다. 다만 펀드명·페이지 번호가 끼어 있어
+글자까지 같지는 않으므로, 유사도로 묶되 **수치 집합이 완전히 같을 때만**
+묶는다(group_near_duplicates 참고). 600만원과 900만원을 묶으면 검색이
+조용히 틀려지기 때문이다.
 
 ━━ 중단해도 안전하다 ━━
-일정 간격으로 중간 저장하므로, Ctrl+C로 끊거나 네트워크가 끊겨도
-다시 실행하면 남은 것부터 이어서 만든다. 처음부터 다시 하지 않는다.
+중간 저장하므로 Ctrl+C로 끊거나 네트워크가 끊겨도, 다시 실행하면 남은
+것부터 이어서 만든다. 처음부터 다시 하지 않는다.
 """
 
 from __future__ import annotations
@@ -37,7 +42,8 @@ import time
 from app.config import get_settings
 from app.ingest.store import DEFAULT_INDEX_DIR, get_store
 from app.ingest.vector_store import VectorStore, text_hash
-from app.retrieval.embedding import (EmbeddingError, RateLimitError, embed_one,
+from app.retrieval.embedding import (EmbeddingError, RateLimitError,
+                                     backend as emb_backend, embed_one,
                                      rate_limit_seen)
 
 # 이 간격마다 중간 저장한다. 너무 잦으면 느리고, 너무 뜸하면 중단 시 손해가 크다.
@@ -148,6 +154,57 @@ def group_near_duplicates(chunks: list) -> list[list]:
     return cleaned
 
 
+def _run_local(vs, chunks, grouped, member_of, args) -> int:
+    """로컬 모델로 배치 임베딩. 묶음 대표만 인코딩하고 벡터를 공유한다."""
+    from app.retrieval.embedding import embed_local
+
+    reps = [g[0] for g in grouped]
+    if args.limit:
+        reps = reps[:args.limit]
+
+    print(f" 로컬 모델로 {len(reps)}건을 배치 인코딩합니다...")
+    t0 = time.time()
+    done = copied = 0
+
+    # 통째로 넘기면 진행 상황이 안 보이고 메모리도 튄다 — 나눠서 처리한다
+    BATCH = 256
+    try:
+        for start in range(0, len(reps), BATCH):
+            part = reps[start:start + BATCH]
+            vecs = embed_local([c.text[:MAX_CHARS] for c in part], is_query=False)
+            for c, vec in zip(part, vecs):
+                for member in member_of[c.chunk_id]:
+                    vs.add(member.chunk_id, vec, text_hash(member.text))
+                    if member.chunk_id != c.chunk_id:
+                        copied += 1
+                done += 1
+            vs.save(args.index)
+            elapsed = time.time() - t0
+            rate = done / max(elapsed, 1e-6)
+            left = (len(reps) - done) / max(rate, 1e-6)
+            print(f"  · {done}/{len(reps)}  ({rate:.0f}건/초, "
+                  f"남은 시간 약 {left:.0f}초)")
+    except KeyboardInterrupt:
+        print("\n⏸  중단 요청 — 여기까지 저장합니다. 다시 실행하면 이어서 만듭니다.")
+    except Exception as e:      # noqa: BLE001 — 원인을 그대로 보여준다
+        print(f"\n❌ 로컬 임베딩 실패: {e}")
+        print("   sentence-transformers 가 설치돼 있는지 확인하십시오:")
+        print("     pip install -r requirements-embedding.txt")
+        vs.save(args.index)
+        return 1
+
+    vs.prune({c.chunk_id for c in chunks})
+    out = vs.save(args.index)
+    print()
+    print(f" 인코딩 {done}건 · 벡터 복사 {copied}건")
+    print(f" 총 보유 {len(vs)}/{len(chunks)}건 (차원 {vs.dim}) · "
+          f"{time.time() - t0:.0f}초 소요")
+    print(f" 저장 → {out}")
+    if len(vs) >= len(chunks):
+        print("\n✅ 완료. USE_EMBEDDING=true 로 두고 서버를 재시작하십시오.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="청크 임베딩 생성 (CLOVA Studio)")
     ap.add_argument("--index", default=str(DEFAULT_INDEX_DIR))
@@ -164,13 +221,18 @@ def main(argv: list[str] | None = None) -> int:
     print("═" * 62)
     print(" 청크 임베딩 생성 — CLOVA Studio")
     print("═" * 62)
-    print(f" endpoint : {s.clova_embedding_endpoint}")
-    print(f" API KEY  : {'설정됨' if s.clova_api_key else '★ 비어 있음 ★'}")
+    print(f" 백엔드   : {s.embedding_backend}")
+    if emb_backend() == "clova":
+        print(f" endpoint : {s.clova_embedding_endpoint}")
+        print(f" API KEY  : {'설정됨' if s.clova_api_key else '★ 비어 있음 ★'}")
+    else:
+        print(f" 모델     : {s.local_embedding_model}")
     print(f" USE_EMBEDDING : {s.use_embedding}")
     print()
 
-    if not s.clova_api_key:
-        print("❌ CLOVA_API_KEY 가 없습니다. .env 를 먼저 채우십시오.")
+    if emb_backend() == "clova" and not s.clova_api_key:
+        print("❌ CLOVA_API_KEY 가 없습니다. .env 를 먼저 채우거나,")
+        print("   EMBEDDING_BACKEND=local 로 두어 로컬 모델을 쓰십시오.")
         return 1
     if not s.use_embedding:
         print("⚠️  USE_EMBEDDING=false 입니다. 벡터는 만들어 두되, 검색에서는")
@@ -226,6 +288,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f" 사라진 청크의 벡터 {removed}건 정리 후 저장했습니다.")
         print("\n✅ 이미 최신입니다. 새로 만들 것이 없습니다.")
         return 0
+
+    # ── 로컬 백엔드: 배치로 한 번에 ──────────────────────────
+    # API 호출이 아니라서 속도 제한도, 건당 대기도 없다.
+    # 8천 건이 몇 분에 끝나므로 CLOVA 경로의 2시간과 비교가 안 된다.
+    if emb_backend() != "clova":
+        return _run_local(vs, chunks, grouped, member_of, args)
 
     print(f" 요청 간격 {args.pace:.1f}초로 시작 "
           f"(429가 나면 자동으로 늘립니다)")

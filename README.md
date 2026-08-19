@@ -138,18 +138,23 @@ PostgreSQL(pgvector/tsvector)로 전환하려면 `sql/schema.sql`로 초기화�
 `.env`의 `DATABASE_URL`을 채우십시오. 검색 인터페이스가 동일하므로
 `app/retrieval/hybrid.py`의 백엔드만 교체하면 됩니다.
 
-### 임베딩 (주최측 확인 결과 사용 허용)
+### 임베딩 (타사 모델 사용 허용 · 2026-08-19 확인)
 
-**CLOVA Studio 임베딩(bge-m3)만** 사용합니다. 네이버 클라우드가 제공하는
-모델이라 "LLM은 HyperCLOVA X만" 제약 안에 확실히 들어옵니다. 외부 오픈소스
-임베딩은 허용 여부가 다시 불확실해지므로 도입하지 않았습니다.
+임베딩은 **검색 순위용 벡터**일 뿐 답변 문장을 만들지 않으므로 대회 제약
+밖입니다. ⚠️ 답변을 만드는 **L1·L5'·L6 세 호출만은 HyperCLOVA X 전용**입니다.
 
 ```bash
 python -m app.ingest.build_index        # ① 인덱스
-python -m app.ingest.build_embeddings   # ② 청크 벡터 (20~40분, 중단해도 이어서)
+python -m app.ingest.build_embeddings   # ② 청크 벡터
 ```
 
-임베딩 API가 **텍스트 1건당 1회 호출**이라 인제스트와 분리된 별도 단계입니다.
+백엔드는 두 가지입니다(`EMBEDDING_BACKEND`):
+
+| | 소요 | 제약 |
+|---|---|---|
+| **local** (기본) | 8천 청크 **몇 분** | 라이브러리 설치 필요(`requirements-embedding.txt`), 모델 ~470MB |
+| clova | **2시간+** | 건당 1회 호출 + 속도 제한(429)으로 자주 끊김 |
+
 청크 본문 해시가 같으면 다시 만들지 않으므로, 문서를 일부만 바꿔도 그 부분만
 갱신됩니다. 벡터는 `data/index/vectors.bin`에 float32로 저장됩니다(numpy 불필요).
 

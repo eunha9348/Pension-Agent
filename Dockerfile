@@ -10,6 +10,21 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 로컬 임베딩 백엔드(선택). WITH_EMBEDDING=true 로 빌드할 때만 설치한다.
+#   docker compose build --build-arg WITH_EMBEDDING=true
+# CPU 전용 휠을 받는다 — GPU 없는 인스턴스에서 CUDA 빌드는 수 GB 낭비다.
+ARG WITH_EMBEDDING=false
+COPY requirements-embedding.txt .
+RUN if [ "$WITH_EMBEDDING" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-embedding.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu ; \
+    fi
+
+# 모델을 컨테이너 안에 캐시하면 재시작할 때마다 다시 받는다 —
+# 호스트 볼륨(/app/data/models)에 두고 재사용한다(docker-compose.yml 참고).
+ENV HF_HOME=/app/data/models \
+    SENTENCE_TRANSFORMERS_HOME=/app/data/models
+
 COPY app/ ./app/
 COPY sql/ ./sql/
 # 평가셋도 넣는다 — 배포한 그 환경에서 실물 코퍼스로 품질을 재기 위해서다.

@@ -1,0 +1,19 @@
+# 로컬 임베딩 백엔드 전용 (선택 설치)
+# ─────────────────────────────────────────────────────────────
+# EMBEDDING_BACKEND=local 일 때만 필요합니다.
+# 없어도 서비스는 정상 기동하며, 검색이 BM25 단독으로 축퇴할 뿐입니다.
+#
+#   pip install -r requirements-embedding.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cpu
+#
+# ⚠️ --extra-index-url 을 빼면 CUDA 빌드(수 GB)가 받아집니다.
+#    EC2 t계열처럼 GPU가 없는 인스턴스에서는 디스크만 낭비합니다.
+#
+# 모델 크기(첫 실행 시 자동 다운로드):
+#   intfloat/multilingual-e5-small   ~470MB  (기본값, 한국어 양호)
+#   intfloat/multilingual-e5-base    ~1.1GB
+#   BAAI/bge-m3                      ~2.2GB  (최고 품질, CLOVA v2와 동일 계열)
+# 바꾸려면 .env 의 LOCAL_EMBEDDING_MODEL 을 수정하십시오.
+
+sentence-transformers==3.3.1
+torch==2.5.1

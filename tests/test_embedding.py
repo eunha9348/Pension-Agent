@@ -105,19 +105,46 @@ def test_allowed_필터가_적용된다():
 # 축퇴 안전성
 # ════════════════════════════════════════════════════════════════
 
-def test_키가_없으면_임베딩을_쓰지_않는다(monkeypatch):
+def test_clova_백엔드는_키가_없으면_쓰지_않는다(monkeypatch):
     """USE_EMBEDDING=true 여도 키가 없으면 호출을 시도조차 하면 안 된다."""
     import app.retrieval.embedding as emb
     monkeypatch.setattr(emb, "get_settings",
-                        lambda: Settings(use_embedding=True, clova_api_key=""))
+                        lambda: Settings(use_embedding=True, clova_api_key="",
+                                         embedding_backend="clova"))
     assert emb.embedding_enabled() is False
+    assert emb.embed_texts(["질의"]) is None
+
+
+def test_local_백엔드는_키가_필요_없다(monkeypatch):
+    """로컬 모델은 API를 쓰지 않으므로 CLOVA 키와 무관하게 동작해야 한다.
+    (429 때문에 기본 백엔드를 local로 둔 이유이기도 하다.)"""
+    import app.retrieval.embedding as emb
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True, clova_api_key="",
+                                         embedding_backend="local"))
+    assert emb.embedding_enabled() is True
+
+
+def test_모델을_못_불러오면_BM25로_축퇴한다(monkeypatch):
+    """sentence-transformers 미설치·모델 다운로드 실패 등 —
+    어떤 경우에도 서비스가 죽으면 안 된다."""
+    import app.retrieval.embedding as emb
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True,
+                                         embedding_backend="local"))
+
+    def _boom(texts, **kw):
+        raise ImportError("No module named 'sentence_transformers'")
+
+    monkeypatch.setattr(emb, "embed_local", _boom)
     assert emb.embed_texts(["질의"]) is None
 
 
 def test_설정이_꺼져_있으면_None을_준다(monkeypatch):
     import app.retrieval.embedding as emb
     monkeypatch.setattr(emb, "get_settings",
-                        lambda: Settings(use_embedding=False, clova_api_key="nv-k"))
+                        lambda: Settings(use_embedding=False, clova_api_key="nv-k",
+                                         embedding_backend="clova"))
     assert emb.embed_texts(["질의"]) is None
 
 
@@ -125,7 +152,8 @@ def test_호출이_실패하면_None으로_축퇴한다(monkeypatch):
     """API가 죽어도 검색은 BM25로 계속 돌아야 한다."""
     import app.retrieval.embedding as emb
     monkeypatch.setattr(emb, "get_settings",
-                        lambda: Settings(use_embedding=True, clova_api_key="nv-k"))
+                        lambda: Settings(use_embedding=True, clova_api_key="nv-k",
+                                         embedding_backend="clova"))
 
     def _boom(text, **kw):
         raise emb.EmbeddingError("연결 실패")
@@ -201,7 +229,8 @@ def test_429는_RateLimitError로_구분된다(monkeypatch):
 
     monkeypatch.setattr(emb, "get_settings",
                         lambda: Settings(use_embedding=True, clova_api_key="nv-k",
-                                         clova_embedding_endpoint=_ENDPOINT))
+                                         clova_embedding_endpoint=_ENDPOINT,
+                                         embedding_backend="clova"))
     monkeypatch.setattr(emb.time, "sleep", lambda s: None)   # 백오프 대기 생략
 
     class _Resp:
@@ -227,7 +256,8 @@ def test_429는_여러_번_쉬며_재시도한_뒤에_실패한다(monkeypatch):
 
     monkeypatch.setattr(emb, "get_settings",
                         lambda: Settings(use_embedding=True, clova_api_key="nv-k",
-                                         clova_embedding_endpoint=_ENDPOINT))
+                                         clova_embedding_endpoint=_ENDPOINT,
+                                         embedding_backend="clova"))
     sleeps: list[float] = []
     monkeypatch.setattr(emb.time, "sleep", lambda s: sleeps.append(s))
 
@@ -257,7 +287,8 @@ def test_429는_일반_재시도_예산을_소모하지_않는다(monkeypatch):
 
     monkeypatch.setattr(emb, "get_settings",
                         lambda: Settings(use_embedding=True, clova_api_key="nv-k",
-                                         clova_embedding_endpoint=_ENDPOINT))
+                                         clova_embedding_endpoint=_ENDPOINT,
+                                         embedding_backend="clova"))
     monkeypatch.setattr(emb.time, "sleep", lambda s: None)
 
     calls = {"n": 0}
@@ -307,7 +338,8 @@ def test_429를_겪으면_신호가_남는다(monkeypatch):
 
     monkeypatch.setattr(emb, "get_settings",
                         lambda: Settings(use_embedding=True, clova_api_key="nv-k",
-                                         clova_embedding_endpoint=_ENDPOINT))
+                                         clova_embedding_endpoint=_ENDPOINT,
+                                         embedding_backend="clova"))
     monkeypatch.setattr(emb.time, "sleep", lambda s: None)
     emb.rate_limit_seen()      # 이전 상태 초기화
 

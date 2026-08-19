@@ -1,23 +1,31 @@
-"""임베딩 — CLOVA Studio 임베딩 API (bge-m3).
+"""임베딩 — 로컬 모델(기본) 또는 CLOVA Studio API.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- 대회 제약 1: "LLM은 HyperCLOVA X만 사용".
- 임베딩 모델 사용 가능 여부를 주최측에 확인했고 **허용**을 받았다.
- 다만 **CLOVA Studio 임베딩만** 쓴다 — 네이버 클라우드가 제공하는 모델이라
- 제약 안에 확실히 들어온다. 외부 오픈소스 임베딩(sentence-transformers 등)은
- 허용 여부가 다시 불확실해지므로 도입하지 않는다.
+ 대회 제약(CLAUDE.md 1번)은 **답변을 만드는 LLM**에 관한 것이다.
+ 임베딩은 검색 순위용 벡터일 뿐 답변 문장을 만들지 않으므로 제약 밖이며,
+ **타사 모델 사용이 확인 완료됐다(2026-08-19).**
+
+ 답변 문장을 만드는 L1·L5'·L6 세 호출만은 HyperCLOVA X 전용이다.
+ 거기에 타사 모델을 넣으면 실격이므로 절대 바꾸지 말 것.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-API 규격
-  POST {endpoint}/{model}
-    headers: Authorization: Bearer <키> · X-NCP-CLOVASTUDIO-REQUEST-ID
-    body   : {"text": "..."}                ← **한 번에 한 건**
-    resp   : {"status": {...}, "result": {"embedding": [...]}}
+백엔드 두 가지 (EMBEDDING_BACKEND)
 
-호출이 건당 1회라는 점이 설계를 지배한다. 코퍼스 8,195청크면 8,195회다.
-그래서 청크 벡터는 인제스트와 분리된 별도 단계에서 한 번만 만들고
-(app/ingest/build_embeddings.py), 본문 해시로 증분 갱신한다.
-질의 벡터만 요청 시점에 1회 계산한다.
+  local (기본)  sentence-transformers 로컬 모델
+                · 호출 제한 없음 — 8천 청크를 배치로 몇 분에 끝낸다
+                · API 키 불필요, 비용 없음, 결과 재현 가능
+                · 첫 실행 때 모델을 내려받는다(수백 MB)
+
+  clova         CLOVA Studio 임베딩 API (bge-m3)
+                POST {endpoint} · body {"text": "..."} ← **한 번에 한 건**
+                resp {"status": {...}, "result": {"embedding": [...]}}
+                · 건당 1회 호출이라 8,195청크면 8,195회
+                · 속도 제한(429)이 걸려 실측 2시간 이상, 중간에 자주 끊김
+                → 그래서 기본값을 local로 두었다
+
+어느 백엔드든 청크 벡터는 인제스트와 분리된 별도 단계에서 만들고
+(app/ingest/build_embeddings.py) 본문 해시로 증분 갱신한다.
+질의 벡터만 요청 시점에 계산한다.
 
 실패는 삼키지 않되 서비스를 죽이지도 않는다 — 벡터를 못 얻으면
 BM25 단독으로 축퇴한다. 검색이 조금 나빠지는 것이 답을 못 하는 것보다 낫다.
@@ -43,10 +51,60 @@ class EmbeddingError(RuntimeError):
     """임베딩 호출 실패. 상위에서 BM25 축퇴를 판단한다."""
 
 
+def backend() -> str:
+    return (get_settings().embedding_backend or "local").lower()
+
+
 def embedding_enabled() -> bool:
-    """임베딩 경로 사용 여부."""
+    """임베딩 경로 사용 여부.
+
+    clova 백엔드는 키가 있어야 하지만, local 백엔드는 키가 필요 없다.
+    """
     s = get_settings()
-    return bool(s.use_embedding and s.clova_api_key)
+    if not s.use_embedding:
+        return False
+    if backend() == "clova":
+        return bool(s.clova_api_key)
+    return True
+
+
+# ── 로컬 백엔드 ──────────────────────────────────────────────
+
+_LOCAL_MODEL = None
+
+
+def _local_model():
+    """모델을 프로세스당 1회만 적재한다(수백 MB — 매번 읽으면 안 된다)."""
+    global _LOCAL_MODEL
+    if _LOCAL_MODEL is None:
+        from sentence_transformers import SentenceTransformer
+        name = get_settings().local_embedding_model
+        log.info("[embedding] 로컬 모델 적재: %s", name)
+        _LOCAL_MODEL = SentenceTransformer(name)
+    return _LOCAL_MODEL
+
+
+def _prep(texts: Sequence[str], is_query: bool) -> list[str]:
+    """모델별 입력 규약을 맞춘다.
+
+    e5 계열은 문서에 "passage: ", 질의에 "query: " 접두를 요구한다.
+    이걸 빠뜨리면 검색 품질이 눈에 띄게 떨어지는데, 에러가 나지 않아
+    알아채기 어렵다 — 그래서 코드에서 자동으로 붙인다.
+    """
+    name = (get_settings().local_embedding_model or "").lower()
+    if "e5" not in name:
+        return [t or "" for t in texts]
+    prefix = "query: " if is_query else "passage: "
+    return [prefix + (t or "") for t in texts]
+
+
+def embed_local(texts: Sequence[str], *, is_query: bool = False,
+                batch_size: int = 32) -> list[list[float]]:
+    """로컬 모델로 한 번에 여러 건을 임베딩한다. 호출 제한이 없다."""
+    model = _local_model()
+    vecs = model.encode(_prep(texts, is_query), batch_size=batch_size,
+                        show_progress_bar=False, normalize_embeddings=True)
+    return [[float(x) for x in v] for v in vecs]
 
 
 def _headers() -> dict[str, str]:
@@ -158,30 +216,43 @@ def embed_one(text: str, *, timeout: Optional[float] = None,
     raise EmbeddingError(str(last))
 
 
-def embed_texts(texts: Sequence[str]) -> Optional[list[list[float]]]:
-    """텍스트 목록 → 벡터 목록. 하나라도 실패하면 None(=BM25 축퇴).
+def embed_texts(texts: Sequence[str], *,
+                is_query: bool = True) -> Optional[list[list[float]]]:
+    """텍스트 목록 → 벡터 목록. 실패하면 None(=BM25 축퇴).
 
-    질의 임베딩처럼 소수 건에 쓰는 경로다. 코퍼스 전체 임베딩은
-    app/ingest/build_embeddings.py 가 진행 상황을 보여주며 따로 처리한다.
+    질의 임베딩처럼 소수 건에 쓰는 경로다(그래서 is_query 기본값이 True).
+    코퍼스 전체 임베딩은 app/ingest/build_embeddings.py 가 따로 처리한다.
     """
     if not embedding_enabled() or not texts:
         return None
 
-    out: list[list[float]] = []
-    for t in texts:
-        key = (t or "").strip()
-        if key in _QUERY_CACHE:
-            out.append(_QUERY_CACHE[key])
-            continue
-        try:
-            vec = embed_one(key)
-        except EmbeddingError as e:
-            log.warning("[embedding] 실패 → BM25 단독으로 축퇴: %s", e)
-            return None
+    # 캐시 히트 확인 (질의는 반복되는 경우가 많다)
+    keys = [(t or "").strip() for t in texts]
+    if all(k in _QUERY_CACHE for k in keys):
+        return [_QUERY_CACHE[k] for k in keys]
+
+    try:
+        if backend() == "clova":
+            vecs = [_cached_clova(k) for k in keys]
+        else:
+            vecs = embed_local(keys, is_query=is_query)
+    except EmbeddingError as e:
+        log.warning("[embedding] 실패 → BM25 단독으로 축퇴: %s", e)
+        return None
+    except Exception as e:      # noqa: BLE001 — 모델 적재 실패 등
+        log.warning("[embedding] 로컬 모델 사용 불가 → BM25 단독으로 축퇴: %s", e)
+        return None
+
+    for k, v in zip(keys, vecs):
         if len(_QUERY_CACHE) < _QUERY_CACHE_MAX:
-            _QUERY_CACHE[key] = vec
-        out.append(vec)
-    return out
+            _QUERY_CACHE[k] = v
+    return vecs
+
+
+def _cached_clova(key: str) -> list[float]:
+    if key in _QUERY_CACHE:
+        return _QUERY_CACHE[key]
+    return embed_one(key)
 
 
 def cosine(a: Sequence[float], b: Sequence[float]) -> float:
