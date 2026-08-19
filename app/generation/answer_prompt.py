@@ -42,11 +42,20 @@ SUPERVISOR_SYSTEM_PROMPT = """당신은 연금 상담 답변을 작성하는 상
    대신 조건을 나눠 설명하십시오: "A 상황이면 ~, B 상황이면 ~"
 3. 확인되지 않은 조건을 아는 것처럼 쓰지 마십시오.
    [확인이 필요한 항목]에 있는 것은 되물어야 할 사항입니다.
-4. [주의할 혼동]에 적힌 내용이 있으면 반드시 답변에서 바로잡으십시오.
-   이때 "A와 B는 다릅니다", "~에 해당하지 않습니다", "주의하실 점은" 처럼
-   **무엇이 어떻게 구분되는지 드러나는 표현**을 쓰십시오. 교정 취지가
-   문장에 드러나지 않으면 답변이 반려되어 다시 작성해야 합니다.
-5. 문서 ID(doc39 등)를 본문에 쓰지 마십시오. 근거 각주는 시스템이 붙입니다.
+4. [주의할 혼동]은 참고 사항이 아니라 **반드시 반영해야 할 항목**입니다.
+   적힌 항목마다, 그 내용에 등장하는 **구체적인 용어를 그대로 써서**
+   답변에 한 문장 이상 포함하십시오.
+   예: "법정 외 퇴직급여"라고 적혀 있으면 답변에도 "법정 외"라는 말이
+       나와야 합니다. "주의가 필요합니다" 같은 일반적인 문장은 반영으로
+       인정되지 않습니다.
+   반영 여부는 항목별로 따로 검사하며, 하나라도 빠지면 답변이 반려됩니다.
+5. 수치를 쓸 때는 **숫자 사이의 관계**도 정확해야 합니다.
+   근거에 "A와 B 중 적은 금액"이라고 되어 있으면 "A 또는 B 중 선택"이라고
+   쓰면 안 됩니다. 숫자가 맞아도 관계를 틀리면 잘못된 답변입니다.
+6. 문서 ID(doc39 등)를 본문에 쓰지 마십시오. 근거 각주는 시스템이 붙입니다.
+7. 이미 발생한 **퇴직소득**(명예퇴직수당·퇴직금 등)과 **새로 납입하는 금액**은
+   적용 제도가 다릅니다. 전자는 이연퇴직소득세 감면, 후자는 연금계좌 세액공제
+   입니다. 질문이 어느 쪽인지 확인하고, 다른 쪽 제도를 설명하지 마십시오.
 
 ━━ 출력 형식 (이 세 블록만, 이 순서로) ━━
 [확인된 조건]
@@ -91,9 +100,22 @@ def build_supervisor_payload(query_spec: dict,
             parts.append(f"---\n{c.text[:700]}")
 
     if trap_context and trap_context.get("correction_notes"):
-        parts.append("\n[주의할 혼동 — 답변에서 바로잡을 것]")
-        for note in trap_context["correction_notes"][:4]:
-            parts.append(f"· {note}")
+        # 항목별로 어떤 용어가 답변에 나와야 하는지까지 알려 준다.
+        # 예전에는 교정 문구만 줬더니 "주의가 필요합니다" 같은 일반 문장으로
+        # 때우고 넘어갔고, 감사는 그걸 반영으로 인정했다(Q-002).
+        checks = {c["id"]: c for c in (trap_context.get("checks") or [])}
+        parts.append("\n[주의할 혼동 — 항목마다 반드시 답변에 반영할 것]")
+        for c in (trap_context.get("checks") or [])[:4]:
+            note = c.get("correction") or c.get("title") or ""
+            if not note:
+                continue
+            line = f"· {note}"
+            if terms := c.get("verify_any"):
+                line += f"\n  (다음 중 하나는 반드시 답변에 등장해야 함: {', '.join(terms[:4])})"
+            parts.append(line)
+        if not checks:      # checks가 없는 예전 호출 경로
+            for note in trap_context["correction_notes"][:4]:
+                parts.append(f"· {note}")
 
     if ask_back_items:
         parts.append("\n[확인이 필요한 항목 — 단정하지 말고 되물을 것]")

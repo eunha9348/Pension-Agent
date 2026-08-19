@@ -316,6 +316,82 @@ def sanitize_spec(spec: dict, question: str) -> dict:
 
 
 # ════════════════════════════════════════════════════════════════
+# LLM 산출물과 규칙 산출물의 조정
+# ════════════════════════════════════════════════════════════════
+
+# 이 말이 있으면 **이미 발생한 퇴직소득** 이야기다.
+# 관련 제도는 이연퇴직소득세 감면이지, 신규 납입 세액공제가 아니다.
+_RETIREMENT_INCOME_SIGNALS = ("명예퇴직", "명퇴", "희망퇴직", "퇴직금",
+                              "퇴직급여", "퇴직소득", "이연퇴직")
+
+# 신규 납입 세액공제를 실제로 묻는 말
+_TAX_CREDIT_SIGNALS = ("세액공제", "공제한도", "공제 한도", "소득공제",
+                       "납입한도", "납입 한도", "연말정산")
+
+MAX_SLOTS = 3      # 슬롯이 많으면 답변이 산만해진다
+
+
+def reconcile_spec(spec: dict, fallback: dict, question: str) -> dict:
+    """LLM 분석과 규칙 분석을 합친다. 도메인 판단은 규칙이 이긴다.
+
+    ━━ 왜 필요한가 (Q-001 실패) ━━
+    "명퇴수당을 연금계좌에 넣으면 **세금감면**이…"라는 질의에서 L1이 의도를
+    '세액공제'로 잡았다. 명퇴수당은 이미 발생한 퇴직소득이므로 맞는 제도는
+    이연퇴직소득세 감면인데, '세금감면'이라는 표현에 이끌려 전혀 다른
+    제도로 분류한 것이다.
+
+    더 나쁜 건 구조였다. LLM이 슬롯을 주면 규칙 슬롯을 **통째로 버렸다.**
+    그래서 화면에 표시된 실행 계획(퇴직소득세 감면율 계산)과 실제로 실행된
+    슬롯(세액공제)이 서로 달랐다. 사용자도 우리도 눈치채기 어려운 형태다.
+
+    CLAUDE.md의 "판단은 코드, 문장은 LLM" 원칙대로, 어떤 제도를 다루는지는
+    코드가 정하고 LLM은 그 위에서 문장을 만든다.
+    """
+    out = dict(spec)
+    q = question or ""
+
+    has_retirement = any(k in q for k in _RETIREMENT_INCOME_SIGNALS)
+    has_tax_credit = any(k in q for k in _TAX_CREDIT_SIGNALS)
+
+    # ── 1. 제도 오분류 교정 ──────────────────────────────────
+    # 퇴직소득 신호는 있는데 세액공제를 명시적으로 묻지 않았다면,
+    # LLM이 '세액공제'라고 해도 그 판단은 채택하지 않는다.
+    misclassified = (has_retirement and not has_tax_credit
+                     and out.get("intent") == "세액공제")
+    if misclassified:
+        out["intent"] = fallback.get("intent") or "퇴직소득세_감면"
+        out["source"] = "llm+rule(제도교정)"
+
+    # ── 2. 규칙이 찾은 슬롯을 잃지 않는다 ────────────────────
+    # LLM 슬롯으로 갈아치우지 않고 합친다. 오분류가 확인된 경우에는
+    # 규칙 슬롯을 앞에 둬 계산 함수가 먼저 잡히게 한다.
+    llm_slots = list(out.get("asked_for") or [])
+    rule_slots = list(fallback.get("asked_for") or [])
+    seen = {s.get("id") for s in llm_slots}
+    missing = [s for s in rule_slots if s.get("id") not in seen]
+
+    if missing:
+        merged = (missing + llm_slots) if misclassified else (llm_slots + missing)
+        out["asked_for"] = merged[:MAX_SLOTS]
+        if not misclassified:
+            out["source"] = out.get("source", "llm") + "+rule(슬롯보강)"
+
+    # ── 3. 계획과 실제 실행을 일치시킨다 ─────────────────────
+    # 표시된 계획과 실행 슬롯이 다르면 트레이스를 신뢰할 수 없다.
+    have_fn = {s.get("calc_function") for s in out["asked_for"]
+               if s.get("calc_function")}
+    planned = [c for c in (out.get("planned_calls") or [])
+               if c.get("function") in have_fn]
+    for s in out["asked_for"]:
+        fn = s.get("calc_function")
+        if fn and fn not in {c.get("function") for c in planned}:
+            planned.append({"function": fn, "args": {}})
+    out["planned_calls"] = planned
+
+    return out
+
+
+# ════════════════════════════════════════════════════════════════
 # 진입점
 # ════════════════════════════════════════════════════════════════
 
@@ -365,6 +441,16 @@ def make_extract_query_spec(client=None,
             spec["source"] = "llm+rule"
         if not spec.get("plan"):
             spec["plan"] = fallback["plan"]
+
+        # ⚠️ 도메인 판단은 규칙이 이긴다. LLM이 제도를 잘못 짚어도
+        #    (Q-001: 명퇴수당 → '세액공제') 여기서 되돌린다.
+        before = spec.get("intent")
+        spec = reconcile_spec(spec, fallback, question)
+        if trace_log and spec.get("intent") != before:
+            trace_log("질의분석_제도교정",
+                      f"L1이 의도를 '{before}'로 잡았으나 질의에 퇴직소득 신호가 "
+                      f"있어 '{spec.get('intent')}'로 교정 "
+                      f"(퇴직소득과 신규 납입 세액공제는 다른 제도)")
         return spec
 
     return extract_query_spec
