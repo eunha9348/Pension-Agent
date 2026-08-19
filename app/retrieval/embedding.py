@@ -1,50 +1,138 @@
-"""임베딩 훅 — **격리 지점**.
+"""임베딩 — CLOVA Studio 임베딩 API (bge-m3).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- 대회 제약 1: "LLM은 HyperCLOVA X만 사용". 임베딩·NLI 모델이 이 범위에
- 포함되는지 **확인되지 않았다**. 확인 전까지 가장 보수적으로 —
- 임베딩 없이 BM25 단독으로 동작한다.
-
- 허용이 확인되면 **이 파일의 embed_texts() 하나만** 구현하고
- .env 의 USE_EMBEDDING=true 로 바꾸면 된다.
- 임베딩에 의존하는 코드는 전부 이 파일 안에 있다.
+ 대회 제약 1: "LLM은 HyperCLOVA X만 사용".
+ 임베딩 모델 사용 가능 여부를 주최측에 확인했고 **허용**을 받았다.
+ 다만 **CLOVA Studio 임베딩만** 쓴다 — 네이버 클라우드가 제공하는 모델이라
+ 제약 안에 확실히 들어온다. 외부 오픈소스 임베딩(sentence-transformers 등)은
+ 허용 여부가 다시 불확실해지므로 도입하지 않는다.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-구현할 때 주의:
-  · CLOVA Studio 임베딩 API를 쓴다면 HyperCLOVA X 계열이므로 제약을 만족할
-    가능성이 높다. 외부 오픈소스 임베딩 모델은 확인 전까지 쓰지 말 것.
-  · 인제스트에서 청크 벡터를 미리 만들어 두어야 한다(질의 시 계산하면 느리다).
-    sql/schema.sql 의 chunks.embedding 컬럼이 그 자리다.
+API 규격
+  POST {endpoint}/{model}
+    headers: Authorization: Bearer <키> · X-NCP-CLOVASTUDIO-REQUEST-ID
+    body   : {"text": "..."}                ← **한 번에 한 건**
+    resp   : {"status": {...}, "result": {"embedding": [...]}}
+
+호출이 건당 1회라는 점이 설계를 지배한다. 코퍼스 8,195청크면 8,195회다.
+그래서 청크 벡터는 인제스트와 분리된 별도 단계에서 한 번만 만들고
+(app/ingest/build_embeddings.py), 본문 해시로 증분 갱신한다.
+질의 벡터만 요청 시점에 1회 계산한다.
+
+실패는 삼키지 않되 서비스를 죽이지도 않는다 — 벡터를 못 얻으면
+BM25 단독으로 축퇴한다. 검색이 조금 나빠지는 것이 답을 못 하는 것보다 낫다.
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Optional, Sequence
 
 from app.config import get_settings
 
+log = logging.getLogger("embedding")
+
+# 질의 임베딩 캐시 — 같은 질의가 반복되면 호출을 아낀다.
+# 평가는 세션이 없으므로 프로세스 생존 기간 동안만 유효하면 충분하다.
+_QUERY_CACHE: dict[str, list[float]] = {}
+_QUERY_CACHE_MAX = 512
+
+
+class EmbeddingError(RuntimeError):
+    """임베딩 호출 실패. 상위에서 BM25 축퇴를 판단한다."""
+
 
 def embedding_enabled() -> bool:
-    """임베딩 경로 사용 여부. 기본값 False(보수적 가정)."""
-    return bool(get_settings().use_embedding)
+    """임베딩 경로 사용 여부."""
+    s = get_settings()
+    return bool(s.use_embedding and s.clova_api_key)
+
+
+def _headers() -> dict[str, str]:
+    """인증 방식은 채팅 API와 같다 — 키 접두사로 신형/구형을 가른다.
+
+    (clova.py의 _headers()와 같은 규칙이다. 두 곳이 어긋나면 채팅은 되는데
+     임베딩만 401이 나는 혼란스러운 상황이 되므로, 규칙을 바꿀 때는
+     반드시 두 파일을 함께 고칠 것.)
+    """
+    s = get_settings()
+    key = s.clova_api_key
+    if key.startswith("nv-"):
+        h = {"Authorization": f"Bearer {key}"}
+    else:
+        h = {"X-NCP-CLOVASTUDIO-API-KEY": key}
+        if s.clova_apigw_key:
+            h["X-NCP-APIGW-API-KEY"] = s.clova_apigw_key
+    h["Content-Type"] = "application/json"
+    h["Accept"] = "application/json"
+    if s.clova_request_id:
+        h["X-NCP-CLOVASTUDIO-REQUEST-ID"] = s.clova_request_id
+    return h
+
+
+def embed_one(text: str, *, timeout: Optional[float] = None,
+              max_retry: int = 1) -> list[float]:
+    """텍스트 1건 → 벡터. 실패하면 EmbeddingError를 올린다."""
+    import httpx
+
+    s = get_settings()
+    endpoint = s.clova_embedding_endpoint
+    if not endpoint:
+        raise EmbeddingError("CLOVA_EMBEDDING_ENDPOINT 가 비어 있습니다.")
+
+    body = {"text": (text or "").strip()}
+    if not body["text"]:
+        raise EmbeddingError("빈 텍스트는 임베딩할 수 없습니다.")
+
+    last: Optional[Exception] = None
+    for attempt in range(max_retry + 1):
+        try:
+            with httpx.Client(timeout=timeout or s.clova_timeout_sec) as c:
+                resp = c.post(endpoint, headers=_headers(), json=body)
+            if resp.status_code != 200:
+                raise EmbeddingError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+            code = str((data.get("status") or {}).get("code", ""))
+            if code and not code.startswith("2"):
+                raise EmbeddingError(
+                    f"CLOVA status {code}: {(data.get('status') or {}).get('message')}")
+            vec = ((data.get("result") or {}).get("embedding")
+                   or (data.get("result") or {}).get("embeddings"))
+            if not vec:
+                raise EmbeddingError(f"응답에 embedding이 없습니다: {str(data)[:200]}")
+            return [float(v) for v in vec]
+        except Exception as e:      # noqa: BLE001 — 재시도 후 그대로 올린다
+            last = e
+            if attempt < max_retry:
+                time.sleep(0.4 * (attempt + 1))
+    raise EmbeddingError(str(last))
 
 
 def embed_texts(texts: Sequence[str]) -> Optional[list[list[float]]]:
-    """텍스트 목록 → 벡터 목록.
+    """텍스트 목록 → 벡터 목록. 하나라도 실패하면 None(=BM25 축퇴).
 
-    ★ 여기에 임베딩 호출을 구현하십시오 ★
-    현재는 미구현 상태를 명시적으로 알리기 위해 None을 반환한다.
-    None이면 상위 계층(hybrid.py)이 BM25 단독 경로로 자동 축퇴한다.
+    질의 임베딩처럼 소수 건에 쓰는 경로다. 코퍼스 전체 임베딩은
+    app/ingest/build_embeddings.py 가 진행 상황을 보여주며 따로 처리한다.
     """
-    if not embedding_enabled():
+    if not embedding_enabled() or not texts:
         return None
 
-    # ─────────────────────────────────────────────────────────
-    # TODO(팀 확인 후 구현): CLOVA Studio 임베딩 엔드포인트 호출
-    #   from app.llm.clova import get_client
-    #   ...
-    # ─────────────────────────────────────────────────────────
-    return None
+    out: list[list[float]] = []
+    for t in texts:
+        key = (t or "").strip()
+        if key in _QUERY_CACHE:
+            out.append(_QUERY_CACHE[key])
+            continue
+        try:
+            vec = embed_one(key)
+        except EmbeddingError as e:
+            log.warning("[embedding] 실패 → BM25 단독으로 축퇴: %s", e)
+            return None
+        if len(_QUERY_CACHE) < _QUERY_CACHE_MAX:
+            _QUERY_CACHE[key] = vec
+        out.append(vec)
+    return out
 
 
 def cosine(a: Sequence[float], b: Sequence[float]) -> float:

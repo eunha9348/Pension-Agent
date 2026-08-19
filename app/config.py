@@ -53,6 +53,11 @@ class Settings:
     database_url: str = ""
     index_path: str = "data/index"
     use_embedding: bool = False
+    # 임베딩은 CLOVA Studio 것만 쓴다 — 대회 제약("LLM은 HyperCLOVA X만")
+    # 안에 확실히 들어오는 선택지이기 때문이다. 외부 오픈소스 임베딩은
+    # 허용 여부가 다시 불확실해지므로 도입하지 않는다.
+    clova_embedding_endpoint: str = ""
+    embedding_weight: float = 0.5    # RRF 융합 시 벡터 순위 가중치
 
     @property
     def llm_is_mock(self) -> bool:
@@ -84,6 +89,11 @@ def get_settings() -> Settings:
         database_url=os.environ.get("DATABASE_URL", "").strip(),
         index_path=os.environ.get("INDEX_PATH", "data/index").strip(),
         use_embedding=_bool("USE_EMBEDDING", False),
+        clova_embedding_endpoint=os.environ.get(
+            "CLOVA_EMBEDDING_ENDPOINT",
+            "https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2",
+        ).strip(),
+        embedding_weight=_float("EMBEDDING_WEIGHT", 0.5),
     )
 
 

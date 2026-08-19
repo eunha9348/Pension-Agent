@@ -22,8 +22,14 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Callable
+
+# source 필드에서 실제 문서 ID만 추려내기 위한 패턴.
+# "doc39 · doc40 · R2_KR516702010M" → {doc39, doc40, R2_KR516702010M}
+# "각 투자설명서" 처럼 문서를 특정하지 못하는 서술은 걸러진다.
+_DOC_ID = re.compile(r'\b(doc\d+|R2_[A-Za-z0-9]+)\b')
 
 
 @dataclass
@@ -38,6 +44,18 @@ class TrapRule:
     correction: str = ""
     ask_back: str = ""
     is_document_backed: bool = True
+
+    def source_doc_ids(self) -> set[str]:
+        """source 문자열에서 근거 문서 ID를 뽑는다.
+
+        ━━ 이게 왜 중요한가 ━━
+        함정 감지(L2)는 정밀 검색(L3)보다 **먼저** 돈다. 즉 시스템은
+        "이 질의는 명예퇴직 함정에 걸린다 → doc55를 봐야 한다"는 것을
+        검색을 시작하기도 전에 알고 있다. 그런데 예전에는 이 정보가
+        검색으로 전달되는 경로가 없어서, 알면서도 엉뚱한 문서를 근거로
+        답했다(Q-001 실패). 이 메서드가 그 경로의 출발점이다.
+        """
+        return set(_DOC_ID.findall(self.source or ""))
 
 
 # ════════════════════════════════════════════════════════════════
@@ -472,12 +490,25 @@ def build_trap_context(query: str) -> dict:
     """
     hits = detect_traps(query)
     critical = [r for r in hits if r.severity == "critical"]
+
+    # 검색 유도용 — 함정이 지목한 근거 문서와, 그 문서에서 무엇을 찾아야
+    # 하는지(fact)를 짝지어 L3에 넘긴다. fact를 질의로 쓰는 이유는
+    # 사용자 질의가 구어체("절세법만 알려주세요")인 반면 문서는 법령체라,
+    # 원문 질의만으로는 정작 필요한 조항이 검색되지 않기 때문이다.
+    steer: list[dict] = []
+    for r in hits:
+        docs = r.source_doc_ids()
+        if docs and r.fact:
+            steer.append({"id": r.id, "docs": sorted(docs), "fact": r.fact,
+                          "severity": r.severity})
+
     return {
         "detected": [r.id for r in hits],
         "critical_count": len(critical),
         "facts": [{"id": r.id, "fact": r.fact, "source": r.source} for r in hits],
         "correction_notes": [r.correction for r in hits if r.correction],
         "ask_back_candidates": [r.ask_back for r in hits if r.ask_back],
+        "retrieval_steer": steer,
         "trace": (f"함정 후보 {len(hits)}건 감지 (critical {len(critical)}건): "
                   f"{[r.id for r in hits]}" if hits else "함정 후보 없음"),
     }

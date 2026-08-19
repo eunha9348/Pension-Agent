@@ -1,0 +1,159 @@
+"""A-5 · CLOVA 임베딩 연동 회귀.
+
+━━ 이 파일이 지키는 것 ━━
+임베딩은 **있으면 좋고 없어도 도는** 계층이어야 한다. 키가 없든, 벡터를
+아직 안 만들었든, API가 죽었든, 검색은 BM25로 계속 돌아야 한다.
+임베딩 때문에 서비스가 죽으면 임베딩을 안 쓰느니만 못하다.
+
+실제 API 호출은 검증하지 않는다(네트워크·크레딧). 검증 대상은
+"실패했을 때 올바르게 축퇴하는가"와 "저장소가 정확한가"이다.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.config import Settings
+from app.ingest.vector_store import VectorStore, text_hash
+
+
+# ════════════════════════════════════════════════════════════════
+# 벡터 저장소
+# ════════════════════════════════════════════════════════════════
+
+def test_저장하고_불러오면_같은_벡터가_나온다(tmp_path):
+    vs = VectorStore("test-model")
+    vs.add("c1", [0.1, 0.2, 0.3], text_hash("본문1"))
+    vs.add("c2", [0.4, 0.5, 0.6], text_hash("본문2"))
+    vs.save(tmp_path)
+
+    back = VectorStore.load(tmp_path)
+    assert len(back) == 2
+    assert back.dim == 3
+    assert back.model == "test-model"
+    assert [round(v, 5) for v in back.get("c1")] == [0.1, 0.2, 0.3]
+
+
+def test_벡터_파일이_없으면_빈_저장소를_준다(tmp_path):
+    """아직 임베딩을 안 만든 상태 — BM25로 돌아야 한다."""
+    vs = VectorStore.load(tmp_path)
+    assert len(vs) == 0
+    assert vs.rank([0.1, 0.2], top_k=5) == []
+
+
+def test_손상된_벡터_파일이_서비스를_죽이지_않는다(tmp_path):
+    (tmp_path / "vectors.json").write_text("{망가진 JSON", encoding="utf-8")
+    (tmp_path / "vectors.bin").write_bytes(b"\x00\x01")
+    vs = VectorStore.load(tmp_path)
+    assert len(vs) == 0
+
+
+def test_본문이_그대로면_다시_임베딩하지_않는다():
+    """증분 임베딩 — 8195회 호출을 반복하지 않기 위한 핵심 규칙."""
+    vs = VectorStore()
+    vs.add("c1", [1.0, 0.0], text_hash("연금저축 세액공제"))
+    assert vs.needs_embedding("c1", "연금저축 세액공제") is False
+
+
+def test_본문이_바뀌면_다시_임베딩한다():
+    vs = VectorStore()
+    vs.add("c1", [1.0, 0.0], text_hash("연금저축 세액공제"))
+    assert vs.needs_embedding("c1", "연금저축 세액공제 개정") is True
+
+
+def test_처음_보는_청크는_임베딩_대상이다():
+    assert VectorStore().needs_embedding("새청크", "본문") is True
+
+
+def test_차원이_다른_벡터는_거부한다():
+    """모델을 바꿨는데 기존 벡터에 섞이면 검색이 조용히 망가진다."""
+    vs = VectorStore()
+    vs.add("c1", [1.0, 0.0])
+    with pytest.raises(ValueError, match="차원"):
+        vs.add("c2", [1.0, 0.0, 0.0])
+
+
+def test_사라진_청크의_벡터는_정리된다():
+    vs = VectorStore()
+    vs.add("c1", [1.0, 0.0])
+    vs.add("c2", [0.0, 1.0])
+    assert vs.prune({"c1"}) == 1
+    assert len(vs) == 1
+    assert "c2" not in vs
+    assert [round(v, 5) for v in vs.get("c1")] == [1.0, 0.0]
+
+
+def test_코사인_순위가_정확하다():
+    vs = VectorStore()
+    vs.add("같음", [1.0, 0.0])
+    vs.add("직교", [0.0, 1.0])
+    vs.add("반대", [-1.0, 0.0])
+    ranked = vs.rank([1.0, 0.0], top_k=3)
+    assert [cid for cid, _ in ranked] == ["같음", "직교", "반대"]
+    assert round(ranked[0][1], 5) == 1.0
+
+
+def test_allowed_필터가_적용된다():
+    vs = VectorStore()
+    vs.add("c1", [1.0, 0.0])
+    vs.add("c2", [0.9, 0.1])
+    ranked = vs.rank([1.0, 0.0], allowed={"c2"}, top_k=5)
+    assert [cid for cid, _ in ranked] == ["c2"]
+
+
+# ════════════════════════════════════════════════════════════════
+# 축퇴 안전성
+# ════════════════════════════════════════════════════════════════
+
+def test_키가_없으면_임베딩을_쓰지_않는다(monkeypatch):
+    """USE_EMBEDDING=true 여도 키가 없으면 호출을 시도조차 하면 안 된다."""
+    import app.retrieval.embedding as emb
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True, clova_api_key=""))
+    assert emb.embedding_enabled() is False
+    assert emb.embed_texts(["질의"]) is None
+
+
+def test_설정이_꺼져_있으면_None을_준다(monkeypatch):
+    import app.retrieval.embedding as emb
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=False, clova_api_key="nv-k"))
+    assert emb.embed_texts(["질의"]) is None
+
+
+def test_호출이_실패하면_None으로_축퇴한다(monkeypatch):
+    """API가 죽어도 검색은 BM25로 계속 돌아야 한다."""
+    import app.retrieval.embedding as emb
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True, clova_api_key="nv-k"))
+
+    def _boom(text, **kw):
+        raise emb.EmbeddingError("연결 실패")
+
+    monkeypatch.setattr(emb, "embed_one", _boom)
+    assert emb.embed_texts(["질의"]) is None
+
+
+def test_임베딩_헤더가_채팅과_같은_규칙을_쓴다(monkeypatch):
+    """두 곳이 어긋나면 채팅은 되는데 임베딩만 401이 나는 상황이 된다."""
+    import app.retrieval.embedding as emb
+
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(clova_api_key="nv-abc"))
+    assert emb._headers()["Authorization"] == "Bearer nv-abc"
+
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(clova_api_key="ncpXYZ",
+                                         clova_apigw_key="gw-1"))
+    h = emb._headers()
+    assert h["X-NCP-CLOVASTUDIO-API-KEY"] == "ncpXYZ"
+    assert h["X-NCP-APIGW-API-KEY"] == "gw-1"
+    assert "Authorization" not in h
+
+
+def test_벡터가_없으면_BM25_단독으로_돈다(monkeypatch):
+    """임베딩을 켜 두고 벡터를 아직 안 만든 상태 — 흔한 운영 순서다."""
+    import app.retrieval.hybrid as hy
+    monkeypatch.setattr(hy, "embedding_enabled", lambda: True)
+    monkeypatch.setattr(hy, "_vectors", lambda: VectorStore())
+    assert hy._vector_rank(None, "질의", None) == []

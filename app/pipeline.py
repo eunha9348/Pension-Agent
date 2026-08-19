@@ -66,6 +66,7 @@ from app.generation.grounding import make_verify_grounding
 from app.ingest.store import get_store
 from app.llm.clova import MOCK_BANNER, get_client, llm_call_adapter
 from app.retrieval.coarse import make_coarse_search
+from app.retrieval.embedding import embedding_enabled
 from app.retrieval.hybrid import make_retrieve_hybrid
 
 # 전체 요청 예산(초). 평가 API는 단일 GET 안에서 끝나야 한다.
@@ -253,10 +254,21 @@ def answer_question(question_id: str, question: str,
     trace.log("L2_함정감지", trap_context["trace"])
 
     # ── L3 · Exploration ──────────────────────────────────────
+    # 함정이 지목한 근거 문서를 검색에 넘긴다. L2가 L3보다 먼저 도는 덕에
+    # "이 질의는 doc55를 봐야 한다"를 검색 시작 전에 알 수 있다.
+    query_spec["retrieval_steer"] = trap_context.get("retrieval_steer") or []
+
     retrieve_hybrid = make_retrieve_hybrid(store)
     raw_evidence = retrieve_hybrid(query_spec)
-    trace.log("L3_정밀검색", f"후보 근거 {len(raw_evidence)}건 확보 "
-                          f"(BM25 단독 — 임베딩은 대회 제약 확인 전까지 미사용)")
+
+    backend = ("BM25 + 임베딩 RRF 융합" if embedding_enabled()
+               else "BM25 단독 (임베딩 미사용)")
+    detail = f"후보 근거 {len(raw_evidence)}건 확보 ({backend})"
+    if steered_docs := query_spec.get("_steered_docs"):
+        detail += f" · 함정 유도로 {', '.join(steered_docs)} 예약 확보"
+    if rr := query_spec.get("_rerank_trace"):
+        detail += f" · 재순위: {rr}"
+    trace.log("L3_정밀검색", detail)
 
     # ── L4 · Exploitation (순차) ──────────────────────────────
     evidence, constraint_warnings = _exploit(raw_evidence, query_spec, conditions, trace)
@@ -590,8 +602,35 @@ def health_info() -> dict:
             "warning": ("⚠️ mock 코퍼스 — 실제 제공 문서가 아닙니다"
                         if store.corpus_kind == "mock" else ""),
         },
-        "retrieval": {"embedding_enabled": SETTINGS.use_embedding,
-                      "mode": "BM25 단독" if not SETTINGS.use_embedding
-                              else "BM25 + 벡터"},
+        "retrieval": _retrieval_health(store),
         "calc_functions": len(CALC_REGISTRY),
+    }
+
+
+def _retrieval_health(store) -> dict:
+    """검색 백엔드 상태.
+
+    ⚠️ USE_EMBEDDING=true 인데 벡터가 0건인 상황을 반드시 드러낸다.
+       이 경우 조용히 BM25로 도는데, 겉보기에는 임베딩이 켜진 것처럼
+       보여서 "왜 의미 검색이 안 되지"를 한참 헤매게 된다.
+    """
+    from app.retrieval.hybrid import vector_count
+
+    vectors = vector_count()
+    enabled = bool(SETTINGS.use_embedding)
+    active = enabled and vectors > 0
+
+    warning = ""
+    if enabled and not vectors:
+        warning = ("⚠️ 임베딩이 켜져 있으나 청크 벡터가 0건 — BM25 단독으로 동작 중. "
+                   "`python -m app.ingest.build_embeddings` 를 실행하십시오.")
+    elif active and vectors < len(store.chunks):
+        warning = (f"⚠️ 청크 {len(store.chunks)}건 중 {vectors}건만 벡터가 있습니다. "
+                   f"build_embeddings 를 다시 실행하면 남은 것만 채웁니다.")
+
+    return {
+        "embedding_enabled": enabled,
+        "vectors": vectors,
+        "mode": "BM25 + 벡터 RRF" if active else "BM25 단독",
+        "warning": warning,
     }

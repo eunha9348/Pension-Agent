@@ -13,6 +13,16 @@ BM25(어휘) + 벡터(의미)를 RRF로 융합한다.
 query_spec에 엔티티(상품명·클래스 등)가 있으면 그 엔티티를 가진 청크로
 후보를 먼저 좁힌다. 검색 후 필터링(filter_irrelevant_evidence)만으로는
 상위 k에 엉뚱한 상품이 차 버리면 정답 청크가 아예 안 올라온다.
+
+━━ 함정 유도 검색 ━━
+L2 함정 감지는 이 계층보다 **먼저** 돈다. 감지된 함정은 자기 근거 문서를
+알고 있으므로(TrapRule.source), 그 문서 안을 별도로 훑어 슬롯을 예약한다.
+예약하지 않으면, 문서 158건에 반복되는 보일러플레이트가 상위를 다 차지해
+정작 그 질의에만 해당하는 문서가 근거에 들어오지 못한다.
+
+━━ 후처리 ━━
+BM25 순위를 그대로 쓰지 않는다. 중복 제거·문서 다양성·저정보 청크 강등을
+거쳐야 근거 8칸에 서로 다른 사실 8개가 들어간다(app/retrieval/rerank.py).
 """
 
 from __future__ import annotations
@@ -23,10 +33,15 @@ from app.analysis.vocab import expand
 from app.core.coverage_pipeline import ENTITY_KEYS, EvidenceChunk
 from app.ingest.store import ChunkRecord, DocumentStore, get_store
 from app.retrieval.embedding import embed_texts, embedding_enabled
+from app.retrieval.rerank import rerank
 from app.retrieval.tokenize import content_terms
 
 TOP_K = 8
 RRF_K = 60          # RRF 표준 상수
+
+# 함정이 지목한 문서에서 예약할 최대 근거 수.
+# 너무 크게 잡으면 함정 문서가 근거를 독점해 일반 질의 대응이 나빠진다.
+TRAP_RESERVED = 3
 
 
 # 동의어 확장 텀의 가중치. 원 질의어보다 낮아야 한다.
@@ -104,67 +119,161 @@ def _to_evidence(rec: ChunkRecord, score: float) -> EvidenceChunk:
                          entities=entities, score=round(score, 6))
 
 
+def _chunks_of_docs(store: DocumentStore, doc_ids: set[str]) -> set[str]:
+    """지정한 문서에 속한 청크 ID 집합."""
+    return {rec.chunk_id for rec in store.all_chunks() if rec.doc_id in doc_ids}
+
+
+def _trap_steered(store: DocumentStore, steer: list[dict],
+                  limit: int = TRAP_RESERVED) -> list[tuple[ChunkRecord, float]]:
+    """함정이 지목한 문서 안에서만 근거를 찾아 온다.
+
+    질의로 쓰는 것은 사용자 원문이 아니라 함정 규칙의 `fact` 문장이다.
+    사용자는 "명퇴수당 절세법만 알려주세요"라고 묻지만 문서에는
+    "법정 외 퇴직급여는 IRP 의무이전 대상이 아니며…"라고 쓰여 있다.
+    fact가 이미 문서와 같은 어휘·문체로 쓰여 있으므로, 이걸 질의로 쓰면
+    구어체와 법령체 사이의 격차를 건너뛸 수 있다.
+
+    critical 함정을 먼저 처리해 슬롯을 우선 배정한다.
+    """
+    if not steer:
+        return []
+
+    ordered = sorted(steer, key=lambda s_: 0 if s_.get("severity") == "critical" else 1)
+
+    picked: list[tuple[ChunkRecord, float]] = []
+    seen: set[str] = set()
+    for item in ordered:
+        if len(picked) >= limit:
+            break
+        docs = set(item.get("docs") or ())
+        fact = item.get("fact") or ""
+        if not docs or not fact:
+            continue
+        allowed = _chunks_of_docs(store, docs)
+        if not allowed:
+            # 함정이 지목한 문서가 이 코퍼스에 없을 수 있다(문서 구성이 다름).
+            # 조용히 넘어간다 — 없는 문서를 만들어낼 수는 없다.
+            continue
+        for rec, score in store.search_bm25(fact, top_k=limit, allowed=allowed):
+            if rec.chunk_id in seen:
+                continue
+            seen.add(rec.chunk_id)
+            picked.append((rec, score))
+            if len(picked) >= limit:
+                break
+    return picked
+
+
 def make_retrieve_hybrid(store: Optional[DocumentStore] = None,
                          top_k: int = TOP_K):
     """(query_spec) -> [EvidenceChunk] 시그니처의 함수를 만든다.
 
     coverage_pipeline.build_answer(retrieve_hybrid=...)에 그대로 주입된다.
+
+    query_spec["retrieval_steer"]가 있으면(L2 함정 감지 결과) 그 문서를
+    별도로 훑어 슬롯을 예약한다. 없으면 기존 동작과 동일하다.
     """
     s = store or get_store()
 
     def retrieve_hybrid(query_spec: dict) -> list[EvidenceChunk]:
-        query = (query_spec or {}).get("query") or (query_spec or {}).get("question") or ""
+        spec = query_spec or {}
+        query = spec.get("query") or spec.get("question") or ""
         if not query:
             return []
 
-        allowed = _entity_prefilter(s, (query_spec or {}).get("entities", {}))
+        allowed = _entity_prefilter(s, spec.get("entities", {}))
 
-        lexical = _weighted_lexical(s, query, top_k * 2, allowed)
-        if not lexical:
-            return []
+        # 재순위가 실제로 고를 수 있도록 후보를 넉넉히 확보한다.
+        # 중복·저정보 청크가 걸러지고 나면 후보가 크게 줄기 때문이다.
+        lexical = _weighted_lexical(s, query, top_k * 3, allowed)
 
-        by_id = {rec.chunk_id: (rec, score) for rec, score in lexical}
+        by_id: dict[str, tuple[ChunkRecord, float]] = {
+            rec.chunk_id: (rec, score) for rec, score in lexical}
         lexical_rank = [rec.chunk_id for rec, _ in lexical]
 
         vector_rank = _vector_rank(s, query, allowed)
         if vector_rank:
-            fused = _rrf_merge(lexical_rank, vector_rank)
+            fused = _rrf_merge(lexical_rank, vector_rank[:top_k * 3])
             order = sorted(fused, key=lambda k: -fused[k])
+            # RRF 점수는 스케일이 다르므로 0~1로 다시 정규화해 둔다
+            top_fused = max(fused.values()) or 1.0
+            for cid in order:
+                if cid not in by_id:
+                    rec = s.get_chunk(cid)
+                    if rec is None:
+                        continue
+                    by_id[cid] = (rec, 0.0)
+                rec, _ = by_id[cid]
+                by_id[cid] = (rec, round(fused[cid] / top_fused, 6))
         else:
-            # 임베딩 미사용(기본) — BM25 순위를 그대로 쓴다
+            # 임베딩 미사용 — BM25 순위를 그대로 쓴다
             order = lexical_rank
 
-        out: list[EvidenceChunk] = []
-        for chunk_id in order[:top_k]:
-            entry = by_id.get(chunk_id)
-            if entry is None:
-                rec = s.get_chunk(chunk_id)
-                if rec is None:
-                    continue
-                entry = (rec, 0.0)
-            out.append(_to_evidence(*entry))
-        return out
+        candidates = [by_id[cid] for cid in order if cid in by_id]
+
+        # ── 함정 유도 검색 — 예약 슬롯 ──────────────────────
+        steered = _trap_steered(s, spec.get("retrieval_steer") or [])
+        pinned: set[str] = set()
+        if steered:
+            existing = {rec.chunk_id for rec, _ in candidates}
+            for rec, score in steered:
+                pinned.add(rec.chunk_id)
+                if rec.chunk_id not in existing:
+                    # 함정 근거는 일반 순위 경쟁에서 밀리더라도 후보에 넣는다.
+                    # 점수는 상위권으로 올려 재순위에서 살아남게 한다.
+                    candidates.append((rec, max(score, 0.9)))
+                else:
+                    candidates = [(r, max(sc, 0.9) if r.chunk_id == rec.chunk_id else sc)
+                                  for r, sc in candidates]
+
+        if not candidates:
+            return []
+
+        selected, report = rerank(candidates, top_k, pinned=pinned)
+        # 무엇을 왜 걸렀는지는 파이프라인이 think_trace에 남긴다
+        spec["_rerank_trace"] = report.as_trace()
+        spec["_steered_docs"] = sorted({rec.doc_id for rec, _ in steered})
+
+        return [_to_evidence(rec, score) for rec, score in selected]
 
     return retrieve_hybrid
 
 
+_VECTORS: Optional["object"] = None
+
+
+def _vectors():
+    """청크 벡터 저장소 (프로세스 내 1회 로드).
+
+    없으면 빈 저장소가 오고, 그러면 자동으로 BM25 단독 경로가 된다 —
+    벡터를 아직 안 만들었다고 검색이 죽으면 안 된다.
+    """
+    global _VECTORS
+    if _VECTORS is None:
+        from app.config import get_settings
+        from app.ingest.vector_store import VectorStore
+        _VECTORS = VectorStore.load(get_settings().index_path)
+    return _VECTORS
+
+
+def vector_count() -> int:
+    """보유한 청크 벡터 수 — /health 와 기동 로그에서 쓴다."""
+    try:
+        return len(_vectors())
+    except Exception:      # noqa: BLE001 — 상태 보고가 서비스를 막으면 안 된다
+        return 0
+
+
 def _vector_rank(store: DocumentStore, query: str,
                  allowed: Optional[set[str]]) -> list[str]:
-    """벡터 검색 순위. 임베딩이 꺼져 있으면 빈 리스트 → BM25 단독 경로."""
+    """벡터 검색 순위. 임베딩이 꺼져 있거나 벡터가 없으면 빈 리스트."""
     if not embedding_enabled():
+        return []
+    vs = _vectors()
+    if not len(vs):
         return []
     qvec = embed_texts([query])
     if not qvec:
         return []
-
-    from app.retrieval.embedding import cosine
-    scored: list[tuple[str, float]] = []
-    for rec in store.all_chunks():
-        if allowed is not None and rec.chunk_id not in allowed:
-            continue
-        vec = (rec.entities or {}).get("_embedding")
-        if not vec:
-            continue
-        scored.append((rec.chunk_id, cosine(qvec[0], vec)))
-    scored.sort(key=lambda x: -x[1])
-    return [k for k, _ in scored]
+    return [cid for cid, _ in vs.rank(qvec[0], allowed=allowed, top_k=TOP_K * 4)]
