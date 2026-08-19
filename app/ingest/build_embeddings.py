@@ -1,6 +1,7 @@
 """청크 임베딩 생성 — 인덱스와 분리된 별도 단계.
 
     python -m app.ingest.build_embeddings              # 증분 (권장)
+    python -m app.ingest.build_embeddings --pace 1.0   # 429가 잦으면 더 천천히
     python -m app.ingest.build_embeddings --limit 200  # 일부만 (시험용)
     python -m app.ingest.build_embeddings --rebuild    # 전부 다시
 
@@ -8,6 +9,17 @@
 CLOVA 임베딩 API는 텍스트 1건당 1회 호출이다. 8,195청크면 호출도 8,195회고,
 시간과 크레딧이 모두 든다. 문서를 하나 고칠 때마다 이걸 다시 돌리면 안 되므로
 인제스트와 떼어 놓고, 청크 본문 해시가 같으면 기존 벡터를 재사용한다.
+
+━━ 같은 본문은 한 번만 호출한다 ━━
+제공 자료는 투자설명서 158건이라 세액공제 조항 같은 문구가 **글자까지 똑같이**
+반복된다. 같은 텍스트는 임베딩도 같으므로, 본문을 정규화해 묶고 대표 1건만
+호출한 뒤 나머지에는 그 벡터를 복사한다. 호출 수가 그만큼 줄고, 429(속도 제한)에
+걸릴 일도 줄어든다.
+
+━━ 429는 벤더를 바꿔서 풀지 않는다 ━━
+대회 절대 제약이 "LLM은 HyperCLOVA X만 사용"이고, 위반하면 평가 대상에서
+제외된다. 임베딩 사용은 허용받았지만 그건 기법에 대한 허용이지 타사 모델
+허용이 아니다. 속도 제한은 호출 수를 줄이고(위) 간격을 늘려서(--pace) 푼다.
 
 ━━ 중단해도 안전하다 ━━
 일정 간격으로 중간 저장하므로, Ctrl+C로 끊거나 네트워크가 끊겨도
@@ -17,13 +29,16 @@ CLOVA 임베딩 API는 텍스트 1건당 1회 호출이다. 8,195청크면 호�
 from __future__ import annotations
 
 import argparse
+import hashlib
+import re
 import sys
 import time
 
 from app.config import get_settings
 from app.ingest.store import DEFAULT_INDEX_DIR, get_store
 from app.ingest.vector_store import VectorStore, text_hash
-from app.retrieval.embedding import EmbeddingError, RateLimitError, embed_one
+from app.retrieval.embedding import (EmbeddingError, RateLimitError, embed_one,
+                                     rate_limit_seen)
 
 # 이 간격마다 중간 저장한다. 너무 잦으면 느리고, 너무 뜸하면 중단 시 손해가 크다.
 CHECKPOINT_EVERY = 100
@@ -38,12 +53,27 @@ MAX_CHARS = 4000
 # 재시도하지만, 애초에 이 텀만큼 예방적으로 쉬면 429 자체가 크게 줄어든다.
 PACING_SEC = 0.3
 
+# 429를 만날 때마다 텀을 이 배수로 늘린다(자동 조절).
+# 계정마다 한도가 다르고 공개된 수치도 없어서, 고정값보다 이렇게 스스로
+# 맞춰 가는 편이 확실하다. 한 번 늘린 텀은 그 실행 동안 유지한다.
+PACING_GROWTH = 1.8
+PACING_MAX = 5.0
+
+
+def _text_key(text: str) -> str:
+    """본문 정규화 해시 — 공백 차이만 있는 텍스트를 같은 것으로 본다."""
+    return hashlib.sha1(
+        re.sub(r'\s+', ' ', (text or "")).strip().encode("utf-8")).hexdigest()
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="청크 임베딩 생성 (CLOVA Studio)")
     ap.add_argument("--index", default=str(DEFAULT_INDEX_DIR))
     ap.add_argument("--limit", type=int, default=0, help="이번 실행에서 만들 최대 개수")
     ap.add_argument("--rebuild", action="store_true", help="기존 벡터를 무시하고 전부 다시")
+    ap.add_argument("--pace", type=float, default=PACING_SEC,
+                    help=f"요청 사이 대기(초). 429가 잦으면 늘리십시오 "
+                         f"(기본 {PACING_SEC}, 429를 만나면 자동으로도 늘어남)")
     args = ap.parse_args(argv)
 
     s = get_settings()
@@ -78,9 +108,22 @@ def main(argv: list[str] | None = None) -> int:
     todo = [c for c in chunks if args.rebuild or vs.needs_embedding(c.chunk_id, c.text)]
     print(f" 전체 청크 {len(chunks)}건 · 기존 벡터 {len(vs)}건 · 생성 대상 {len(todo)}건")
 
+    # ── 같은 본문끼리 묶는다 ─────────────────────────────────
+    # 투자설명서 158건에 같은 조항이 반복되므로, 실제 호출해야 할 고유 본문은
+    # 청크 수보다 훨씬 적다. 대표 1건만 호출하고 나머지는 벡터를 복사한다.
+    groups: dict[str, list] = {}
+    for c in todo:
+        groups.setdefault(_text_key(c.text), []).append(c)
+
+    saved = len(todo) - len(groups)
+    if saved > 0:
+        print(f" 같은 본문 묶음 — 실제 호출 {len(groups)}회 "
+              f"(중복 {saved}건은 벡터 복사, 호출 {saved/max(len(todo),1)*100:.0f}% 절감)")
+
+    reps = [g[0] for g in groups.values()]
     if args.limit:
-        todo = todo[:args.limit]
-        print(f" (--limit 적용 — 이번 실행은 {len(todo)}건만)")
+        reps = reps[:args.limit]
+        print(f" (--limit 적용 — 이번 실행은 {len(reps)}회 호출만)")
     if not todo:
         removed = vs.prune({c.chunk_id for c in chunks})
         if removed:
@@ -89,15 +132,23 @@ def main(argv: list[str] | None = None) -> int:
         print("\n✅ 이미 최신입니다. 새로 만들 것이 없습니다.")
         return 0
 
+    print(f" 요청 간격 {args.pace:.1f}초로 시작 "
+          f"(429가 나면 자동으로 늘립니다)")
     print()
+
     t0 = time.time()
-    done = failed = 0
+    done = copied = failed = 0
     rate_limited = False
+    pace = max(args.pace, 0.0)
     try:
-        for i, c in enumerate(todo, 1):
+        for i, c in enumerate(reps, 1):
             try:
                 vec = embed_one(c.text[:MAX_CHARS])
-                vs.add(c.chunk_id, vec, text_hash(c.text))
+                # 대표에게 받은 벡터를 같은 본문 청크 전체에 복사한다
+                for member in groups[_text_key(c.text)]:
+                    vs.add(member.chunk_id, vec, text_hash(member.text))
+                    if member.chunk_id != c.chunk_id:
+                        copied += 1
                 done += 1
             except RateLimitError as e:
                 # embed_one이 이미 몇십 초씩 여러 번 쉬며 재시도한 뒤에도
@@ -106,8 +157,9 @@ def main(argv: list[str] | None = None) -> int:
                 # 시간만 태운다. 실패로 세지 않고 바로 멈춘다.
                 rate_limited = True
                 print(f"\n⏸  {c.chunk_id}: {e}")
-                print("   호출 속도 제한이 계속 걸립니다. 잠시 후(수 분) 다시 "
-                      "실행하면 여기부터 이어서 만듭니다.")
+                print(f"   요청 간격을 {pace:.1f}초까지 늘려도 계속 걸립니다.")
+                print(f"   몇 분 뒤 `--pace {min(pace * 2, 10):.0f}` 로 다시 "
+                      f"실행하면 여기부터 이어서 만듭니다.")
                 break
             except EmbeddingError as e:
                 failed += 1
@@ -120,13 +172,22 @@ def main(argv: list[str] | None = None) -> int:
                     print("\n❌ 실패가 너무 많아 중단합니다.")
                     break
             finally:
-                time.sleep(PACING_SEC)     # 다음 호출까지 예방적으로 쉰다
+                # 429를 한 번이라도 겪었으면 간격을 늘려 둔다.
+                # 계정별 한도를 모르니 스스로 맞춰 가는 편이 확실하다.
+                if rate_limit_seen():
+                    new_pace = min(pace * PACING_GROWTH, PACING_MAX)
+                    if new_pace > pace:
+                        print(f"  ⏱  429 감지 — 요청 간격을 "
+                              f"{pace:.1f}→{new_pace:.1f}초로 늘립니다")
+                        pace = new_pace
+                time.sleep(pace)
 
             if i % CHECKPOINT_EVERY == 0:
                 vs.save(args.index)
                 rate = i / max(time.time() - t0, 1e-6)
-                left = (len(todo) - i) / max(rate, 1e-6)
-                print(f"  · {i}/{len(todo)}  ({rate:.1f}건/초, 남은 시간 약 {left/60:.1f}분)")
+                left = (len(reps) - i) / max(rate, 1e-6)
+                print(f"  · {i}/{len(reps)}회  ({rate:.1f}회/초, "
+                      f"남은 시간 약 {left/60:.1f}분)")
     except KeyboardInterrupt:
         print("\n⏸  중단 요청 — 여기까지 저장합니다. 다시 실행하면 이어서 만듭니다.")
 
@@ -134,7 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     out = vs.save(args.index)
 
     print()
-    print(f" 생성 {done}건 · 실패 {failed}건 · 총 보유 {len(vs)}건 (차원 {vs.dim})")
+    print(f" 호출 {done}회 · 벡터 복사 {copied}건 · 실패 {failed}건")
+    print(f" 총 보유 {len(vs)}/{len(chunks)}건 (차원 {vs.dim})")
     print(f" 저장 → {out}")
     if rate_limited:
         print(" ⏸  호출 속도 제한으로 중간에 멈췄습니다. 같은 명령을 다시 실행하면")

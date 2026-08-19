@@ -80,6 +80,20 @@ class RateLimitError(EmbeddingError):
 # 충분히 쉬어야 풀린다. 초당 호출 제한이 명시돼 있지 않아 보수적으로 잡는다.
 _RATE_LIMIT_BACKOFF = (3.0, 6.0, 12.0, 20.0, 20.0)   # 초 단위, 재시도 순서대로
 
+# 429를 겪었는지 알리는 신호. 대량 생성 도구(build_embeddings)가 이걸 보고
+# 요청 간격을 스스로 늘린다 — 백오프로 넘겼더라도 한계에 근접했다는 뜻이므로,
+# 다음 호출을 같은 속도로 쏘면 또 걸린다.
+_RATE_LIMIT_SEEN = False
+
+
+def rate_limit_seen(reset: bool = True) -> bool:
+    """직전 호출에서 429를 겪었는가. 읽으면 기본적으로 표시를 지운다."""
+    global _RATE_LIMIT_SEEN
+    seen = _RATE_LIMIT_SEEN
+    if reset:
+        _RATE_LIMIT_SEEN = False
+    return seen
+
 
 def embed_one(text: str, *, timeout: Optional[float] = None,
               max_retry: int = 1) -> list[float]:
@@ -109,6 +123,8 @@ def embed_one(text: str, *, timeout: Optional[float] = None,
                 resp = c.post(endpoint, headers=_headers(), json=body)
 
             if resp.status_code == 429:
+                global _RATE_LIMIT_SEEN
+                _RATE_LIMIT_SEEN = True
                 if rate_limit_attempt >= len(_RATE_LIMIT_BACKOFF):
                     raise RateLimitError(
                         f"HTTP 429 — {len(_RATE_LIMIT_BACKOFF)}번 쉬어도 여전히 "

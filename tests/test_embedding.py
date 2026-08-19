@@ -279,3 +279,63 @@ def test_429는_일반_재시도_예산을_소모하지_않는다(monkeypatch):
     vec = emb.embed_one("텍스트", max_retry=0)
     assert vec == [0.1]
     assert calls["n"] == 3     # 429 두 번 + 성공 한 번, max_retry=0인데도 성공
+
+
+# ════════════════════════════════════════════════════════════════
+# 같은 본문은 한 번만 호출한다 (429 대응의 핵심)
+# ════════════════════════════════════════════════════════════════
+#
+# 투자설명서 158건에 같은 조항이 반복되므로, 청크 수만큼 호출하면 대부분이
+# 낭비다. 429는 벤더를 바꿔서가 아니라 **호출 수를 줄여서** 푼다
+# (대회 절대 제약: LLM은 HyperCLOVA X만).
+
+def test_공백만_다른_본문은_같은_것으로_묶인다():
+    from app.ingest.build_embeddings import _text_key
+    assert _text_key("연금저축 세액공제") == _text_key("연금저축   세액공제")
+    assert _text_key("연금저축\n세액공제") == _text_key("연금저축 세액공제")
+
+
+def test_내용이_다르면_다른_묶음이다():
+    from app.ingest.build_embeddings import _text_key
+    assert _text_key("연금저축 세액공제") != _text_key("IRP 세액공제")
+
+
+def test_429를_겪으면_신호가_남는다(monkeypatch):
+    """build_embeddings가 이 신호를 보고 요청 간격을 스스로 늘린다."""
+    import httpx
+    import app.retrieval.embedding as emb
+
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(use_embedding=True, clova_api_key="nv-k",
+                                         clova_embedding_endpoint=_ENDPOINT))
+    monkeypatch.setattr(emb.time, "sleep", lambda s: None)
+    emb.rate_limit_seen()      # 이전 상태 초기화
+
+    calls = {"n": 0}
+
+    class _Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw):
+            calls["n"] += 1
+            class R:
+                status_code = 429 if calls["n"] == 1 else 200
+                text = "rate limited"
+                def json(self):
+                    return {"status": {"code": "20000"},
+                            "result": {"embedding": [0.5]}}
+            return R()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    emb.embed_one("텍스트")           # 429 한 번 겪고 성공
+    assert emb.rate_limit_seen() is True
+
+
+def test_신호는_읽으면_초기화된다(monkeypatch):
+    """매 호출마다 새로 판단해야 한다 — 한 번 겪었다고 영원히 켜져 있으면
+    간격이 무한정 늘어난다."""
+    import app.retrieval.embedding as emb
+    emb._RATE_LIMIT_SEEN = True
+    assert emb.rate_limit_seen() is True
+    assert emb.rate_limit_seen() is False
