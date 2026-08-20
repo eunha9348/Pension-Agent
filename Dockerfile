@@ -31,8 +31,12 @@ COPY sql/ ./sql/
 # (`docker compose --profile tools run --rm eval`)
 # 로컬에서만 돌리면 실물 문서 기준 점수를 영영 알 수 없다.
 COPY tests/ ./tests/
-COPY scripts/docker-entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# 운영 진단 스크립트도 넣는다. 예전에는 entrypoint 하나만 복사해서,
+# 배포 환경에서만 재현되는 문제(L1 function calling 400 등)를 진단하려면
+# 그때마다 이미지를 고쳐야 했다 — 진단 도구가 현장에 없으면 소용이 없다.
+COPY scripts/ ./scripts/
+RUN cp scripts/docker-entrypoint.sh /usr/local/bin/entrypoint.sh \
+    && chmod +x /usr/local/bin/entrypoint.sh
 
 # ⚠️ 인덱스를 **빌드 시점에 만들지 않는다.**
 #    이미지 안에는 코퍼스가 없으므로, 여기서 build_index를 돌리면

@@ -183,9 +183,24 @@ SCHEMA_LADDER = [
 ]
 
 
+def _client() -> "ClovaClient":
+    """진단용 실클라이언트. 키가 없으면 여기서 깔끔하게 끝낸다.
+
+    ClovaClient()는 키가 없으면 생성 시점에 예외를 던진다 — 진단 도구가
+    raw traceback으로 죽으면 '무엇을 해야 하는지'가 안 보인다.
+    """
+    from app.llm.clova import ClovaError
+    try:
+        return ClovaClient()
+    except ClovaError as e:
+        print(f"\n❌ CLOVA 클라이언트를 만들 수 없습니다: {e}")
+        print("   .env 의 CLOVA_API_KEY / CLOVA_ENDPOINT 를 확인하십시오.")
+        raise SystemExit(1)
+
+
 def _post(body: dict) -> tuple[bool, str]:
     """요청 1회. (성공여부, 요약) 반환."""
-    c = ClovaClient()
+    c = _client()
     try:
         with httpx.Client(timeout=c.timeout) as client:
             resp = client.post(c.endpoint, headers=c._headers(), json=body)
@@ -226,16 +241,12 @@ def _body(tools: list[dict], *, sampling: bool = True,
 
 
 def main() -> int:
-    s = get_settings()
-    c = ClovaClient()
     print("═" * 66)
     print(" L1 function calling 진단")
     print("═" * 66)
+    c = _client()
     print(f" endpoint : {c.endpoint}")
-    print(f" mock     : {getattr(c, 'is_mock', False)}")
-    if getattr(c, "is_mock", False):
-        print("\n❌ mock 클라이언트입니다. 실제 키를 설정하고 다시 실행하십시오.")
-        return 1
+    print(f" 모델     : {get_settings().clova_endpoint.rsplit('/', 1)[-1]}")
     print()
 
     # ── 1단계: 스키마 사다리 ──────────────────────────────
