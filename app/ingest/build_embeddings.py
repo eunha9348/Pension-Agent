@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
 
     s = get_settings()
     print("═" * 62)
-    print(" 청크 임베딩 생성 — CLOVA Studio")
+    print(" 청크 임베딩 생성")
     print("═" * 62)
     print(f" 백엔드   : {s.embedding_backend}")
     if emb_backend() == "clova":
@@ -245,40 +245,57 @@ def main(argv: list[str] | None = None) -> int:
         print("❌ 인덱스가 비어 있습니다. 먼저 build_index 를 실행하십시오.")
         return 1
 
+    # 벡터 저장소는 모델 하나에 묶인다 — 백엔드마다 정체성이 다르다
+    # (clova는 엔드포인트 URL, local은 모델명). 이걸 CLOVA 엔드포인트로만
+    # 비교하면, 로컬 모델을 바꾼 경우를 감지하지 못하고 차원이 안 맞는
+    # 벡터를 억지로 섞으려다 그제서야(ValueError) 알게 된다.
+    model_id = (s.clova_embedding_endpoint if emb_backend() == "clova"
+               else s.local_embedding_model)
     vs = VectorStore() if args.rebuild else VectorStore.load(args.index)
-    if vs.model and vs.model != s.clova_embedding_endpoint:
-        print(f"⚠️  기존 벡터는 다른 엔드포인트({vs.model})로 만든 것입니다.")
-        print("   모델이 바뀌었다면 --rebuild 로 다시 만드십시오.")
-    vs.model = s.clova_embedding_endpoint
+    if vs.model and vs.model != model_id:
+        print(f"⚠️  기존 벡터는 다른 모델({vs.model})로 만든 것입니다. "
+              f"이번 모델({model_id})과 차원이 다르면 실패합니다.")
+        print("   모델을 바꿨다면 --rebuild 로 다시 만드십시오.")
+    vs.model = model_id
 
     todo = [c for c in chunks if args.rebuild or vs.needs_embedding(c.chunk_id, c.text)]
     print(f" 전체 청크 {len(chunks)}건 · 기존 벡터 {len(vs)}건 · 생성 대상 {len(todo)}건")
 
-    # ── 사실상 같은 본문끼리 묶는다 ──────────────────────────
-    # 투자설명서 158건에 같은 조항이 반복되므로, 실제 호출해야 할 고유 본문은
-    # 청크 수보다 적다. 대표 1건만 호출하고 나머지는 벡터를 복사한다.
-    print(" 근중복 묶는 중...", flush=True)
-    grouped = group_near_duplicates(todo)
-    member_of: dict[str, list] = {g[0].chunk_id: g for g in grouped}
-
-    saved = len(todo) - len(grouped)
-    if saved > 0:
-        print(f" 같은 본문 묶음 — 실제 호출 {len(grouped)}회 "
-              f"(중복 {saved}건은 벡터 복사, 호출 {saved/max(len(todo),1)*100:.0f}% 절감)")
+    # ── 근중복 묶기는 CLOVA 경로에서만 한다 ──────────────────
+    # 이건 "호출 수를 줄이는" 최적화인데, 호출 수가 비용·시간에 직결되는
+    # 쪽은 API(CLOVA)뿐이다. 로컬은 배치로 몇 분이면 끝나므로, 절감 폭
+    # (실측 14%)보다 근중복 판정 로직 자체의 정확성 리스크가 더 크다.
+    # 로컬에서는 그냥 전부 인코딩한다 — 더 단순하고, 버그날 자리가 없다.
+    if emb_backend() == "clova":
+        print(" 근중복 묶는 중...", flush=True)
+        grouped = group_near_duplicates(todo)
+        saved = len(todo) - len(grouped)
+        if saved > 0:
+            print(f" 같은 본문 묶음 — 실제 호출 {len(grouped)}회 "
+                  f"(중복 {saved}건은 벡터 복사, 호출 {saved/max(len(todo),1)*100:.0f}% 절감)")
+        else:
+            print(" 근중복 없음 — 청크마다 따로 호출해야 합니다")
     else:
-        print(" 근중복 없음 — 청크마다 따로 호출해야 합니다")
+        grouped = [[c] for c in todo]      # 전부 개별 처리
 
+    member_of: dict[str, list] = {g[0].chunk_id: g for g in grouped}
     reps = [g[0] for g in grouped]
     if args.limit:
         reps = reps[:args.limit]
-        print(f" (--limit 적용 — 이번 실행은 {len(reps)}회 호출만)")
+        print(f" (--limit 적용 — 이번 실행은 {len(reps)}건만)")
 
     if args.dry_run:
-        # 2시간을 쓰기 전에 '쓸 가치가 있는지'부터 알려 준다.
-        for pace_try in (0.3, 1.0, 2.0):
-            est = len(reps) * (pace_try + 0.35) / 60      # 0.35초 ≈ 호출 자체 지연
-            print(f"   --pace {pace_try:<4} → 약 {est:.0f}분 (429 없을 때)")
-        print("\n dry-run 이므로 API를 호출하지 않았습니다.")
+        if emb_backend() == "clova":
+            # 2시간을 쓰기 전에 '쓸 가치가 있는지'부터 알려 준다.
+            for pace_try in (0.3, 1.0, 2.0):
+                est = len(reps) * (pace_try + 0.35) / 60  # 0.35초 ≈ 호출 자체 지연
+                print(f"   --pace {pace_try:<4} → 약 {est:.0f}분 (429 없을 때)")
+        else:
+            # 로컬은 배치 처리라 --pace 개념이 없다. 실측 없이 정확한 시간을
+            # 약속할 수 없으므로, 오해를 부르는 숫자 대신 규모만 알려준다.
+            print(f"   로컬 배치 인코딩 {len(reps)}건 — 보통 수 분 내 완료됩니다.")
+            print(f"   (하드웨어에 따라 다르므로 정확한 시간은 실행해 봐야 압니다)")
+        print("\n dry-run 이므로 모델을 호출하지 않았습니다.")
         return 0
 
     if not todo:

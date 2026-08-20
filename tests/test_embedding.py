@@ -439,3 +439,37 @@ def test_묶인_결과가_원본을_빠짐없이_담는다():
     groups = group_near_duplicates(chunks)
     assert sorted(x.chunk_id for g in groups for x in g) == sorted(
         c.chunk_id for c in chunks)
+
+
+# ════════════════════════════════════════════════════════════════
+# build_embeddings — 백엔드별 모델 정체성 · 근중복 스킵
+# ════════════════════════════════════════════════════════════════
+#
+# 실제 사고: CLOVA(1024차원)로 벡터를 일부 만든 뒤 로컬(384차원)로
+# 바꿨더니, 저장소의 model 필드가 항상 clova_embedding_endpoint와만
+# 비교돼서 로컬 모델 전환을 감지하지 못했다. 사전 경고 없이 add() 단계에서
+# 야 차원 불일치로 실패했다.
+
+def test_로컬_백엔드는_근중복_묶기를_건너뛴다():
+    """CLOVA에서만 의미 있는 최적화(호출 수 절감)를 로컬에도 적용하면,
+    절감 효과(실측 14%)보다 판정 로직 자체의 리스크가 크다."""
+    import app.ingest.build_embeddings as be
+    # 로컬 경로는 group_near_duplicates를 호출하지 않고 각 청크를
+    # 단독 묶음으로 취급해야 한다 — 소스에서 분기를 직접 확인한다.
+    src = open(be.__file__, encoding="utf-8").read()
+    assert 'if emb_backend() == "clova":\n        print(" 근중복 묶는 중' in src
+
+
+def test_벡터_저장소_모델_식별자가_백엔드별로_다르다(tmp_path):
+    """CLOVA 벡터(1024차원)가 남아 있는 상태에서 로컬(384차원)로 바꾸면
+    반드시 경고가 떠야 한다 — 실제로 사전 경고 없이 실패한 적이 있다."""
+    from app.ingest.vector_store import VectorStore
+
+    clova_vs = VectorStore("https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2", 3)
+    clova_vs.add("c1", [0.1, 0.2, 0.3], "h1")
+    clova_vs.save(tmp_path)
+
+    reloaded = VectorStore.load(tmp_path)
+    local_model_id = "intfloat/multilingual-e5-small"
+    assert reloaded.model != local_model_id, \
+        "저장된 CLOVA 모델 식별자가 로컬 모델명과 우연히 같으면 안 된다"
