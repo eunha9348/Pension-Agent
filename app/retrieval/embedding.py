@@ -74,13 +74,22 @@ _LOCAL_MODEL = None
 
 
 def _local_model():
-    """모델을 프로세스당 1회만 적재한다(수백 MB — 매번 읽으면 안 된다)."""
+    """모델을 프로세스당 1회만 적재한다(수백 MB — 매번 읽으면 안 된다).
+
+    ⚠️ 스레드 수를 1로 고정한다. torch는 기본적으로 CPU 코어 수만큼 스레드를
+    띄우는데, 스레드마다 별도 연산 버퍼를 할당해서 코어가 여럿이면 그만큼
+    메모리를 더 먹는다. 메모리가 빠듯한 소형 인스턴스(예: EC2 t3.small,
+    총 2GB)에서 실제로 이것 때문에 OOM(커널 강제종료, exit 137)이 났다.
+    스레드를 1로 묶으면 느려지는 대신 메모리 사용이 훨씬 예측 가능해진다.
+    """
     global _LOCAL_MODEL
     if _LOCAL_MODEL is None:
+        import torch
+        torch.set_num_threads(1)
         from sentence_transformers import SentenceTransformer
         name = get_settings().local_embedding_model
         log.info("[embedding] 로컬 모델 적재: %s", name)
-        _LOCAL_MODEL = SentenceTransformer(name)
+        _LOCAL_MODEL = SentenceTransformer(name, device="cpu")
     return _LOCAL_MODEL
 
 

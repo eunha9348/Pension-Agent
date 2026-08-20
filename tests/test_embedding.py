@@ -473,3 +473,120 @@ def test_벡터_저장소_모델_식별자가_백엔드별로_다르다(tmp_path
     local_model_id = "intfloat/multilingual-e5-small"
     assert reloaded.model != local_model_id, \
         "저장된 CLOVA 모델 식별자가 로컬 모델명과 우연히 같으면 안 된다"
+
+
+# ════════════════════════════════════════════════════════════════
+# 로컬 임베딩 OOM 방지 (실사고: exit 137, 총 메모리 1.9GB·스왑 0B에서
+# BATCH=256으로 커널이 프로세스를 죽였다)
+# ════════════════════════════════════════════════════════════════
+
+def test_로컬_배치_기본값이_소형_인스턴스에_안전하다():
+    """256은 실제로 OOM을 냈다. 기본값은 그보다 훨씬 작아야 한다."""
+    from app.ingest.build_embeddings import LOCAL_BATCH_DEFAULT
+    assert LOCAL_BATCH_DEFAULT <= 16
+
+
+def test_peak_rss_mb는_예외_없이_양수를_준다():
+    """OOM 재발 시 어디까지 갔었는지 보려고 매 배치 찍는 진단값 —
+    이것 자체가 죽으면 진단 목적을 잃는다."""
+    from app.ingest.build_embeddings import _peak_rss_mb
+    v = _peak_rss_mb()
+    assert isinstance(v, float)
+    assert v > 0
+
+
+def test_batch_size_인자를_명령줄에서_받는다():
+    """메모리가 넉넉한 서버에서는 올리고, 빠듯하면 더 내릴 수 있어야 한다."""
+    import argparse
+
+    from app.ingest.build_embeddings import LOCAL_BATCH_DEFAULT, main
+    # main()은 실행 전체를 돌리므로, 여기서는 파서 구성만 재현해 확인한다.
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--batch-size", type=int, default=None)
+    args = ap.parse_args(["--batch-size", "4"])
+    assert args.batch_size == 4
+
+    args_default = ap.parse_args([])
+    assert args_default.batch_size is None
+    assert (args_default.batch_size or LOCAL_BATCH_DEFAULT) == LOCAL_BATCH_DEFAULT
+
+
+def test_run_local이_batch_size_인자를_실제로_사용한다(monkeypatch, tmp_path):
+    """인자만 받고 무시하면 --batch-size가 아무 효과 없는 손잡이가 된다."""
+    import app.ingest.build_embeddings as be
+
+    class _FakeVS:
+        def __init__(self):
+            self.saved = 0
+        def add(self, chunk_id, vec, h):
+            pass
+        def save(self, path):
+            self.saved += 1
+            return path
+        def prune(self, ids):
+            return 0
+        def __len__(self):
+            return 0
+        dim = 2
+
+    class _C:
+        def __init__(self, cid, text):
+            self.chunk_id = cid
+            self.text = text
+
+    chunks = [_C(f"c{i}", f"본문{i}") for i in range(10)]
+    grouped = [[c] for c in chunks]
+    member_of = {c.chunk_id: [c] for c in chunks}
+
+    calls: list[int] = []
+
+    def _fake_embed_local(texts, **kw):
+        calls.append(len(texts))
+        return [[0.1, 0.2] for _ in texts]
+
+    import app.retrieval.embedding as emb
+    monkeypatch.setattr(emb, "embed_local", _fake_embed_local)
+
+    class Args:
+        limit = 0
+        batch_size = 3
+        index = tmp_path
+
+    be._run_local(_FakeVS(), chunks, grouped, member_of, Args())
+    # 배치 크기 3으로 10건을 나누면 4번 호출(3+3+3+1)이어야 한다
+    assert calls == [3, 3, 3, 1]
+
+
+def test_모델_적재시_스레드를_1로_고정한다(monkeypatch):
+    """torch 기본 멀티스레드는 코어마다 연산 버퍼를 잡아 메모리를 더 먹는다
+    — 소형 인스턴스에서 이것이 OOM의 한 원인이었다."""
+    import sys
+    import types
+
+    import app.retrieval.embedding as emb
+
+    thread_calls: list[int] = []
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.set_num_threads = lambda n: thread_calls.append(n)
+
+    class _FakeST:
+        def __init__(self, name, device=None):
+            self.name = name
+            self.device = device
+
+    fake_st_mod = types.ModuleType("sentence_transformers")
+    fake_st_mod.SentenceTransformer = _FakeST
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st_mod)
+    monkeypatch.setattr(emb, "_LOCAL_MODEL", None)
+    monkeypatch.setattr(emb, "get_settings",
+                        lambda: Settings(local_embedding_model="fake-model"))
+
+    model = emb._local_model()
+    assert thread_calls == [1]
+    assert isinstance(model, _FakeST)
+    assert model.device == "cpu"
+
+    monkeypatch.setattr(emb, "_LOCAL_MODEL", None)

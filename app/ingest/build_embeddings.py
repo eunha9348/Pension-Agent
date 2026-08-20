@@ -154,23 +154,45 @@ def group_near_duplicates(chunks: list) -> list[list]:
     return cleaned
 
 
+# 배치 크기 기본값. 256은 소형 인스턴스(예: EC2 t3.small, 총 메모리 2GB)에서
+# 실제로 OOM(커널 강제종료, exit 137)을 냈다 — torch 자체 적재(~300MB)에
+# 모델(~470MB)에 배치 텐서까지 겹치면 여유 메모리 1GB 안팎을 넘는다.
+# 8은 그런 환경에서도 안전하게 도는 값이다. 메모리가 넉넉하면 --batch-size로
+# 올려서 속도를 높일 수 있다.
+LOCAL_BATCH_DEFAULT = 8
+
+
+def _peak_rss_mb() -> float:
+    """지금까지의 최대 메모리 사용량(MB). OOM 재발 시 어디까지 갔었는지
+    보려고 매 배치 찍는다 — 새 의존성 없이 stdlib만으로 잰다."""
+    import resource
+    kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return kb / 1024      # Linux는 KB 단위
+
+
 def _run_local(vs, chunks, grouped, member_of, args) -> int:
     """로컬 모델로 배치 임베딩. 묶음 대표만 인코딩하고 벡터를 공유한다."""
+    import gc
+
     from app.retrieval.embedding import embed_local
 
     reps = [g[0] for g in grouped]
     if args.limit:
         reps = reps[:args.limit]
 
-    print(f" 로컬 모델로 {len(reps)}건을 배치 인코딩합니다...")
+    batch_size = args.batch_size or LOCAL_BATCH_DEFAULT
+    print(f" 로컬 모델로 {len(reps)}건을 배치 인코딩합니다... "
+          f"(배치 크기 {batch_size})")
     t0 = time.time()
     done = copied = 0
 
-    # 통째로 넘기면 진행 상황이 안 보이고 메모리도 튄다 — 나눠서 처리한다
-    BATCH = 256
+    # ⚠️ 배치마다 체크포인트 저장 + 메모리 해제(gc.collect)를 한다.
+    #    커널이 OOM으로 프로세스를 죽이면 try/except로도 못 잡는다
+    #    (SIGKILL은 파이썬 예외가 아니다) — 그래서 배치를 작게 쪼개
+    #    "죽어도 직전 배치까지는 저장돼 있게" 만드는 것이 실질적 방어다.
     try:
-        for start in range(0, len(reps), BATCH):
-            part = reps[start:start + BATCH]
+        for start in range(0, len(reps), batch_size):
+            part = reps[start:start + batch_size]
             vecs = embed_local([c.text[:MAX_CHARS] for c in part], is_query=False)
             for c, vec in zip(part, vecs):
                 for member in member_of[c.chunk_id]:
@@ -178,12 +200,14 @@ def _run_local(vs, chunks, grouped, member_of, args) -> int:
                     if member.chunk_id != c.chunk_id:
                         copied += 1
                 done += 1
+            del vecs
+            gc.collect()
             vs.save(args.index)
             elapsed = time.time() - t0
             rate = done / max(elapsed, 1e-6)
             left = (len(reps) - done) / max(rate, 1e-6)
-            print(f"  · {done}/{len(reps)}  ({rate:.0f}건/초, "
-                  f"남은 시간 약 {left:.0f}초)")
+            print(f"  · {done}/{len(reps)}  ({rate:.1f}건/초, "
+                  f"남은 시간 약 {left:.0f}초, 메모리 최대 {_peak_rss_mb():.0f}MB)")
     except KeyboardInterrupt:
         print("\n⏸  중단 요청 — 여기까지 저장합니다. 다시 실행하면 이어서 만듭니다.")
     except Exception as e:      # noqa: BLE001 — 원인을 그대로 보여준다
@@ -215,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
                          f"(기본 {PACING_SEC}, 429를 만나면 자동으로도 늘어남)")
     ap.add_argument("--dry-run", action="store_true",
                     help="API를 호출하지 않고 '몇 회 호출이 필요한지'만 즉시 계산")
+    ap.add_argument("--batch-size", type=int, default=None,
+                    help=f"로컬 배치 크기 (기본 {LOCAL_BATCH_DEFAULT}). 메모리가 "
+                         f"부족해 죽으면(exit 137) 낮추고, 넉넉하면 올려서 속도를 "
+                         f"높이십시오. CLOVA 백엔드에서는 쓰이지 않습니다.")
     args = ap.parse_args(argv)
 
     s = get_settings()
