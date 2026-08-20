@@ -279,6 +279,41 @@ def main() -> int:
         ok, note = _post(_body(T1, **kw))
         print(f"  {'✅' if ok else '❌'} {label:<28} {note}")
 
+    # ── 2.5단계: enum 경계 정밀 확인 ──────────────────────
+    # 1차에서 T6(최상위 큰 enum)은 깨졌는데 T9(배열 안 같은 enum)는 통과했다.
+    # 개수 문제인지, 위치 문제인지, 그냥 들쭉날쭉한 건지 갈라 둔다.
+    print()
+    print("── enum 경계 (3회 반복해 재현성까지 확인) " + "─" * 21)
+    ascii15 = [f"func_{i:02d}" for i in range(15)]
+    ko = sorted(CALC_REGISTRY)
+    enum_cases = [
+        ("E1 최상위 ASCII 15개", ascii15),
+        ("E2 최상위 한글 5개", ko[:5]),
+        ("E3 최상위 한글 10개", ko[:10]),
+        ("E4 최상위 한글 15개", ko),
+    ]
+    for label, values in enum_cases:
+        tool = _tool("e", {
+            "type": "object",
+            "properties": {"intent": {"type": "string"},
+                           "calc_function": {"type": "string", "enum": values}},
+            "required": ["intent"],
+        })
+        marks = []
+        for _ in range(3):
+            ok, _note = _post(_body(tool))
+            marks.append("✅" if ok else "❌")
+        print(f"  {''.join(marks)} {label}")
+
+    # ── 2.7단계: 수정된 스키마가 실제로 통과하는가 ────────
+    print()
+    print("── 수정본 검증 " + "─" * 49)
+    ok, note = _post(_body(_real_tool()))
+    print(f"  {'✅' if ok else '❌'} F1 수정된 QUERY_SPEC_TOOL   {note}")
+    from app.analysis.query_spec import MINIMAL_QUERY_SPEC_TOOL
+    ok2, note2 = _post(_body(MINIMAL_QUERY_SPEC_TOOL))
+    print(f"  {'✅' if ok2 else '❌'} F2 축소 스키마(폴백)        {note2}")
+
     # ── 3단계: 대조군 — 일반 채팅은 되는가 ────────────────
     print()
     print("── 대조군 " + "─" * 54)

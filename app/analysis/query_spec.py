@@ -64,11 +64,22 @@ QUERY_SPEC_TOOL = [{
                             "type": {"type": "string",
                                      "enum": ["fact", "calculation", "comparison"]},
                             "required": {"type": "boolean"},
+                            # ⚠️ 여기에 enum(등록 함수 15종)을 넣지 말 것.
+                            #    HCX-005가 값이 많은 enum을 담은 tools를 통째로
+                            #    거부한다(HTTP 400 · 40009 Unsupported function).
+                            #    그러면 L1 호출이 매번 실패해 규칙 폴백으로만
+                            #    돌아간다 — 실제로 평가 42건 전부가 그랬다.
+                            #    스키마로 강제하지 않아도 안전한 이유:
+                            #    supervise_plan()이 CALC_REGISTRY 화이트리스트로
+                            #    미등록 함수를 결정론적으로 제거하고,
+                            #    remap_function()이 유사 명칭을 정규화한다.
+                            #    즉 검증 관문은 그대로 남아 있고, 스키마 enum은
+                            #    중복이었다. 함수명은 description으로 안내한다.
                             "calc_function": {
                                 "type": "string",
-                                "description": "type이 calculation일 때만. "
-                                               "반드시 등록된 함수명이어야 한다.",
-                                "enum": sorted(CALC_REGISTRY),
+                                "description":
+                                    "type이 calculation일 때만. 다음 중 하나를 "
+                                    "정확히 적을 것: " + ", ".join(sorted(CALC_REGISTRY)),
                             },
                         },
                         "required": ["id", "description", "type"],
@@ -120,6 +131,46 @@ QUERY_SPEC_TOOL = [{
                 },
             },
             "required": ["intent", "asked_for"],
+        },
+    },
+}]
+
+
+# ── 축소 스키마 (1단 폴백) ──────────────────────────────────
+# CLOVA가 tools를 거부하면(스키마 요건이 문서화돼 있지 않고 조용히 바뀐다)
+# 예전에는 곧장 규칙 폴백으로 떨어졌다. 규칙 폴백은 search_terms 재작성도,
+# 의도 분류도 못 하므로 검색 품질이 눈에 띄게 떨어진다.
+# 그래서 그 사이에 한 단계를 둔다 — **검증된 요소만으로 만든 최소 스키마**.
+# (진단 사다리에서 스칼라·문자열배열·중첩객체·객체배열은 전부 통과했고,
+#  값이 많은 enum만 거부됐다. 여기에는 enum을 아예 쓰지 않는다.)
+MINIMAL_QUERY_SPEC_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "extract_query_spec",
+        "description": "연금 질의의 의도와 요구사항을 구조화한다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "intent": {"type": "string", "description": "질의 의도"},
+                "asked_for": {
+                    "type": "array",
+                    "description": "질문이 요구한 답변 구성요소",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "description": {"type": "string"},
+                            "type": {"type": "string"},
+                        },
+                    },
+                },
+                "search_terms": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "문서에서 쓰는 정식 용어로 옮긴 검색어",
+                },
+            },
+            "required": ["intent"],
         },
     },
 }]
@@ -481,10 +532,29 @@ def make_extract_query_spec(client=None,
             out = c.call_with_functions(L1_SYSTEM_PROMPT, user_msg,
                                         QUERY_SPEC_TOOL, purpose="l1_query_spec")
         except Exception as e:      # 호출 실패를 조용히 넘기지 않는다
-            if trace_log:
-                trace_log("질의분석_LLM_실패",
-                          f"L1 호출 실패({e}) → 규칙 기반 추출로 진행")
-            return fallback
+            # 스키마가 거부된 경우(400)만 축소 스키마로 한 번 더 시도한다.
+            # 타임아웃·5xx는 스키마 문제가 아니므로 여기서 또 부르면
+            # 지연만 늘린다 — 평가는 단일 GET이라 지연이 곧 점수다.
+            retried = False
+            if "HTTP 400" in str(e) or "40009" in str(e):
+                if trace_log:
+                    trace_log("질의분석_스키마_거부",
+                              f"전체 스키마 거부({e}) → 축소 스키마로 재시도")
+                try:
+                    out = c.call_with_functions(
+                        L1_SYSTEM_PROMPT, user_msg, MINIMAL_QUERY_SPEC_TOOL,
+                        purpose="l1_query_spec_minimal")
+                    retried = True
+                except Exception as e2:     # noqa: BLE001
+                    if trace_log:
+                        trace_log("질의분석_LLM_실패",
+                                  f"축소 스키마도 실패({e2}) → 규칙 기반 추출로 진행")
+                    return fallback
+            if not retried:
+                if trace_log:
+                    trace_log("질의분석_LLM_실패",
+                              f"L1 호출 실패({e}) → 규칙 기반 추출로 진행")
+                return fallback
 
         args = (out or {}).get("arguments")
         if not args:

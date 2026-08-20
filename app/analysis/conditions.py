@@ -143,6 +143,30 @@ def derive_conditions(question: str,
     if (generic := parse_amount_to_manwon(q)) is not None:
         c.setdefault("amount_manwon", generic)
 
+    # ── 수령한도 질의의 무맥락 금액은 계좌 평가액으로 본다 ──
+    # "1억이고 연금수령 10년차면 한도가?" 처럼 '계좌에·평가액' 같은 단서 없이
+    # 금액만 던지는 질의가 흔하다. 이때 account_value_manwon이 안 잡히면
+    # 연금수령한도 계산이 통째로 못 돌아 답변에 숫자가 빠진다(평가 E-05).
+    #
+    # 무제한으로 넘기지 않는다 — 용도가 이미 밝혀진 금액이 하나라도 있으면
+    # 그 금액을 계좌 평가액으로 재해석하는 셈이 되므로 건드리지 않는다.
+    # ("연금저축에 600만원 넣었는데 세액공제 한도가?" → 600을 평가액으로
+    #  잡으면 안 된다.)
+    _PURPOSED = ("pension_saving_manwon", "irp_manwon", "severance_manwon",
+                 "total_income_manwon", "combined_contribution_manwon",
+                 "private_pension_annual_manwon", "private_pension_monthly_manwon")
+    if ("account_value_manwon" not in c
+            and c.get("amount_manwon") is not None
+            and not any(k in c for k in _PURPOSED)
+            and any(k in q for k in ("수령한도", "인출한도", "얼마까지 인출",
+                                     "얼마나 인출", "얼마까지 뽑", "한도"))
+            and not any(k in q for k in ("세액공제", "공제한도", "납입한도",
+                                         "공제 한도"))):
+        c["account_value_manwon"] = c["amount_manwon"]
+        c.setdefault("condition_notes", []).append(
+            "질의에 금액의 용도가 명시되지 않아 연금계좌 평가액으로 보고 계산했습니다. "
+            "해당 금액이 평가액이 아니라면 결과가 달라집니다")
+
     # ── 수령 형태 ──
     if any(s in q for s in _ANNUITY_SIGNALS):
         c["is_annuity_type"] = True

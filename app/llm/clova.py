@@ -69,6 +69,25 @@ class ClovaError(RuntimeError):
     감사·검증 실패는 반드시 think_trace에 남아야 하기 때문."""
 
 
+# 다시 보내도 결과가 같은 오류들. 요청 내용 자체가 거부된 경우다.
+# 429(속도 제한)는 여기 넣지 않는다 — 그건 쉬면 풀린다.
+_PERMANENT_MARKERS = (
+    "HTTP 400", "HTTP 401", "HTTP 403", "HTTP 404", "HTTP 413", "HTTP 422",
+    "40009",        # Unsupported function — tools 스키마 거부
+    "40104",        # 인증 실패
+)
+
+
+def _is_permanent(e: Exception) -> bool:
+    """재시도가 무의미한 오류인가.
+
+    스키마가 거부됐거나 키가 틀린 상태에서 한 번 더 보내는 것은
+    지연만 두 배로 만든다. 평가 42건 × 2회 = 84회의 헛된 400이 실제로 났다.
+    """
+    msg = str(e)
+    return any(m in msg for m in _PERMANENT_MARKERS)
+
+
 # ════════════════════════════════════════════════════════════════
 # 실제 클라이언트
 # ════════════════════════════════════════════════════════════════
@@ -169,6 +188,12 @@ class ClovaClient:
                 last_err = e
                 USAGE.failures += 1
                 log.warning("[clova] %s 시도 %d 실패: %s", purpose, attempt + 1, e)
+                # 요청 자체가 잘못된 경우(스키마 거부·인증 실패)는 똑같이
+                # 다시 보내도 똑같이 실패한다. 재시도는 지연만 두 배로 늘린다
+                # — 평가 42건에서 매 질의마다 400을 두 번씩 맞았다.
+                # 429/5xx/타임아웃처럼 회복 가능한 것만 다시 보낸다.
+                if _is_permanent(e):
+                    break
         raise ClovaError(f"{purpose} 호출 실패: {last_err}")
 
     # ── 공개 인터페이스 ──────────────────────────────────────
