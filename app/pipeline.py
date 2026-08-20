@@ -24,8 +24,8 @@ coverage_pipeline.run_with_timeout()은 ThreadPoolExecutor 기반이라
 다음 LLM 단계를 **아예 건너뛰고** 결정론적 경로로 축퇴시킨다.
 스레드를 억지로 죽이는 것보다 이쪽이 정직하고 안전하다.
 
-TODO(Phase 1 스모크 테스트 후): 아래 예산값은 실측 지연 없이 잡은 추정치다.
-      `python -m app.llm.smoke_test`가 출력하는 값으로 갱신할 것.
+단계별 예산(BUDGET_*)은 2026-08-18 실배포 로그의 실측 지연으로 갱신했다.
+근거와 재조정 방법은 아래 상수 정의부의 주석을 볼 것.
 """
 
 from __future__ import annotations

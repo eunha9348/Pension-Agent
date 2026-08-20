@@ -57,6 +57,15 @@ def raw_tokens(text: str) -> list[str]:
     return _TOKEN.findall(normalize(text))
 
 
+def stem(token: str) -> str:
+    """어말 조사·어미를 뗀 어간. 오타 교정처럼 토큰 단위로 다룰 때 쓴다.
+
+    "연금저축과" → "연금저축". 이걸 먼저 떼지 않으면 조사가 붙은 정상 용어가
+    오타로 보인다(편집거리 1).
+    """
+    return _strip_suffix(token)
+
+
 def content_terms(text: str) -> set[str]:
     """규칙 매칭용 내용어 집합 (어간, bigram 없음).
 

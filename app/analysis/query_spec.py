@@ -30,6 +30,7 @@ from typing import Any, Callable, Optional
 
 from app.analysis.calc_params import remap_function
 from app.analysis.conditions import derive_conditions
+from app.analysis.typo import corrected_terms
 from app.core.coverage_pipeline import CALC_REGISTRY
 
 # ════════════════════════════════════════════════════════════════
@@ -274,6 +275,10 @@ def rule_based_spec(question: str) -> dict:
         "user_conditions": conditions,
         "planned_calls": planned,
         "plan": plan,
+        # L1이 실패해도 오타 대응이 사라지지 않도록, 규칙 경로에서도
+        # 검색어를 만든다. LLM 없이 편집거리로만 교정하므로 커버리지는
+        # 좁지만, 없는 것보다는 낫다(app/analysis/typo.py 참고).
+        "search_terms": corrected_terms(question),
         "source": "rule",
     }
 
@@ -423,6 +428,16 @@ def reconcile_spec(spec: dict, fallback: dict, question: str) -> dict:
         out["asked_for"] = merged[:MAX_SLOTS]
         if not misclassified:
             out["source"] = out.get("source", "llm") + "+rule(슬롯보강)"
+
+    # ── 2-B. 검색어는 두 경로를 합친다 ───────────────────────
+    # L1이 만든 검색어(넓은 커버리지)와 규칙 기반 오타 교정(좁지만 확실)은
+    # 서로 대체재가 아니라 보완재다. L1 재작성이 폐기됐거나 L1이 아예
+    # 실패했더라도 오타 교정은 남아야 한다.
+    merged_terms = list(out.get("search_terms") or [])
+    for t in (fallback.get("search_terms") or []):
+        if t not in merged_terms:
+            merged_terms.append(t)
+    out["search_terms"] = merged_terms[:MAX_SEARCH_TERMS]
 
     # ── 3. 계획과 실제 실행을 일치시킨다 ─────────────────────
     # 표시된 계획과 실행 슬롯이 다르면 트레이스를 신뢰할 수 없다.
