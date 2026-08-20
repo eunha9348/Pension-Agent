@@ -175,6 +175,104 @@ class VerificationResult:
                 f"{sorted(self.ungrounded)[:5]}")
 
 
+@dataclass
+class PresenceResult:
+    """계산 결과가 답변에 실렸는지 (verify_numeric_grounding의 반대 방향)."""
+    passed: bool
+    missing: list[tuple[str, float, str]] = field(default_factory=list)
+    required_count: int = 0
+
+    def as_trace(self) -> str:
+        if self.required_count == 0:
+            return "계산값 표기 — 답변에 실려야 할 계산 결과가 없음"
+        if self.passed:
+            return (f"계산값 표기 확인 — 계산 결과 {self.required_count}건이 "
+                    f"모두 답변에 실림")
+        items = ", ".join(f"{label} {shown}" for label, _v, shown in self.missing[:4])
+        return (f"계산값 표기 누락 — 계산했으나 답변에 없는 값 "
+                f"{len(self.missing)}건: {items}")
+
+    def instruction(self) -> str:
+        """L5' 재생성에 붙일 시정 지시."""
+        lines = [f"· {label}: {shown}" for label, _v, shown in self.missing]
+        return ("아래 계산 결과가 답변 본문에 빠져 있습니다. 사용자가 물은 "
+                "수치이므로 반드시 문장 안에 그대로 적으십시오. "
+                "값을 바꾸거나 새로 계산하지 마십시오.\n" + "\n".join(lines))
+
+
+# 계산 결과 dict에서 '답변에 실려야 할 값'을 고르는 기준.
+# 분모·연차 같은 중간값까지 요구하면 멀쩡한 답변이 실패하므로 금액·비율만 본다.
+_PRESENCE_SKIP = {"source", "rate_source", "DEPRECATED", "note", "기준", "action",
+                  "doc_id", "markers", "is_legacy_suspect", "reason", "params",
+                  "label", "denominator", "unlimited", "eligible", "comparable",
+                  "choice_required"}
+
+
+def _presence_targets(result: Any, prefix: str = "") -> list[tuple[str, float, str]]:
+    """계산 결과에서 (라벨, 값, 표기) 목록을 뽑는다. variants 구조도 훑는다."""
+    from app.generation.render import _UNIT_MANWON, _UNIT_RATE, format_value, label_of
+
+    out: list[tuple[str, float, str]] = []
+    if not isinstance(result, dict):
+        return out
+
+    if isinstance(result.get("variants"), list):
+        for v in result["variants"]:
+            tag = str(v.get("label") or "조건")
+            out.extend(_presence_targets(v.get("result"), f"{tag} "))
+        return out
+
+    for key, value in result.items():
+        if key in _PRESENCE_SKIP or not isinstance(value, (int, float)):
+            continue
+        if isinstance(value, bool):
+            continue
+        # 금액·비율로 분류된 키만 요구한다 (개수·연차는 설명에 없어도 된다)
+        if key not in _UNIT_MANWON and key not in _UNIT_RATE:
+            continue
+        out.append((prefix + label_of(key), float(value), format_value(key, value)))
+    return out
+
+
+def verify_calc_presence(answer: str,
+                         calc_results: Iterable[Any] = ()) -> PresenceResult:
+    """계산한 수치가 답변 문장에 실제로 실렸는지 검증.
+
+    ━━ 왜 필요한가 (verify_numeric_grounding으로는 못 잡는다) ━━
+    기존 검증기는 **답변의 수치 → 근거**만 본다. 즉 날조는 막지만,
+    LLM이 계산 결과를 아예 안 쓰고 원론적인 설명만 늘어놓는 경우는
+    그대로 통과한다. 실제로 그랬다:
+
+       질의  "1억원, 연금수령 1년차 — 얼마까지 인출 가능?"
+       계산  연금수령한도 = 1,200만원   ← 정확히 계산됨
+       답변  "연금수령한도는 계좌평가액과 연금수령연차로 산정됩니다..."
+             → 숫자가 없다. 그런데 대조할 수치도 없으니 검증 '통과'.
+
+    "계산은 함수, 설명은 LLM"이 성립하려면 함수의 출력이 사용자에게
+    **도달해야** 한다. 도달 여부를 확인하지 않으면 그 원칙은 절반만 지켜진다.
+
+    ━━ 표기 흔들림을 흡수한다 ━━
+    "1,200만원" · "1200만원" · "1억 2,000만원"을 모두 같은 값으로 본다
+    (parse_amount_expressions가 억 단위까지 해석한다).
+    """
+    from app.analysis.units import parse_amount_expressions
+
+    targets: list[tuple[str, float, str]] = []
+    for r in calc_results:
+        targets.extend(_presence_targets(r))
+
+    if not targets:
+        return PresenceResult(True, [], 0)
+
+    # 답변에 등장하는 값 — 금액 표현과 일반 수치 양쪽에서 모은다
+    present: set[float] = {v for _s, _e, v in parse_amount_expressions(answer)}
+    present |= extract_numbers(answer, include_trivial=True)
+
+    missing = [t for t in targets if not _matches(t[1], present)]
+    return PresenceResult(passed=not missing, missing=missing,
+                          required_count=len(targets))
+
+
 def verify_numeric_grounding(answer: str,
                               calc_results: Iterable[Any] = (),
                               evidence_texts: Iterable[str] = ()) -> VerificationResult:

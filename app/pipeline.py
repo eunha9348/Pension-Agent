@@ -52,6 +52,7 @@ from app.core.coverage_pipeline import (CALC_REGISTRY, Answerability,
                                         filter_irrelevant_evidence,
                                         map_evidence_to_slots, run_calculations,
                                         verify_requirement_coverage)
+from app.core.numeric_verifier import verify_calc_presence
 from app.core.grounding_retrieval import (build_refuse_response, ground_query,
                                           should_refuse_early)
 from app.core.pension_calc_functions import (check_class_eligibility,
@@ -449,6 +450,25 @@ def answer_question(question_id: str, question: str,
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
 
+    # ── 계산값이 끝내 답변에 없으면 결정론적으로 덧붙인다 ──────
+    #
+    # ⚠️ 재생성까지 했는데도 L5'가 숫자를 안 쓴 경우다. 여기서 포기하면
+    #    "정확히 계산해 놓고 사용자에게는 안 알려주는" 답변이 나간다 —
+    #    E-04/E-05가 실제로 그랬다(한도 1,200만원을 구해 놓고 답변에는
+    #    산정 방식만 설명).
+    #
+    #    덧붙이는 값은 **계산함수의 출력을 그대로 렌더링한 것**이므로
+    #    "계산은 함수, 설명은 LLM" 원칙에 어긋나지 않는다. LLM이 숫자를
+    #    만드는 것이 아니라, 함수가 만든 숫자가 도달하도록 보장하는 것이다.
+    final_presence = verify_calc_presence(draft, calc_results)
+    if not final_presence.passed:
+        lines = "\n".join(f"· {label}: {shown}"
+                          for label, _v, shown in final_presence.missing)
+        draft += f"\n\n계산 결과\n{lines}"
+        trace.log("계산값_보강",
+                  f"{final_presence.as_trace()} → 계산함수 출력을 결정론적으로 "
+                  f"덧붙였다 (LLM이 숫자를 생성한 것이 아니다)")
+
     # ── 등급 강등 반영 ────────────────────────────────────────
     if supervision is not None and supervision.downgraded_answerability:
         trace.log("답변등급_강등",
@@ -629,6 +649,15 @@ def _compose_trace(query_spec: dict, trace: TraceLogger) -> str:
     return "\n".join(lines)
 
 
+# 파이프라인이 스스로 해결하는 지적 — 사용자에게 고지할 것이 남지 않는다.
+# CALC_NOT_SHOWN은 재생성이 실패해도 '계산 결과' 블록을 결정론적으로
+# 덧붙여 반드시 해소되므로, 여기 남겨 두면 두 가지가 잘못된다:
+#   ① 이미 해결된 문제를 "확인해 주십시오"라고 사용자에게 떠넘긴다
+#   ② directive가 LLM용 지시문("반드시 문장 안에 그대로 적으십시오")이라
+#      내부 프롬프트가 답변에 그대로 노출된다
+_SELF_RESOLVING = {"CALC_NOT_SHOWN"}
+
+
 def _unresolved_notice(supervision) -> tuple[str, list[str]]:
     """해소되지 않은 감독 지적을 사용자용 고지문과 확인 항목으로 바꾼다.
 
@@ -640,7 +669,8 @@ def _unresolved_notice(supervision) -> tuple[str, list[str]]:
     반환: (답변에 덧붙일 고지문, 확인 항목으로 추가할 것들)
     """
     unresolved = [f for f in getattr(supervision, "findings", [])
-                  if f.severity in (Verdict.REVISE, Verdict.BLOCK)]
+                  if f.severity in (Verdict.REVISE, Verdict.BLOCK)
+                  and f.code not in _SELF_RESOLVING]
     if not unresolved:
         return "", []
 

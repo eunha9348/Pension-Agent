@@ -27,6 +27,7 @@ mock 코퍼스에서도 대부분 돌지만, needs_real_corpus=True 문항은 �
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import pytest
@@ -380,6 +381,32 @@ def run_case(case: EvalCase) -> dict:
             "refused": refused, "asked_back": asked_back}
 
 
+def _dump(r: dict) -> None:
+    """실패 문항의 실제 출력. 원인을 좁히는 데 필요한 것만 보여준다.
+
+    특히 계산 결과(think_trace의 L5 구간)와 답변 본문을 함께 봐야
+    "숫자가 안 나온 것"과 "숫자는 나왔는데 문장이 안 쓴 것"이 갈린다.
+    """
+    body = r["body"]
+    answer = body.get("answer") or ""
+    trace = body.get("think_trace") or ""
+    context = body.get("retrieved_context") or ""
+
+    print("   ┌─ 실제 답변 " + "─" * 50)
+    for line in answer.splitlines() or ["(비어 있음)"]:
+        print(f"   │ {line}")
+    print("   ├─ 근거 문서 " + "─" * 50)
+    ids = sorted({d for d in re.findall(r'doc\d+|R2_[A-Za-z0-9]+', context)})
+    print(f"   │ {', '.join(ids) if ids else '(없음)'}  ·  {len(context)}자")
+    print("   ├─ think_trace 중 계산·감사 구간 " + "─" * 31)
+    keep = [ln for ln in trace.splitlines()
+            if any(k in ln for k in ("L5", "L6", "계산", "감사", "검증",
+                                     "REVISE", "BLOCK", "DOWNGRADE", "실패"))]
+    for line in keep[:25] or ["(해당 없음)"]:
+        print(f"   │ {line[:160]}")
+    print("   └" + "─" * 62)
+
+
 def using_real_corpus() -> bool:
     from app.ingest.store import get_store
     return get_store().corpus_kind == "real"
@@ -398,18 +425,44 @@ def test_평가셋(case: EvalCase):
 
 
 def main() -> int:
+    """평가셋 실행.
+
+        python -m tests.eval_set                 # 전체
+        python -m tests.eval_set --only E-04     # 일부만 (쉼표로 여러 개)
+        python -m tests.eval_set --verbose       # 실패 문항의 실제 답변까지
+
+    ⚠️ `--verbose` 없이는 "누락: ['1,200만원']"까지만 보여서, 숫자가
+       아예 계산되지 않은 것인지 계산은 됐는데 문장에 안 실린 것인지
+       구분할 수 없다. 실패를 고치려면 실제 답변을 봐야 한다.
+    """
+    import argparse
+
+    ap = argparse.ArgumentParser(description="자체 평가셋 실행")
+    ap.add_argument("--only", default="",
+                    help="실행할 문항 ID (쉼표 구분, 예: E-04,E-05)")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="실패 문항의 실제 답변·근거·think_trace 요약을 출력")
+    args = ap.parse_args()
+
+    wanted = {x.strip().upper() for x in args.only.split(",") if x.strip()}
+    cases = [c for c in EVAL_CASES if not wanted or c.id.upper() in wanted]
+    if wanted and not cases:
+        print(f"❌ '{args.only}' 와 맞는 문항이 없습니다. "
+              f"사용 가능한 ID: {', '.join(c.id for c in EVAL_CASES)}")
+        return 1
+
     real = using_real_corpus()
     passed = failed = skipped = 0
 
     print("═" * 70)
     print(" 자체 평가셋 리포트")
     print("═" * 70)
-    print(f" 코퍼스: {'실물' if real else 'mock'}   문항 {len(EVAL_CASES)}건")
+    print(f" 코퍼스: {'실물' if real else 'mock'}   문항 {len(cases)}건")
     if not real:
         print(" ⚠️  mock 코퍼스입니다. 실물 문서가 있어야 하는 문항은 건너뜁니다 —")
         print("    개선 효과를 제대로 재려면 배포 서버에서 실행하십시오.")
 
-    for case in EVAL_CASES:
+    for case in cases:
         if case.needs_real_corpus and not real:
             skipped += 1
             print(f"\n⏭  [{case.id}] {case.question}")
@@ -424,6 +477,8 @@ def main() -> int:
             print(f"   함정: {case.trap}")
         for p in r["problems"]:
             print(f"   ⚠ {p}")
+        if args.verbose and not ok:
+            _dump(r)
 
     total = passed + failed
     print("\n" + "─" * 70)

@@ -23,7 +23,8 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from app.core.coverage_pipeline import EvidenceChunk, RequirementSlot, SlotStatus
-from app.core.numeric_verifier import (verify_numeric_grounding,
+from app.core.numeric_verifier import (verify_calc_presence,
+                                       verify_numeric_grounding,
                                        verify_source_disclosure)
 from app.core.supervisory_board import (Finding, SupervisionResult, Verdict,
                                         supervise, supervise_hybrid)
@@ -32,11 +33,13 @@ from app.core.supervisory_board import (Finding, SupervisionResult, Verdict,
 class GroundingVerdict(int):
     """bool처럼 쓰이면서 상세 결과를 함께 실어 나르는 반환값."""
 
-    def __new__(cls, ok: bool, numeric=None, supervision=None, disclosure=None):
+    def __new__(cls, ok: bool, numeric=None, supervision=None, disclosure=None,
+                presence=None):
         obj = super().__new__(cls, 1 if ok else 0)
         obj.numeric = numeric
         obj.supervision = supervision
         obj.disclosure = disclosure
+        obj.presence = presence
         return obj
 
     def __bool__(self) -> bool:
@@ -52,11 +55,19 @@ class GroundingVerdict(int):
         lines = []
         if self.numeric is not None:
             lines.append(self.numeric.as_trace())
+        if self.presence is not None:
+            lines.append(self.presence.as_trace())
         if self.disclosure and not self.disclosure.get("ok"):
             lines.append(f"출처 고지 미흡 — {self.disclosure.get('action')}")
         if self.supervision is not None:
             lines.append(self.supervision.as_trace())
         return "\n".join(lines)
+
+    def revise_instruction(self) -> str:
+        """재생성 시 L5'에 붙일 시정 지시. 없으면 빈 문자열."""
+        if self.presence is not None and not self.presence.passed:
+            return self.presence.instruction()
+        return ""
 
 
 def make_verify_grounding(question: str,
@@ -79,7 +90,12 @@ def make_verify_grounding(question: str,
         evidence_texts = [c.text for c in evidence]
 
         # ── 1. 수치 대조 (LLM 없음) ──────────────────────────
+        # 두 방향을 **모두** 본다. 한 방향만 보면 한쪽 사고를 놓친다:
+        #   grounding : 답변의 수치 → 근거   (없는 숫자를 지어내는 것을 막음)
+        #   presence  : 계산 결과 → 답변     (계산해 놓고 안 쓰는 것을 막음)
+        # 후자가 없으면 "계산은 함수, 설명은 LLM" 원칙이 절반만 지켜진다.
         numeric = verify_numeric_grounding(answer, calc_results, evidence_texts)
+        presence = verify_calc_presence(answer, calc_results)
         disclosure = verify_source_disclosure(answer, calc_results)
 
         # ── 2. 감독 (결정론적 4대 감사 + HyperCLOVA X 의미 감사) ──
@@ -118,12 +134,26 @@ def make_verify_grounding(question: str,
                  + " (결정론적 4대 감사만 적용됨)"),
                 ""))
 
-        ok = bool(numeric.passed)
+        # ── 3. 계산값 누락은 REVISE로 올린다 ────────────────────
+        #
+        # 결정론적 검사가 찾은 결함이므로 심각도를 **올리기만** 한다
+        # (감사 권한 계층의 단조성 — LLM이든 코드든 완화는 못 한다).
+        # 여기서 REVISE로 올려야 파이프라인의 기존 재생성 경로가 그대로
+        # 동작한다. 별도 분기를 만들면 재생성 로직이 두 벌이 된다.
+        if supervision is not None and not presence.passed:
+            supervision.findings.append(Finding(
+                "수치표기", "CALC_NOT_SHOWN", Verdict.REVISE,
+                presence.as_trace(), presence.instruction()))
+            supervision.directives.append(presence.instruction())
+            if supervision.verdict == Verdict.APPROVE:
+                supervision.verdict = Verdict.REVISE
+
+        ok = bool(numeric.passed) and bool(presence.passed)
         if supervision is not None and supervision.verdict in (Verdict.REVISE,
                                                                Verdict.BLOCK):
             ok = False
 
         return GroundingVerdict(ok, numeric=numeric, supervision=supervision,
-                                disclosure=disclosure)
+                                disclosure=disclosure, presence=presence)
 
     return verify_grounding
