@@ -139,13 +139,47 @@ QUERY_SPEC_TOOL = [{
 }]
 
 
-# ── 축소 스키마 (1단 폴백) ──────────────────────────────────
-# CLOVA가 tools를 거부하면(스키마 요건이 문서화돼 있지 않고 조용히 바뀐다)
-# 예전에는 곧장 규칙 폴백으로 떨어졌다. 규칙 폴백은 search_terms 재작성도,
-# 의도 분류도 못 하므로 검색 품질이 눈에 띄게 떨어진다.
-# 그래서 그 사이에 한 단계를 둔다 — **검증된 요소만으로 만든 최소 스키마**.
-# (진단 사다리에서 스칼라·문자열배열·중첩객체·객체배열은 전부 통과했고,
-#  값이 많은 enum만 거부됐다. 여기에는 enum을 아예 쓰지 않는다.)
+# ── 축소 스키마 (2단 폴백) ──────────────────────────────────
+# 전체 스키마에서 아직 검증되지 않은 무거운 부분(user_conditions 12속성,
+# entities)을 덜어낸 중간 단계. 조건 추출은 규칙 기반이 이미 잘 하므로
+# (derive_conditions) 여기서 잃는 것이 가장 적다.
+REDUCED_QUERY_SPEC_TOOL = [{
+    "type": "function",
+    "function": {
+        "name": "extract_query_spec",
+        "description": "연금 질의를 분석해 요구사항과 검색어를 구조화한다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "intent": {"type": "string", "description": "질의 의도"},
+                "asked_for": {
+                    "type": "array",
+                    "description": "질문이 요구한 답변 구성요소",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "description": {"type": "string"},
+                            "type": {"type": "string"},
+                            "calc_function": {"type": "string"},
+                        },
+                    },
+                },
+                "search_terms": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "문서에서 쓰는 정식 용어로 옮긴 검색어",
+                },
+                "plan": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["intent"],
+        },
+    },
+}]
+
+
+# ── 최소 스키마 (3단 폴백) ──────────────────────────────────
+# 진단 사다리에서 반복 통과가 확인된 요소만 쓴다.
 MINIMAL_QUERY_SPEC_TOOL = [{
     "type": "function",
     "function": {
@@ -177,6 +211,46 @@ MINIMAL_QUERY_SPEC_TOOL = [{
         },
     },
 }]
+
+# ════════════════════════════════════════════════════════════════
+# 스키마 사다리 — 거부당하면 한 단계 낮춰서 계속 간다
+# ════════════════════════════════════════════════════════════════
+#
+# ━━ 왜 고정 스키마로는 안 되는가 ━━
+# CLOVA의 tools 스키마 요건은 문서화돼 있지 않고, 실측 결과 **간헐적**이기까지
+# 하다(같은 페이로드가 한 번은 400, 한 번은 200). 어떤 요소가 거부되는지
+# 알아내 한 번 고쳐 놓아도, 값이 늘거나 서버가 바뀌면 다시 깨진다.
+# 그때마다 L1이 통째로 죽으면 평가 42건이 전부 규칙 폴백으로 도는 사고가
+# 그대로 재현된다 — 실제로 그렇게 됐다.
+#
+# 그래서 원인을 몰라도 살아남는 구조로 바꾼다: 풍부한 것부터 시도하고,
+# 거부되면 한 단계 낮춰 다시 시도한다. 마지막 단계까지 실패해야 규칙 폴백이다.
+SCHEMA_LADDER = [
+    ("full", QUERY_SPEC_TOOL),
+    ("reduced", REDUCED_QUERY_SPEC_TOOL),
+    ("minimal", MINIMAL_QUERY_SPEC_TOOL),
+]
+
+# 어느 단계가 통하는지 기억한다. 평가는 세션이 없지만 **프로세스는 살아 있으므로**,
+# 첫 요청이 치른 탐색 비용을 나머지 요청이 다시 치르지 않는다.
+_SCHEMA_STATE = {"index": 0, "fails": 0}
+
+# 한 번의 실패로 영구 강등하지 않는다 — 간헐적 400이 실재하기 때문이다.
+# 연속 2회 거부돼야 그 단계를 접는다.
+_DEMOTE_AFTER = 2
+
+
+def reset_schema_state() -> None:
+    """테스트용 — 사다리 위치를 초기화한다."""
+    _SCHEMA_STATE["index"] = 0
+    _SCHEMA_STATE["fails"] = 0
+
+
+def _is_schema_rejection(e: Exception) -> bool:
+    """스키마가 거부된 것인가(400/40009). 타임아웃·5xx와 구분한다."""
+    msg = str(e)
+    return "HTTP 400" in msg or "40009" in msg
+
 
 L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기입니다.
 답변을 작성하지 마십시오. 질문이 요구한 것이 무엇인지만 구조화하십시오.
@@ -531,33 +605,51 @@ def make_extract_query_spec(client=None,
         if grounding_hint:
             user_msg = f"[문서 접지 정보 — 참고용, 근거 아님]\n{grounding_hint}\n\n[질의]\n{question}"
 
-        try:
-            out = c.call_with_functions(L1_SYSTEM_PROMPT, user_msg,
-                                        QUERY_SPEC_TOOL, purpose="l1_query_spec")
-        except Exception as e:      # 호출 실패를 조용히 넘기지 않는다
-            # 스키마가 거부된 경우(400)만 축소 스키마로 한 번 더 시도한다.
-            # 타임아웃·5xx는 스키마 문제가 아니므로 여기서 또 부르면
-            # 지연만 늘린다 — 평가는 단일 GET이라 지연이 곧 점수다.
-            retried = False
-            if "HTTP 400" in str(e) or "40009" in str(e):
-                if trace_log:
-                    trace_log("질의분석_스키마_거부",
-                              f"전체 스키마 거부({e}) → 축소 스키마로 재시도")
-                try:
-                    out = c.call_with_functions(
-                        L1_SYSTEM_PROMPT, user_msg, MINIMAL_QUERY_SPEC_TOOL,
-                        purpose="l1_query_spec_minimal")
-                    retried = True
-                except Exception as e2:     # noqa: BLE001
+        # ── 스키마 사다리를 걸어 내려간다 ──────────────────
+        # 기억해 둔 단계에서 시작한다. 거부되면(400) 다음 단계로 내려가고,
+        # 타임아웃·5xx면 스키마 문제가 아니므로 즉시 규칙 폴백으로 간다
+        # (같은 스키마를 또 보내도 소용없고 지연만 늘린다).
+        out = None
+        start = _SCHEMA_STATE["index"]
+        last_err: Optional[Exception] = None
+        for idx in range(start, len(SCHEMA_LADDER)):
+            name, tool = SCHEMA_LADDER[idx]
+            try:
+                out = c.call_with_functions(
+                    L1_SYSTEM_PROMPT, user_msg, tool,
+                    purpose="l1_query_spec" if idx == 0
+                            else f"l1_query_spec_{name}")
+            except Exception as e:      # noqa: BLE001
+                last_err = e
+                if not _is_schema_rejection(e):
                     if trace_log:
                         trace_log("질의분석_LLM_실패",
-                                  f"축소 스키마도 실패({e2}) → 규칙 기반 추출로 진행")
+                                  f"L1 호출 실패({e}) → 규칙 기반 추출로 진행")
                     return fallback
-            if not retried:
+                if idx == start:
+                    # 간헐적 400이 실재하므로 한 번 걸렸다고 바로 접지 않는다
+                    _SCHEMA_STATE["fails"] += 1
+                    if _SCHEMA_STATE["fails"] >= _DEMOTE_AFTER:
+                        _SCHEMA_STATE["index"] = min(idx + 1,
+                                                     len(SCHEMA_LADDER) - 1)
+                        _SCHEMA_STATE["fails"] = 0
                 if trace_log:
-                    trace_log("질의분석_LLM_실패",
-                              f"L1 호출 실패({e}) → 규칙 기반 추출로 진행")
-                return fallback
+                    trace_log("질의분석_스키마_거부",
+                              f"'{name}' 스키마 거부({e}) → 다음 단계로 낮춰 재시도")
+                continue
+            # 성공 — 시작 단계에서 통했으면 실패 카운터를 씻는다
+            if idx == start:
+                _SCHEMA_STATE["fails"] = 0
+            elif trace_log:
+                trace_log("질의분석_스키마_축퇴",
+                          f"'{name}' 스키마로 분석 성공 — 전체 스키마는 거부됨")
+            break
+
+        if out is None:
+            if trace_log:
+                trace_log("질의분석_LLM_실패",
+                          f"모든 스키마 단계가 거부됨({last_err}) → 규칙 기반 추출로 진행")
+            return fallback
 
         args = (out or {}).get("arguments")
         if not args:

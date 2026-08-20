@@ -277,3 +277,121 @@ def test_타임아웃은_축소_스키마로_재시도하지_않는다():
     spec = extract("1억이고 10년차면 한도가?")
     assert len(calls) == 1
     assert spec["source"] != "llm"
+
+
+# ════════════════════════════════════════════════════════════════
+# 스키마 사다리 — 간헐적 400을 견디면서 거부는 흡수한다
+# ════════════════════════════════════════════════════════════════
+#
+# 실측: 같은 페이로드가 한 번은 400, 한 번은 200이었다(F2/P1이 실행마다
+# 뒤집혔다). 그러니 한 번 걸렸다고 영구 강등하면 멀쩡한 스키마를 잃고,
+# 반대로 영원히 재시도하면 진짜 거부를 못 넘긴다. 둘 다 회귀로 고정한다.
+
+import pytest
+
+from app.analysis import query_spec as qs
+
+
+@pytest.fixture(autouse=True)
+def _reset_ladder():
+    """사다리 위치는 모듈 전역이라 테스트끼리 샌다."""
+    qs.reset_schema_state()
+    yield
+    qs.reset_schema_state()
+
+
+class _Recorder:
+    """호출된 스키마 단계를 기록하는 대역."""
+    is_mock = False
+
+    def __init__(self, reject: set[str] | None = None, flaky_once: bool = False):
+        self.reject = reject or set()
+        self.flaky_once = flaky_once
+        self.calls: list[str] = []
+        self._flaked = False
+
+    def call_with_functions(self, system, user, tools, purpose="", **kw):
+        name = tools[0]["function"]["name"]
+        size = len(__import__("json").dumps(tools, ensure_ascii=False))
+        level = purpose.replace("l1_query_spec", "").lstrip("_") or "full"
+        self.calls.append(level)
+        if self.flaky_once and not self._flaked and level == "full":
+            self._flaked = True
+            raise RuntimeError('HTTP 400: {"status":{"code":"40009"}}')
+        if level in self.reject:
+            raise RuntimeError('HTTP 400: {"status":{"code":"40009"}}')
+        assert name and size
+        return {"name": "extract_query_spec",
+                "arguments": {"intent": "연금수령한도",
+                              "asked_for": [{"id": "s1", "description": "한도",
+                                             "type": "calculation"}]}}
+
+
+def test_전체가_거부되면_다음_단계로_내려간다():
+    c = _Recorder(reject={"full"})
+    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
+    assert c.calls == ["full", "reduced"]
+    assert spec["source"].startswith("llm")
+
+
+def test_두_단계가_거부되면_최소_스키마까지_내려간다():
+    c = _Recorder(reject={"full", "reduced"})
+    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
+    assert c.calls == ["full", "reduced", "minimal"]
+    assert spec["source"].startswith("llm")
+
+
+def test_전부_거부되면_규칙_폴백으로_간다():
+    c = _Recorder(reject={"full", "reduced", "minimal"})
+    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
+    assert c.calls == ["full", "reduced", "minimal"]
+    assert spec["source"] != "llm"
+    assert spec["asked_for"], "규칙 폴백은 여전히 슬롯을 채워야 한다"
+
+
+def test_간헐적_400_한_번으로는_강등하지_않는다():
+    """실측된 flakiness — 한 번 걸렸다고 접으면 멀쩡한 스키마를 영영 잃는다."""
+    extract = qs.make_extract_query_spec(client=_Recorder(flaky_once=True))
+    extract("1억이고 10년차면 한도가?")          # full 실패 → reduced 성공
+    assert qs._SCHEMA_STATE["index"] == 0, "아직 강등하면 안 된다"
+
+    c2 = _Recorder()                              # 이번엔 full이 정상
+    extract2 = qs.make_extract_query_spec(client=c2)
+    extract2("1억이고 10년차면 한도가?")
+    assert c2.calls == ["full"], "전체 스키마로 되돌아가야 한다"
+    assert qs._SCHEMA_STATE["fails"] == 0
+
+
+def test_연속_거부는_강등되어_다음_요청부터_건너뛴다():
+    """진짜 거부라면 매 요청마다 헛된 400을 다시 맞으면 안 된다."""
+    extract = qs.make_extract_query_spec(client=_Recorder(reject={"full"}))
+    extract("질의1")
+    extract("질의2")
+    assert qs._SCHEMA_STATE["index"] == 1, "연속 2회 거부 후 강등된다"
+
+    c3 = _Recorder(reject={"full"})
+    qs.make_extract_query_spec(client=c3)("질의3")
+    assert c3.calls == ["reduced"], "강등 후에는 full을 건너뛴다"
+
+
+def test_타임아웃은_사다리를_내려가지_않는다():
+    """스키마 문제가 아닌데 단계를 낮추면 지연만 늘고 정확도만 잃는다."""
+    class _Timeout:
+        is_mock = False
+        def __init__(self):
+            self.calls = 0
+        def call_with_functions(self, system, user, tools, purpose="", **kw):
+            self.calls += 1
+            raise RuntimeError("timeout")
+
+    c = _Timeout()
+    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
+    assert c.calls == 1
+    assert spec["source"] != "llm"
+
+
+def test_사다리는_점점_작아진다():
+    """아래 단계가 위 단계보다 크면 폴백의 의미가 없다."""
+    import json
+    sizes = [len(json.dumps(t, ensure_ascii=False)) for _n, t in qs.SCHEMA_LADDER]
+    assert sizes == sorted(sizes, reverse=True), sizes

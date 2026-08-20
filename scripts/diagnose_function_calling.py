@@ -402,10 +402,64 @@ def main() -> int:
         ok, note = _post(_body(tool))
         print(f"  {'✅' if ok else '❌'} {label:<28} {note}")
 
+    # ── 2.8단계: 실제 스키마를 한 속성씩 쌓아 올린다 ───────
+    #
+    # G/H가 다 통과하는데 실제 스키마만 4/4 실패했다. 아직 안 건드린 것은
+    # user_conditions(속성 12개) · entities · 최상위 속성 6개다.
+    # 실제 정의에서 그대로 떼어 와 하나씩 얹는다 — 처음 ❌가 원인이고,
+    # 직전까지가 '쓸 수 있는 최대 스키마'다.
+    print()
+    print("── 실제 속성 하나씩 쌓기 (2회씩 — 간헐 실패와 구분) " + "─" * 12)
+    real_props = _real_tool()[0]["function"]["parameters"]["properties"]
+
+    def _build(keys: list[str], *, uc_limit: int | None = None) -> list[dict]:
+        props = {}
+        for k in keys:
+            node = json.loads(json.dumps(real_props[k]))
+            if k == "user_conditions" and uc_limit is not None:
+                inner = node.get("properties") or {}
+                node["properties"] = dict(list(inner.items())[:uc_limit])
+            props[k] = node
+        return _tool("extract_query_spec", {
+            "type": "object", "properties": props,
+            "required": ["intent"],
+        })
+
+    steps = [
+        ("I1 intent", ["intent"]),
+        ("I2 +asked_for", ["intent", "asked_for"]),
+        ("I3 +user_conditions(5개)", ["intent", "asked_for", "user_conditions"]),
+        ("I4 +user_conditions(10개)", ["intent", "asked_for", "user_conditions"]),
+        ("I5 +user_conditions(전체)", ["intent", "asked_for", "user_conditions"]),
+        ("I6 +entities", ["intent", "asked_for", "user_conditions", "entities"]),
+        ("I7 +search_terms", ["intent", "asked_for", "user_conditions",
+                              "entities", "search_terms"]),
+        ("I8 +plan(=전체)", ["intent", "asked_for", "user_conditions",
+                            "entities", "search_terms", "plan"]),
+    ]
+    limits = {"I3 +user_conditions(5개)": 5, "I4 +user_conditions(10개)": 10}
+    last_ok = None
+    for label, keys in steps:
+        tool = _build(keys, uc_limit=limits.get(label))
+        marks = []
+        for _ in range(2):
+            ok, note = _post(_body(tool))
+            marks.append("✅" if ok else "❌")
+        size = len(json.dumps(tool, ensure_ascii=False))
+        print(f"  {''.join(marks)} {label:<26} ({size}자)")
+        if "✅" in marks:
+            last_ok = label
+
     print()
     print("── 실제 스키마 " + "─" * 49)
-    ok, note = _post(_body(_real_tool()))
-    print(f"  {'✅' if ok else '❌'} F1 현재 QUERY_SPEC_TOOL     {note}")
+    for label, tool in [("F1 현재 QUERY_SPEC_TOOL", _real_tool())]:
+        marks = []
+        for _ in range(2):
+            ok, note = _post(_body(tool))
+            marks.append("✅" if ok else "❌")
+        print(f"  {''.join(marks)} {label}")
+    if last_ok:
+        print(f"\n  → 통과한 마지막 단계: {last_ok}")
 
     # ── 3단계: 대조군 — 일반 채팅은 되는가 ────────────────
     print()
