@@ -305,14 +305,107 @@ def main() -> int:
             marks.append("✅" if ok else "❌")
         print(f"  {''.join(marks)} {label}")
 
-    # ── 2.7단계: 수정된 스키마가 실제로 통과하는가 ────────
+    # ── 2.7단계: T7(통과) → F2(실패) 사이를 한 칸씩 좁힌다 ──
+    #
+    # 여기가 핵심이다. T9는 15종 한글 enum을 배열 안에 품고도 통과했는데,
+    # enum이 하나도 없는 최소 스키마 F2는 실패했다. 즉 enum은 원인이 아니고,
+    # T7과 F2를 가르는 다른 요소가 있다. 한 번에 하나씩만 바꿔 가른다.
     print()
-    print("── 수정본 검증 " + "─" * 49)
-    ok, note = _post(_body(_real_tool()))
-    print(f"  {'✅' if ok else '❌'} F1 수정된 QUERY_SPEC_TOOL   {note}")
+    print("── T7(통과)에 한 가지씩 더하기 " + "─" * 33)
+
+    def _t7_props(**extra):
+        p = {
+            "intent": {"type": "string"},
+            "asked_for": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string"},
+                                   "description": {"type": "string"}},
+                },
+            },
+        }
+        p.update(extra)
+        return {"type": "object", "properties": p, "required": ["intent"]}
+
+    # G1 함수명만 실제 이름으로
+    g1 = _tool("extract_query_spec", _t7_props())
+    # G2 배열 property에 description 추가
+    g2p = _t7_props()
+    g2p["properties"]["asked_for"]["description"] = "질문이 요구한 답변 구성요소"
+    g2 = _tool("t_g2", g2p)
+    # G3 items.properties 안에 'type'이라는 이름의 속성
+    g3p = _t7_props()
+    g3p["properties"]["asked_for"]["items"]["properties"]["type"] = {"type": "string"}
+    g3 = _tool("t_g3", g3p)
+    # G4 문자열 배열 + description
+    g4 = _tool("t_g4", _t7_props(
+        search_terms={"type": "array", "items": {"type": "string"},
+                      "description": "문서에서 쓰는 정식 용어"}))
+    # G5 문자열 배열 (description 없음)
+    g5 = _tool("t_g5", _t7_props(
+        search_terms={"type": "array", "items": {"type": "string"}}))
+    # G6 함수 description을 실제 것처럼 길게 + 특수문자(①②③④ —)
+    g6 = [{"type": "function", "function": {
+        "name": "t_g6",
+        "description": ("연금 질의를 분석해 ① 질문이 요구한 답변 구성요소, "
+                        "② 사용자가 밝힌 조건, ③ 호출할 결정론적 계산함수, "
+                        "④ 실행 계획을 추출한다. 숫자를 직접 계산하지 말 것 "
+                        "— 계산은 등록된 함수만 수행한다."),
+        "parameters": _t7_props()}}]
+    # G7 items 안에 required
+    g7p = _t7_props()
+    g7p["properties"]["asked_for"]["items"]["required"] = ["id", "description"]
+    g7 = _tool("t_g7", g7p)
+
+    for label, tool in [("G1 함수명 extract_query_spec", g1),
+                        ("G2 배열에 description", g2),
+                        ("G3 items에 'type' 속성", g3),
+                        ("G4 문자열배열+description", g4),
+                        ("G5 문자열배열(설명없음)", g5),
+                        ("G6 긴 설명+①②③④—", g6),
+                        ("G7 items 안 required", g7)]:
+        ok, note = _post(_body(tool))
+        print(f"  {'✅' if ok else '❌'} {label:<28} {note}")
+
+    print()
+    print("── F2(실패)에서 한 가지씩 빼기 " + "─" * 33)
     from app.analysis.query_spec import MINIMAL_QUERY_SPEC_TOOL
-    ok2, note2 = _post(_body(MINIMAL_QUERY_SPEC_TOOL))
-    print(f"  {'✅' if ok2 else '❌'} F2 축소 스키마(폴백)        {note2}")
+
+    def _strip(tool, *, rename=None, drop_desc=False, drop_key=None):
+        t = json.loads(json.dumps(tool))
+        fn = t[0]["function"]
+        if rename:
+            fn["name"] = rename
+        props = fn["parameters"]["properties"]
+        if drop_key:
+            props.pop(drop_key, None)
+        if drop_desc:
+            def _rm(node):
+                if isinstance(node, dict):
+                    node.pop("description", None)
+                    for v in node.values():
+                        _rm(v)
+                elif isinstance(node, list):
+                    for v in node:
+                        _rm(v)
+            _rm(fn["parameters"])
+        return t
+
+    for label, tool in [
+        ("H1 F2 그대로", MINIMAL_QUERY_SPEC_TOOL),
+        ("H2 F2 − 함수명(t_h2로)", _strip(MINIMAL_QUERY_SPEC_TOOL, rename="t_h2")),
+        ("H3 F2 − 모든 description", _strip(MINIMAL_QUERY_SPEC_TOOL, drop_desc=True)),
+        ("H4 F2 − search_terms", _strip(MINIMAL_QUERY_SPEC_TOOL, drop_key="search_terms")),
+        ("H5 F2 − asked_for", _strip(MINIMAL_QUERY_SPEC_TOOL, drop_key="asked_for")),
+    ]:
+        ok, note = _post(_body(tool))
+        print(f"  {'✅' if ok else '❌'} {label:<28} {note}")
+
+    print()
+    print("── 실제 스키마 " + "─" * 49)
+    ok, note = _post(_body(_real_tool()))
+    print(f"  {'✅' if ok else '❌'} F1 현재 QUERY_SPEC_TOOL     {note}")
 
     # ── 3단계: 대조군 — 일반 채팅은 되는가 ────────────────
     print()

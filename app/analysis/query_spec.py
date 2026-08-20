@@ -65,10 +65,13 @@ QUERY_SPEC_TOOL = [{
                                      "enum": ["fact", "calculation", "comparison"]},
                             "required": {"type": "boolean"},
                             # ⚠️ 여기에 enum(등록 함수 15종)을 넣지 말 것.
-                            #    HCX-005가 값이 많은 enum을 담은 tools를 통째로
-                            #    거부한다(HTTP 400 · 40009 Unsupported function).
-                            #    그러면 L1 호출이 매번 실패해 규칙 폴백으로만
-                            #    돌아간다 — 실제로 평가 42건 전부가 그랬다.
+                            #    HCX-005는 **최상위** 속성에 한글 값 10개 이상의
+                            #    enum이 있으면 tools를 거부한다
+                            #    (HTTP 400 · 40009, 3회 반복 재현).
+                            #    배열 items 안이면 통과하므로 이 자리는 원래
+                            #    괜찮았지만, 경계가 문서화돼 있지 않고 값이 늘면
+                            #    언제 넘어갈지 모른다. 어차피 없어도 되는 것이라
+                            #    빼 둔다.
                             #    스키마로 강제하지 않아도 안전한 이유:
                             #    supervise_plan()이 CALC_REGISTRY 화이트리스트로
                             #    미등록 함수를 결정론적으로 제거하고,
