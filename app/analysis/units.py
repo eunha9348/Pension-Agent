@@ -43,7 +43,12 @@ def format_manwon(manwon: float) -> str:
     """
     if manwon is None:
         return "—"
-    m = float(manwon)
+    try:
+        m = float(manwon)
+    except (TypeError, ValueError):
+        # 호출 측이 숫자를 보장해야 하지만, 여기서마저 죽으면 답변 생성
+        # 전체가 죽는다. 표시 전용 함수이므로 조용히 물러나는 편이 낫다.
+        return "—"
     if m >= 10_000:
         eok, rest = divmod(m, 10_000)
         if abs(rest) < 0.5:

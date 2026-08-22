@@ -74,6 +74,12 @@ def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[floa
     return best[1] if best else None
 
 
+# _manwon 접미사가 없지만 숫자여야 하는 필드. LLM 출력에서 여기 해당하는
+# 키의 값이 숫자로 안 바뀌면 조용히 버린다(위조할 수 없으므로).
+_NUMERIC_CONDITION_KEYS = {"age", "pension_year", "actual_receipt_year",
+                          "service_years", "years_elapsed"}
+
+
 def derive_conditions(question: str,
                       llm_conditions: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """질의 원문 + L1 조건을 정규 스키마로 병합.
@@ -193,6 +199,13 @@ def derive_conditions(question: str,
         c["years_elapsed"] = ye
 
     # ── L1 조건이 있으면 덮어쓴다 (원 단위 → 만원 변환 포함) ──
+    #
+    # ⚠️ 숫자여야 할 필드는 반드시 검증한다. 실사고: 프롬프트 탈취 질의에서
+    #    L1이 내놓은 JSON에 만원 필드 값으로 "**" 같은 비정상 문자열이
+    #    섞여 들어왔다. 검증 없이 그대로 저장했더니 훨씬 나중에
+    #    format_manwon()이 float()으로 변환하다 죽었고, 그 예외가 위로
+    #    뚫고 나가 요청 전체가 실패했다. LLM 출력은 신뢰할 수 없는 입력이므로
+    #    경계에서 막아야 한다 — 원거리에서 죽으면 원인을 찾기도 어렵다.
     for k, v in (llm_conditions or {}).items():
         if v in (None, "", []):
             continue
@@ -201,6 +214,13 @@ def derive_conditions(question: str,
                 c[k[:-4] + "_manwon"] = round(won_to_manwon(float(v)), 4)
             except (TypeError, ValueError):
                 continue
+        elif k.endswith("_manwon") or k in _NUMERIC_CONDITION_KEYS:
+            if isinstance(v, bool):
+                continue
+            try:
+                c[k] = float(v)
+            except (TypeError, ValueError):
+                continue    # 숫자가 아니면 조용히 버린다 — 지어낼 수 없다
         else:
             c[k] = v
 
@@ -249,7 +269,11 @@ def describe_conditions(conditions: dict[str, Any]) -> str:
         elif k == "is_annuity_type":
             parts.append(f"{label[k]} {'종신형' if v else '확정기간형'}")
         elif k == "age":
-            parts.append(f"{label[k]} {v}세")
+            # LLM 조건 경로는 age를 검증 과정에서 float으로 통일한다
+            # (_NUMERIC_CONDITION_KEYS). 정수로 떨어지면 정수로 보여준다 —
+            # "80.0세"는 사람이 쓰는 표현이 아니다.
+            age_v = int(v) if float(v).is_integer() else v
+            parts.append(f"{label[k]} {age_v}세")
         elif isinstance(v, bool):
             if v:
                 parts.append(label[k])

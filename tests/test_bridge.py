@@ -166,7 +166,7 @@ def test_bridge는_REFUSE_밖에서_판단된다():
 
     import app.pipeline as p
 
-    src = inspect.getsource(p.answer_question)
+    src = inspect.getsource(p._answer_question_impl)
     call_at = src.index("find_bridge(")
     refuse_at = src.index("if decision == Answerability.REFUSE")
     assert call_at < refuse_at, "find_bridge는 REFUSE 판정보다 앞에서 불려야 한다"

@@ -179,5 +179,5 @@ def test_가입자격은_계산_이후에_판정된다():
 
     import app.pipeline as p
 
-    src = inspect.getsource(p.answer_question)
+    src = inspect.getsource(p._answer_question_impl)
     assert src.index("run_calculations") < src.index("_eligibility(")

@@ -96,3 +96,47 @@ def test_구형_키로_v3_엔드포인트를_쓰면_기동_시점에_거절한�
 def test_nv_키는_v1_엔드포인트에서도_문제없이_생성된다():
     c = ClovaClient(Settings(clova_api_key="nv-abc123", clova_endpoint=V1_ENDPOINT))
     assert c._headers()["Authorization"] == "Bearer nv-abc123"
+
+
+# ════════════════════════════════════════════════════════════════
+# 429는 즉시 포기한다 — 대기 없는 재시도는 낭비다
+# ════════════════════════════════════════════════════════════════
+#
+# 실사고: L6 예산은 3초뿐인데 _post()의 재시도는 대기 없이 즉시 재요청한다.
+# 그러면 같은 429 윈도우에 또 걸릴 뿐이라 재시도가 시간만 태운다.
+# (build_embeddings.py의 offline 배치용 429 백오프와는 성격이 다르다 —
+#  거긴 몇 초씩 쉬어도 되고, 여긴 그럴 예산이 없다.)
+
+def test_429는_재시도하지_않는다(monkeypatch):
+    from app.llm.clova import ClovaClient
+
+    calls = {"n": 0}
+
+    class _Resp:
+        status_code = 429
+        text = '{"status":{"code":"42901","message":"Too many requests"}}'
+
+    class _FakeHttpx:
+        class Client:
+            def __init__(self, timeout=None): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def post(self, *a, **k):
+                calls["n"] += 1
+                return _Resp()
+
+    import sys
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+
+    from app.config import Settings
+    c = ClovaClient.__new__(ClovaClient)
+    c.s = Settings(clova_api_key="nv-test")
+    c.endpoint = "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005"
+    c.timeout = 5.0
+    c.max_retry = 1
+
+    import pytest
+    from app.llm.clova import ClovaError
+    with pytest.raises(ClovaError):
+        c._post({}, "l6_semantic_audit")
+    assert calls["n"] == 1, "429는 첫 실패에서 바로 포기해야 한다"

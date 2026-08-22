@@ -217,3 +217,61 @@ def test_금액이_있으면_세액까지_계산한다():
     result = CALC_REGISTRY["사적연금_원천징수_계산"](**b(slot))
     assert result["T_withholding"] > 0
     assert b.assumption_items() == []
+
+
+# ════════════════════════════════════════════════════════════════
+# LLM 출력의 비정상 값이 파이프라인을 죽이지 않는다
+# ════════════════════════════════════════════════════════════════
+#
+# 실사고: 프롬프트 탈취 질의(E-18)에서 L1이 내놓은 JSON의 만원 필드에
+# 마크다운 조각("**") 같은 비정상 문자열이 섞여 들어왔다. 검증 없이
+# conditions에 저장했더니 한참 뒤 format_manwon()이 float()으로 바꾸다
+# 죽었고, 그 예외가 위로 뚫고 나가 평가 전체가 중단됐다.
+
+def test_LLM이_만원_필드에_문자열을_줘도_죽지_않는다():
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("질문", llm_conditions={"account_value_manwon": "**"})
+    assert "account_value_manwon" not in c
+
+
+def test_LLM이_나이에_문자열을_줘도_죽지_않는다():
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("질문", llm_conditions={"age": "여든"})
+    assert "age" not in c
+
+
+def test_정상_숫자는_그대로_들어간다():
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("질문", llm_conditions={"age": 80,
+                                                "account_value_manwon": 10000})
+    assert c["age"] == 80.0
+    assert c["account_value_manwon"] == 10000.0
+
+
+def test_bool은_숫자_필드로_들어가지_않는다():
+    """isinstance(True, int)는 True다 — bool이 age로 새면 조용히 틀린다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("질문", llm_conditions={"age": True})
+    assert "age" not in c
+
+
+def test_format_manwon은_문자열_입력에도_죽지_않는다():
+    """검증을 어디서든 뚫고 들어올 경우의 최후 방어선."""
+    from app.analysis.units import format_manwon
+
+    assert format_manwon("**") == "—"
+    assert format_manwon(None) == "—"
+
+
+def test_LLM_age가_정수로_표시된다():
+    """80.0세가 아니라 80세여야 한다."""
+    from app.analysis.conditions import describe_conditions, derive_conditions
+
+    c = derive_conditions("질문", llm_conditions={"age": 80})
+    desc = describe_conditions(c)
+    assert "80세" in desc
+    assert "80.0세" not in desc

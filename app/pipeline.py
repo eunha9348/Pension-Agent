@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+import logging
 from typing import Any, Optional
 
 from app.analysis.bridge import find_bridge
@@ -80,6 +81,8 @@ from app.retrieval.hybrid import make_retrieve_hybrid
 #   전체 경로가 30초를 넘길 수 있다(실측: 정상 완료 31160ms). 25초는 이
 #   정상 경로조차 못 담아 조기에 잘라내므로 상향한다.
 TOTAL_BUDGET_SEC = 45.0
+
+log = logging.getLogger("pipeline")
 # 단계별 예산 — 이 시점까지 남은 시간이 없으면 해당 LLM 단계를 건너뛴다.
 # CLOVA_TIMEOUT_SEC(기본 15초)를 함께 올렸으므로, 정상적인 대형 프롬프트
 # 호출(5~8초)이 타임아웃으로 오인돼 재시도되는 일을 줄이는 게 우선이다.
@@ -211,7 +214,11 @@ def _hard_constraints(conditions: dict, trace: TraceLogger) -> list[str]:
     out: list[str] = []
 
     age = conditions.get("age")
-    if isinstance(age, int) and age < 55 and conditions.get("private_pension_monthly_manwon"):
+    # ⚠️ int만 받으면 안 된다. LLM이 준 age는 conditions.py의 입력 검증
+    # 단계에서 float으로 통일된다(비정상 문자열을 걸러내기 위해) — 규칙
+    # 기반 파싱만 int를 낸다. 여기서 int만 받으면 LLM 경로의 55세 미만
+    # 제약이 조용히 빠진다.
+    if isinstance(age, (int, float)) and age < 55 and conditions.get("private_pension_monthly_manwon"):
         out.append("만 55세 미만은 연금수령 요건을 충족하지 않아, 인출 시 "
                    "연금소득세가 아닌 기타소득세가 적용됩니다")
 
@@ -231,7 +238,36 @@ def _hard_constraints(conditions: dict, trace: TraceLogger) -> list[str]:
 
 def answer_question(question_id: str, question: str,
                     store=None, client=None) -> dict:
-    """평가 API 5필드 응답을 만든다. 어떤 경우에도 예외를 밖으로 던지지 않는다."""
+    """평가 API 5필드 응답을 만든다. 어떤 경우에도 예외를 밖으로 던지지 않는다.
+
+    ⚠️ 이 약속은 원래 문서화만 돼 있고 실제로 지켜지지 않았다. 실제 사고:
+       프롬프트 탈취 질의(E-18)에서 L1이 내놓은 JSON에 만원 필드 값으로
+       마크다운 조각("**") 같은 비정상 문자열이 섞여 들어왔고, 그걸 그대로
+       conditions에 저장한 뒤 format_manwon()이 float()으로 변환하다 죽었다.
+       이 예외가 그대로 위로 뚫고 나가 **평가 전체가 중단**됐다 — 단일 GET
+       요청 규격에서 한 문항의 입력 이상이 전체를 죽이면 안 된다.
+       그래서 본문을 얇은 시도-실패 경계로 감싼다. 근본 원인(비검증 LLM
+       출력)은 conditions.py에서 따로 막았지만, 이 경계는 **아직 못 막은
+       다음 사고**에 대한 최후 방어선이다.
+    """
+    try:
+        return _answer_question_impl(question_id, question, store, client)
+    except Exception as e:      # noqa: BLE001 — 평가 API는 절대 죽으면 안 된다
+        log.error("[pipeline] answer_question 미처리 예외 (Q=%s): %s",
+                 question_id, e, exc_info=True)
+        return {
+            "question_id": question_id,
+            "question": question,
+            "retrieved_context": "근거 문서 없음 — 처리 중 오류가 발생했습니다.",
+            "think_trace": f"[치명적 오류] {type(e).__name__}: {e}\n"
+                           f"파이프라인이 예상치 못한 예외로 중단되어 안전 응답으로 대체합니다.",
+            "answer": "죄송합니다. 이 질문을 처리하는 중 오류가 발생했습니다. "
+                      "질문을 조금 다르게 표현해 다시 시도해 주세요.",
+        }
+
+
+def _answer_question_impl(question_id: str, question: str,
+                          store=None, client=None) -> dict:
     deadline = Deadline()
     trace = TraceLogger()
     store = store or get_store()
