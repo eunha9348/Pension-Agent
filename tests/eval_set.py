@@ -28,9 +28,17 @@ mock 코퍼스에서도 대부분 돌지만, needs_real_corpus=True 문항은 �
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 
 import pytest
+
+from app.llm.clova import rate_limit_seen
+
+# 문항 사이 기본 대기(초). 429가 잦으면 --pace로 올리거나, 자동으로 늘어난다.
+PACING_SEC = 0.5
+PACING_GROWTH = 1.8
+PACING_MAX = 8.0
 
 
 @dataclass
@@ -426,6 +434,16 @@ def using_real_corpus() -> bool:
     return get_store().corpus_kind == "real"
 
 
+def test_429_페이싱은_상한을_넘지_않는다():
+    """실사고: 42문항 텀 없이 쏘다가 절반이 429로 폴백만 돌았다.
+    성장 공식이 무한정 커지지 않고 PACING_MAX에서 멈추는지만 확인한다
+    (실제 main() 루프는 파이프라인 전체를 부르므로 여기서 재현하지 않는다)."""
+    pace = PACING_SEC
+    for _ in range(20):
+        pace = min(pace * PACING_GROWTH, PACING_MAX)
+    assert pace == PACING_MAX
+
+
 @pytest.mark.parametrize("case", EVAL_CASES, ids=[c.id for c in EVAL_CASES])
 def test_평가셋(case: EvalCase):
     if case.needs_real_corpus and not using_real_corpus():
@@ -456,6 +474,9 @@ def main() -> int:
                     help="실행할 문항 ID (쉼표 구분, 예: E-04,E-05)")
     ap.add_argument("--verbose", "-v", action="store_true",
                     help="실패 문항의 실제 답변·근거·think_trace 요약을 출력")
+    ap.add_argument("--pace", type=float, default=PACING_SEC,
+                    help=f"문항 사이 기본 대기(초). 429가 잦으면 자동으로 "
+                         f"늘어난다 (기본 {PACING_SEC})")
     args = ap.parse_args()
 
     wanted = {x.strip().upper() for x in args.only.split(",") if x.strip()}
@@ -476,6 +497,12 @@ def main() -> int:
         print(" ⚠️  mock 코퍼스입니다. 실물 문서가 있어야 하는 문항은 건너뜁니다 —")
         print("    개선 효과를 제대로 재려면 배포 서버에서 실행하십시오.")
 
+    # ⚠️ 429 페이싱 — 실사고: 42문항 × 최대 3회(L1·L5'·L6) CLOVA 호출을
+    #    텀 없이 쏘면, 앞쪽 14문항은 정상이다가 분당 호출 한도를 다 써버려
+    #    E-15부터 끝까지 전부 429로 결정론적 폴백만 돌았다. 문항 사이에
+    #    쉬고, 429를 겪으면 다음 문항부터 자동으로 더 쉰다 —
+    #    build_embeddings.py의 같은 문제·같은 해법을 재사용한다.
+    pace = max(args.pace, 0.0)
     for case in cases:
         if case.needs_real_corpus and not real:
             skipped += 1
@@ -483,6 +510,14 @@ def main() -> int:
             print("   실물 코퍼스 필요 — 건너뜀")
             continue
         r = run_case(case)
+        if pace and rate_limit_seen():
+            new_pace = min(pace * PACING_GROWTH, PACING_MAX)
+            if new_pace > pace:
+                print(f"  ⏱  429 감지 — 문항 간 대기를 "
+                     f"{pace:.1f}→{new_pace:.1f}초로 늘립니다")
+                pace = new_pace
+        if pace:
+            time.sleep(pace)
         ok = not r["problems"]
         passed += ok
         failed += not ok

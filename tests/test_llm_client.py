@@ -140,3 +140,49 @@ def test_429는_재시도하지_않는다(monkeypatch):
     with pytest.raises(ClovaError):
         c._post({}, "l6_semantic_audit")
     assert calls["n"] == 1, "429는 첫 실패에서 바로 포기해야 한다"
+
+
+# ════════════════════════════════════════════════════════════════
+# rate_limit_seen — 평가 루프가 429 페이싱을 조절하는 신호
+# ════════════════════════════════════════════════════════════════
+#
+# 실사고: 평가 42문항을 텀 없이 쏘다가 E-15부터 끝까지 전부 429가 나서,
+# 나머지 절반 이상이 LLM 없이 결정론적 폴백으로만 돌았다.
+# embedding.py의 같은 이름 신호와 동일한 패턴을 clova.py에도 둔다.
+
+def test_429를_겪으면_신호가_선다(monkeypatch):
+    from app.llm.clova import ClovaClient, rate_limit_seen
+
+    class _Resp:
+        status_code = 429
+        text = '{"status":{"code":"42901"}}'
+
+    class _FakeHttpx:
+        class Client:
+            def __init__(self, timeout=None): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def post(self, *a, **k): return _Resp()
+
+    import sys
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+
+    from app.config import Settings
+    c = ClovaClient.__new__(ClovaClient)
+    c.s = Settings(clova_api_key="nv-test")
+    c.endpoint = "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005"
+    c.timeout = 5.0
+    c.max_retry = 1
+
+    rate_limit_seen()      # 이전 상태 비우기
+    import pytest
+    from app.llm.clova import ClovaError
+    with pytest.raises(ClovaError):
+        c._post({}, "l1_query_spec")
+    assert rate_limit_seen() is True
+
+
+def test_429가_아니면_신호가_안_선다():
+    from app.llm.clova import rate_limit_seen
+    rate_limit_seen()   # 비우기
+    assert rate_limit_seen() is False

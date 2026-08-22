@@ -86,6 +86,21 @@ _PERMANENT_MARKERS = (
     "HTTP 429",
 )
 
+# 429를 겪었는지 알리는 신호. embedding.py의 같은 이름 패턴과 동일하다.
+# 평가 스크립트(tests/eval_set.py)가 이걸 보고 문항 사이 페이싱을 늘린다 —
+# 42문항을 텀 없이 쏘면 분당 호출 한도를 중간에 다 써버려, 이후 모든 문항이
+# LLM 없이 결정론적 폴백으로만 돈다(실제로 그랬다: E-15부터 끝까지 전부 429).
+_RATE_LIMIT_SEEN = False
+
+
+def rate_limit_seen(reset: bool = True) -> bool:
+    """직전 호출들에서 429를 겪었는가. 읽으면 기본적으로 표시를 지운다."""
+    global _RATE_LIMIT_SEEN
+    seen = _RATE_LIMIT_SEEN
+    if reset:
+        _RATE_LIMIT_SEEN = False
+    return seen
+
 
 def _is_permanent(e: Exception) -> bool:
     """재시도가 무의미한 오류인가.
@@ -196,6 +211,9 @@ class ClovaClient:
             except Exception as e:  # noqa: BLE001 — 재시도 후 그대로 올린다
                 last_err = e
                 USAGE.failures += 1
+                if "HTTP 429" in str(e):
+                    global _RATE_LIMIT_SEEN
+                    _RATE_LIMIT_SEEN = True
                 log.warning("[clova] %s 시도 %d 실패: %s", purpose, attempt + 1, e)
                 # 요청 자체가 잘못된 경우(스키마 거부·인증 실패)는 똑같이
                 # 다시 보내도 똑같이 실패한다. 재시도는 지연만 두 배로 늘린다
