@@ -75,3 +75,65 @@ def test_심각도_필터():
     critical = detect_traps("주택 사려고 중도인출하면 세금이 어떻게 되나요",
                             severity_filter="critical")
     assert all(r.severity == "critical" for r in critical)
+
+
+# ════════════════════════════════════════════════════════════════
+# 함정 근거 인용 · critical 교정 강제
+# ════════════════════════════════════════════════════════════════
+#
+# 평가 L-01(doc55) · E-19(doc20) · E-26(doc40)이 3회 연속 실패했다.
+# 임베딩을 켜서 검색을 개선해도 같은 문서가 빠진 것이, 이것이 검색 문제가
+# 아니라 **인용 경로** 문제임을 증명했다. 함정은 요구사항 슬롯이 아니라서
+# 슬롯-근거 매칭에 잡히지 않는다.
+
+def test_checks에_근거_문서가_실린다():
+    from app.core.trap_rules import build_trap_context
+
+    ctx = build_trap_context("연금수령연차랑 연금실제수령연차랑 같은 말 아닌가요?")
+    b1 = next(c for c in ctx["checks"] if c["id"] == "B1")
+    assert b1["docs"] == ["doc40"]
+
+
+def test_반영한_함정의_문서만_인용된다():
+    from app.core.trap_rules import build_trap_context
+    from app.pipeline import _addressed_trap_docs
+
+    ctx = build_trap_context("연금수령연차랑 연금실제수령연차랑 같은 말 아닌가요?")
+    addressed = "연금수령연차와 연금실제수령연차는 다릅니다. 실제로 인출한 해만 누적됩니다."
+    assert "doc40" in _addressed_trap_docs(addressed, ctx["checks"])
+    # 다루지 않은 답변은 인용하지 않는다 — 안 쓴 근거를 붙이면 거짓이 된다
+    assert _addressed_trap_docs("두 용어는 같은 말입니다.", ctx["checks"]) == {}
+
+
+def test_critical_함정은_끝내_누락되면_강제_삽입된다():
+    """감지·검증·REVISE는 정확히 돌았는데 재생성이 또 빠뜨리면 등급만 낮추고
+    나갔다 — 사용자는 틀린 전제를 교정받지 못한 답을 받는다(E-08)."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.core.trap_rules import build_trap_context
+    from app.pipeline import _enforce_critical_traps
+
+    ctx = build_trap_context("연금 개시하고 11년 됐는데 퇴직소득세 40% 감면 맞나요?")
+    out = _enforce_critical_traps("네, 11년차이므로 40% 감면이 적용됩니다.",
+                                  ctx["checks"], TraceLogger())
+    assert "연금실제수령연차" in out
+
+
+def test_이미_반영했으면_덧붙이지_않는다():
+    """중복 경고는 답변을 읽기 어렵게 만든다."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.core.trap_rules import build_trap_context
+    from app.pipeline import _enforce_critical_traps
+
+    ctx = build_trap_context("연금 개시하고 11년 됐는데 퇴직소득세 40% 감면 맞나요?")
+    good = "감면율은 연금실제수령연차로 결정됩니다."
+    assert _enforce_critical_traps(good, ctx["checks"], TraceLogger()) == good
+
+
+def test_high_이하는_강제하지_않는다():
+    """전부 끼워 넣으면 답변이 경고문 더미가 된다."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.pipeline import _enforce_critical_traps
+
+    checks = [{"id": "X1", "severity": "high", "correction": "주의하십시오",
+               "verify_any": ["없는말"]}]
+    assert _enforce_critical_traps("답변", checks, TraceLogger()) == "답변"

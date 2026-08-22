@@ -60,7 +60,7 @@ from app.core.pension_calc_functions import (check_class_eligibility,
                                              detect_legacy_tax_content)
 from app.core.supervisory_board import (Verdict, build_remediation_prompt,
                                         supervise_plan)
-from app.core.trap_rules import build_trap_context
+from app.core.trap_rules import build_trap_context, unaddressed_traps
 from app.generation.answer_prompt import (make_generate_answer,
                                           render_template_answer,
                                           strip_forbidden)
@@ -407,8 +407,13 @@ def answer_question(question_id: str, question: str,
     if constraint_warnings:
         draft += "\n\n※ " + " / ".join(constraint_warnings)
 
+    # ── critical 함정 교정 강제 ───────────────────────────────
+    draft = _enforce_critical_traps(draft, trap_context.get("checks"), trace)
+
     # ── 인용 조립 ─────────────────────────────────────────────
-    used_evidence = _used_evidence(evidence, slots, query_spec)
+    used_evidence = _used_evidence(
+        evidence, slots, query_spec,
+        trap_docs=_addressed_trap_docs(draft, trap_context.get("checks")))
     calc_results = [s.calc_result for s in slots
                     if s.status == SlotStatus.CALC_DONE and s.calc_result is not None]
     external = _external_sources(calc_results)
@@ -595,9 +600,60 @@ def answer_question(question_id: str, question: str,
 # 보조
 # ════════════════════════════════════════════════════════════════
 
+def _enforce_critical_traps(draft: str, trap_checks: Optional[list[dict]],
+                            trace: TraceLogger) -> str:
+    """critical 함정이 끝내 반영되지 않으면 교정 문장을 직접 덧붙인다.
+
+    ━━ 왜 권고로는 부족한가 ━━
+    함정 감지도, 검증도, REVISE 지시도 정확히 동작한다. 그런데 L5'가 재생성
+    후에도 빠뜨리면 등급만 낮추고 그대로 나갔다. 그 결과 사용자는 틀린 전제
+    ("11년이면 40% 감면")를 교정받지 못한 답을 받는다(평가 E-08·E-09).
+
+    설계 원칙에 어긋나지 않는다 — 교정 문장은 규칙(trap_rules)이 이미 갖고
+    있고, 판단도 결정론적이다. LLM 재량에 맡기지 않는 것이 원래 방침이다.
+
+    high 이하는 강제하지 않는다. 전부 끼워 넣으면 답변이 경고문 더미가 된다.
+    """
+    remaining = [t for t in unaddressed_traps(draft, trap_checks or [])
+                 if t.get("severity") == "critical" and t.get("correction")]
+    if not remaining:
+        return draft
+    trace.log("함정교정_강제삽입",
+              f"critical 함정 {[t['id'] for t in remaining]}이(가) 재생성 후에도 "
+              f"반영되지 않아 규칙이 보유한 교정 문장을 직접 덧붙였다",
+              traps=[t["id"] for t in remaining])
+    return draft + "\n\n" + "\n".join(f"※ {t['correction']}" for t in remaining)
+
+
+def _addressed_trap_docs(answer: str, trap_checks: list[dict]) -> dict[str, str]:
+    """답변이 실제로 반영한 함정의 근거 문서. {doc_id: 무엇을 뒷받침했는지}
+
+    ━━ 왜 필요한가 ━━
+    함정은 요구사항 슬롯이 아니라서 슬롯-근거 매칭에 잡히지 않는다. 그래서
+    검색도 되고 핀 고정도 됐는데 **인용 단계에서만** 탈락했다
+    (평가 L-01/doc55 · E-19/doc20 · E-26/doc40 이 3회 연속 실패).
+    임베딩을 켜서 검색을 개선해도 같은 문서가 빠진 것이 검색 문제가 아님을
+    증명했다.
+
+    판정 기준은 새로 만들지 않는다 — unaddressed_traps()가 이미 '해소됐는가'를
+    안다. 그 여집합이 곧 '답변이 반영한 함정'이다.
+    """
+    if not trap_checks:
+        return {}
+    unresolved = {t["id"] for t in unaddressed_traps(answer, trap_checks)}
+    out: dict[str, str] = {}
+    for c in trap_checks:
+        if c.get("id") in unresolved:
+            continue
+        for did in c.get("docs") or ():
+            out.setdefault(did, c.get("title") or "함정 교정 근거")
+    return out
+
+
 def _used_evidence(evidence: list[EvidenceChunk],
                    slots: list[RequirementSlot],
-                   query_spec: Optional[dict] = None) -> list[dict]:
+                   query_spec: Optional[dict] = None,
+                   trap_docs: Optional[dict[str, str]] = None) -> list[dict]:
     """**사용한** 근거만 인용 대상으로 추린다 (검색된 전부가 아니라).
 
     ⚠️ 슬롯에 매핑된 근거가 하나도 없으면 **아무것도 인용하지 않는다.**
@@ -630,6 +686,12 @@ def _used_evidence(evidence: list[EvidenceChunk],
                     if s.description not in supports:
                         supports.append(s.description)
                     break        # 계산 1건당 대표 근거 1건이면 충분하다
+
+    # 답변이 반영한 함정의 근거 문서 — 실제로 답변을 형성했으므로 인용한다
+    for did, why in (trap_docs or {}).items():
+        supports = used_ids.setdefault(did, [])
+        if why not in supports:
+            supports.append(why)
 
     if not used_ids:
         return []

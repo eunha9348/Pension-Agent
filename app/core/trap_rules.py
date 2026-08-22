@@ -170,7 +170,12 @@ TRAPS: list[TrapRule] = [
         id="A8",
         title="저율과세는 사유 확인일부터 6개월 내 서류 제출 필요",
         severity="high",
-        trigger_keywords=["부득이한", "저율", "세금 혜택", "감면", "낮은 세율"],
+        # ⚠️ '감면'을 넣지 말 것 — 이 규칙은 **부득이한 사유 저율과세**의 서류
+        #    제출 기한에 관한 것인데, '감면'은 퇴직소득세 감면 등 전혀 다른
+        #    맥락에서도 흔히 쓰인다. 실제로 "11년차 퇴직소득세 40% 감면 맞나요"
+        #    (평가 E-08)에서 오발동해, 무관한 '6개월·서류' 요구가 미해결 함정
+        #    목록에 올랐고 진짜 교정(B1)이 희석됐다.
+        trigger_keywords=["부득이한", "저율", "낮은 세율"],
         fact=(
             "저율과세 혜택을 받으려면 해당 사유가 확인된 날부터 6개월 이내에 "
             "사유 확인 서류를 금융회사에 제출해야 한다. 기한을 놓치거나 서류를 제출하지 않으면 "
@@ -592,8 +597,13 @@ def build_trap_context(query: str) -> dict:
         "ask_back_candidates": [r.ask_back for r in hits if r.ask_back],
         "retrieval_steer": steer,
         # L6 적합성 감사가 규칙별로 해소 여부를 따지는 데 쓴다
+        # docs — 이 함정의 교정이 답변에 반영됐다면 인용해야 할 근거 문서.
+        # 함정은 요구사항 슬롯이 아니라서 슬롯-근거 매칭에 걸리지 않는다.
+        # 이게 없으면 답변을 실제로 형성한 문서가 인용에서 통째로 빠진다
+        # (평가 L-01/doc55 · E-19/doc20 · E-26/doc40 이 3회 연속 그랬다).
         "checks": [{"id": r.id, "severity": r.severity, "title": r.title,
                     "correction": r.correction,
+                    "docs": sorted(r.source_doc_ids()),
                     "verify_any": verify_terms_for(r.id)} for r in hits],
         "trace": (f"함정 후보 {len(hits)}건 감지 (critical {len(critical)}건): "
                   f"{[r.id for r in hits]}" if hits else "함정 후보 없음"),
