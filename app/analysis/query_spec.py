@@ -34,223 +34,28 @@ from app.analysis.typo import corrected_terms
 from app.core.coverage_pipeline import CALC_REGISTRY
 
 # ════════════════════════════════════════════════════════════════
-# Function calling 스키마
-# ════════════════════════════════════════════════════════════════
-
-QUERY_SPEC_TOOL = [{
-    "type": "function",
-    "function": {
-        "name": "extract_query_spec",
-        "description": (
-            "연금 질의를 분석해 ① 질문이 요구한 답변 구성요소(asked_for), "
-            "② 사용자가 밝힌 조건(user_conditions), ③ 호출할 결정론적 계산함수"
-            "(planned_calls), ④ 실행 계획(plan)을 추출한다. "
-            "숫자를 직접 계산하지 말 것 — 계산은 등록된 함수만 수행한다."),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "intent": {
-                    "type": "string",
-                    "description": "질의 의도 (예: 세액공제, 연금수령한도, 과세방식, 상품_비교)",
-                },
-                "asked_for": {
-                    "type": "array",
-                    "description": "질문이 명시적으로 요구한 답변 구성요소",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "description": {"type": "string"},
-                            "type": {"type": "string",
-                                     "enum": ["fact", "calculation", "comparison"]},
-                            "required": {"type": "boolean"},
-                            # ⚠️ 여기에 enum(등록 함수 15종)을 넣지 말 것.
-                            #    HCX-005는 **최상위** 속성에 한글 값 10개 이상의
-                            #    enum이 있으면 tools를 거부한다
-                            #    (HTTP 400 · 40009, 3회 반복 재현).
-                            #    배열 items 안이면 통과하므로 이 자리는 원래
-                            #    괜찮았지만, 경계가 문서화돼 있지 않고 값이 늘면
-                            #    언제 넘어갈지 모른다. 어차피 없어도 되는 것이라
-                            #    빼 둔다.
-                            #    스키마로 강제하지 않아도 안전한 이유:
-                            #    supervise_plan()이 CALC_REGISTRY 화이트리스트로
-                            #    미등록 함수를 결정론적으로 제거하고,
-                            #    remap_function()이 유사 명칭을 정규화한다.
-                            #    즉 검증 관문은 그대로 남아 있고, 스키마 enum은
-                            #    중복이었다. 함수명은 description으로 안내한다.
-                            "calc_function": {
-                                "type": "string",
-                                "description":
-                                    "type이 calculation일 때만. 다음 중 하나를 "
-                                    "정확히 적을 것: " + ", ".join(sorted(CALC_REGISTRY)),
-                            },
-                        },
-                        "required": ["id", "description", "type"],
-                    },
-                },
-                "user_conditions": {
-                    "type": "object",
-                    "description": "질의에서 확인된 사용자 조건. "
-                                   "금액은 만원 단위 숫자로, 원 단위면 키에 _won 접미사.",
-                    "properties": {
-                        "account_type": {"type": "string"},
-                        "age": {"type": "integer"},
-                        "pension_year": {"type": "integer"},
-                        "actual_receipt_year": {"type": "integer"},
-                        "service_years": {"type": "integer"},
-                        "pension_saving_manwon": {"type": "number"},
-                        "irp_manwon": {"type": "number"},
-                        "severance_manwon": {"type": "number"},
-                        "account_value_manwon": {"type": "number"},
-                        "total_income_manwon": {"type": "number"},
-                        "private_pension_annual_manwon": {"type": "number"},
-                        "fund_class": {"type": "string"},
-                    },
-                },
-                "entities": {
-                    "type": "object",
-                    "properties": {
-                        "product_name": {"type": "string"},
-                        "product_code": {"type": "string"},
-                        "fund_class": {"type": "string"},
-                        "plan_type": {"type": "string"},
-                    },
-                },
-                "search_terms": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "문서 검색에 쓸 **문서 어휘**. 사용자의 구어체·오타·줄임말을 "
-                        "제공 문서에서 실제로 쓰는 정식 용어로 바꿔 적는다. "
-                        "예: '아이알피 세엑공제 얼마' → ['IRP', '개인형퇴직연금', '세액공제']. "
-                        "⚠️ 비슷해 보여도 다른 제도는 절대 합치지 말 것 — "
-                        "'연금수령연차'와 '연금실제수령연차'는 다른 개념이므로 "
-                        "질문에 있는 쪽을 그대로 둔다."),
-                },
-                "plan": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "실행 계획 단계 (예: '자격 확인 → 한도 계산 → 조건별 비교')",
-                },
-            },
-            "required": ["intent", "asked_for"],
-        },
-    },
-}]
-
-
-# ── 축소 스키마 (2단 폴백) ──────────────────────────────────
-# 전체 스키마에서 아직 검증되지 않은 무거운 부분(user_conditions 12속성,
-# entities)을 덜어낸 중간 단계. 조건 추출은 규칙 기반이 이미 잘 하므로
-# (derive_conditions) 여기서 잃는 것이 가장 적다.
-REDUCED_QUERY_SPEC_TOOL = [{
-    "type": "function",
-    "function": {
-        "name": "extract_query_spec",
-        "description": "연금 질의를 분석해 요구사항과 검색어를 구조화한다.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "intent": {"type": "string", "description": "질의 의도"},
-                "asked_for": {
-                    "type": "array",
-                    "description": "질문이 요구한 답변 구성요소",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "description": {"type": "string"},
-                            "type": {"type": "string"},
-                            "calc_function": {"type": "string"},
-                        },
-                    },
-                },
-                "search_terms": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "문서에서 쓰는 정식 용어로 옮긴 검색어",
-                },
-                "plan": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["intent"],
-        },
-    },
-}]
-
-
-# ── 최소 스키마 (3단 폴백) ──────────────────────────────────
-# 진단 사다리에서 반복 통과가 확인된 요소만 쓴다.
-MINIMAL_QUERY_SPEC_TOOL = [{
-    "type": "function",
-    "function": {
-        "name": "extract_query_spec",
-        "description": "연금 질의의 의도와 요구사항을 구조화한다.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "intent": {"type": "string", "description": "질의 의도"},
-                "asked_for": {
-                    "type": "array",
-                    "description": "질문이 요구한 답변 구성요소",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "string"},
-                            "description": {"type": "string"},
-                            "type": {"type": "string"},
-                        },
-                    },
-                },
-                "search_terms": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "문서에서 쓰는 정식 용어로 옮긴 검색어",
-                },
-            },
-            "required": ["intent"],
-        },
-    },
-}]
-
-# ════════════════════════════════════════════════════════════════
-# 스키마 사다리 — 거부당하면 한 단계 낮춰서 계속 간다
+# 출력 스키마 — Function calling 을 쓰지 않는다
 # ════════════════════════════════════════════════════════════════
 #
-# ━━ 왜 고정 스키마로는 안 되는가 ━━
-# CLOVA의 tools 스키마 요건은 문서화돼 있지 않고, 실측 결과 **간헐적**이기까지
-# 하다(같은 페이로드가 한 번은 400, 한 번은 200). 어떤 요소가 거부되는지
-# 알아내 한 번 고쳐 놓아도, 값이 늘거나 서버가 바뀌면 다시 깨진다.
-# 그때마다 L1이 통째로 죽으면 평가 42건이 전부 규칙 폴백으로 도는 사고가
-# 그대로 재현된다 — 실제로 그렇게 됐다.
+# ━━ 왜 tools 를 버렸는가 ━━
+# HCX-005 는 tools 페이로드를 간헐적으로 거부한다
+# (HTTP 400 · code 40009 "Unsupported function"). 진단 3회에서 확정된 사실:
 #
-# 그래서 원인을 몰라도 살아남는 구조로 바꾼다: 풍부한 것부터 시도하고,
-# 거부되면 한 단계 낮춰 다시 시도한다. 마지막 단계까지 실패해야 규칙 폴백이다.
-SCHEMA_LADDER = [
-    ("full", QUERY_SPEC_TOOL),
-    ("reduced", REDUCED_QUERY_SPEC_TOOL),
-    ("minimal", MINIMAL_QUERY_SPEC_TOOL),
-]
+#   · tools 가 있는 요청  → 실행마다 다르게 400 (평가 42건 중 약 14%)
+#   · tools 가 없는 요청  → 3회 전부 200                    ← 대조군 C1
+#
+# 즉 오류는 스키마의 특정 요소가 아니라 **tools 라는 기능 자체**에 붙어 있다.
+# 전에는 스키마를 줄여 가며 우회하는 사다리(full→reduced→minimal)를 뒀는데,
+# 그건 병을 고치는 게 아니라 병을 안고 도는 장치였다. 코드만 복잡해지고
+# 400 은 계속 났다.
+#
+# 대신 **평범한 텍스트 호출로 JSON 을 받는다.** 파서는 이미 있다
+# (clova._loads_lenient — ```json 펜스와 앞뒤 설명을 걷어낸다).
+# 스키마 강제를 잃지만, 애초에 그 강제는 필요 없었다 —
+# sanitize_spec() 과 supervise_plan() 이 결과를 어차피 전수 검증한다.
 
-# 어느 단계가 통하는지 기억한다. 평가는 세션이 없지만 **프로세스는 살아 있으므로**,
-# 첫 요청이 치른 탐색 비용을 나머지 요청이 다시 치르지 않는다.
-_SCHEMA_STATE = {"index": 0, "fails": 0}
-
-# 한 번의 실패로 영구 강등하지 않는다 — 간헐적 400이 실재하기 때문이다.
-# 연속 2회 거부돼야 그 단계를 접는다.
-_DEMOTE_AFTER = 2
-
-
-def reset_schema_state() -> None:
-    """테스트용 — 사다리 위치를 초기화한다."""
-    _SCHEMA_STATE["index"] = 0
-    _SCHEMA_STATE["fails"] = 0
-
-
-def _is_schema_rejection(e: Exception) -> bool:
-    """스키마가 거부된 것인가(400/40009). 타임아웃·5xx와 구분한다."""
-    msg = str(e)
-    return "HTTP 400" in msg or "40009" in msg
-
+QUERY_SPEC_KEYS = ("intent", "asked_for", "user_conditions",
+                   "entities", "search_terms", "plan")
 
 L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기입니다.
 답변을 작성하지 마십시오. 질문이 요구한 것이 무엇인지만 구조화하십시오.
@@ -268,7 +73,58 @@ L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기�
    질문의 표현을 문서 쪽 표현으로 옮겨 적어야 검색이 됩니다.
    다만 **다른 제도를 같은 것으로 합치지 마십시오** — 특히
    연금수령연차/연금실제수령연차, 중도인출/부득이한사유 인출처럼
-   한 글자 차이로 결과가 달라지는 용어는 질문에 있는 쪽을 유지하십시오."""
+   한 글자 차이로 결과가 달라지는 용어는 질문에 있는 쪽을 유지하십시오.
+
+출력 형식 — 아래 JSON 객체 **하나만** 출력하십시오. 설명·머리말을 붙이지 마십시오.
+
+{
+  "intent": "질의 의도 (예: 세액공제, 연금수령한도, 과세방식, 상품_비교)",
+  "asked_for": [
+    {"id": "짧은 식별자", "description": "요구한 내용",
+     "type": "fact | calculation | comparison",
+     "calc_function": "type이 calculation일 때만, 아래 목록 중 하나"}
+  ],
+  "user_conditions": {"account_type": "", "age": 0, "pension_year": 0,
+    "actual_receipt_year": 0, "service_years": 0,
+    "pension_saving_manwon": 0, "irp_manwon": 0, "severance_manwon": 0,
+    "account_value_manwon": 0, "total_income_manwon": 0,
+    "private_pension_annual_manwon": 0, "fund_class": ""},
+  "entities": {"product_name": "", "product_code": "",
+               "fund_class": "", "plan_type": ""},
+  "search_terms": ["문서 용어로 옮긴 검색어"],
+  "plan": ["실행 계획 단계"]
+}
+
+확인되지 않은 항목은 키를 아예 빼십시오(0이나 빈 문자열로 채우지 마십시오).
+calc_function 에 쓸 수 있는 값: {calc_functions}"""
+
+
+def parse_spec_json(raw: str) -> Optional[dict]:
+    """L1 응답 텍스트에서 spec JSON 을 회수한다.
+
+    모델은 ```json 펜스나 앞뒤 설명을 붙이곤 한다. 그 처리는 이미
+    clova._loads_lenient 에 있으므로 재구현하지 않고 그대로 쓴다.
+    """
+    from app.llm.clova import _loads_lenient
+
+    parsed = _loads_lenient(raw)
+    if not isinstance(parsed, dict):
+        return None
+    # 우리 스키마의 키가 하나도 없으면 엉뚱한 JSON 이다(예: 모델이 답변을 지어냄)
+    if not any(k in parsed for k in QUERY_SPEC_KEYS):
+        return None
+    return parsed
+
+
+def l1_system_prompt() -> str:
+    """계산함수 목록을 주입한 L1 시스템 프롬프트.
+
+    예전에는 이 목록을 tools 스키마의 enum 으로 강제했다. tools 를 버렸으므로
+    프롬프트로 안내하되, 검증은 그대로다 — supervise_plan() 이
+    CALC_REGISTRY 화이트리스트로 미등록 함수를 결정론적으로 제거한다.
+    """
+    return L1_SYSTEM_PROMPT.replace("{calc_functions}",
+                                    ", ".join(sorted(CALC_REGISTRY)))
 
 
 # ════════════════════════════════════════════════════════════════
@@ -605,53 +461,18 @@ def make_extract_query_spec(client=None,
         if grounding_hint:
             user_msg = f"[문서 접지 정보 — 참고용, 근거 아님]\n{grounding_hint}\n\n[질의]\n{question}"
 
-        # ── 스키마 사다리를 걸어 내려간다 ──────────────────
-        # 기억해 둔 단계에서 시작한다. 거부되면(400) 다음 단계로 내려가고,
-        # 타임아웃·5xx면 스키마 문제가 아니므로 즉시 규칙 폴백으로 간다
-        # (같은 스키마를 또 보내도 소용없고 지연만 늘린다).
-        out = None
-        start = _SCHEMA_STATE["index"]
-        last_err: Optional[Exception] = None
-        for idx in range(start, len(SCHEMA_LADDER)):
-            name, tool = SCHEMA_LADDER[idx]
-            try:
-                out = c.call_with_functions(
-                    L1_SYSTEM_PROMPT, user_msg, tool,
-                    purpose="l1_query_spec" if idx == 0
-                            else f"l1_query_spec_{name}")
-            except Exception as e:      # noqa: BLE001
-                last_err = e
-                if not _is_schema_rejection(e):
-                    if trace_log:
-                        trace_log("질의분석_LLM_실패",
-                                  f"L1 호출 실패({e}) → 규칙 기반 추출로 진행")
-                    return fallback
-                if idx == start:
-                    # 간헐적 400이 실재하므로 한 번 걸렸다고 바로 접지 않는다
-                    _SCHEMA_STATE["fails"] += 1
-                    if _SCHEMA_STATE["fails"] >= _DEMOTE_AFTER:
-                        _SCHEMA_STATE["index"] = min(idx + 1,
-                                                     len(SCHEMA_LADDER) - 1)
-                        _SCHEMA_STATE["fails"] = 0
-                if trace_log:
-                    trace_log("질의분석_스키마_거부",
-                              f"'{name}' 스키마 거부({e}) → 다음 단계로 낮춰 재시도")
-                continue
-            # 성공 — 시작 단계에서 통했으면 실패 카운터를 씻는다
-            if idx == start:
-                _SCHEMA_STATE["fails"] = 0
-            elif trace_log:
-                trace_log("질의분석_스키마_축퇴",
-                          f"'{name}' 스키마로 분석 성공 — 전체 스키마는 거부됨")
-            break
-
-        if out is None:
+        # ── 평범한 텍스트 호출로 JSON 을 받는다 ────────────
+        # tools 를 쓰지 않으므로 40009 오류 자체가 발생하지 않는다.
+        try:
+            raw = c.call(l1_system_prompt(), user_msg,
+                         purpose="l1_query_spec", temperature=0.0)
+        except Exception as e:      # noqa: BLE001 — 실패를 조용히 넘기지 않는다
             if trace_log:
                 trace_log("질의분석_LLM_실패",
-                          f"모든 스키마 단계가 거부됨({last_err}) → 규칙 기반 추출로 진행")
+                          f"L1 호출 실패({e}) → 규칙 기반 추출로 진행")
             return fallback
 
-        args = (out or {}).get("arguments")
+        args = parse_spec_json(raw)
         if not args:
             if trace_log:
                 reason = ("mock 클라이언트" if getattr(c, "is_mock", False)

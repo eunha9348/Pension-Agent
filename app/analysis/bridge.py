@@ -113,7 +113,47 @@ class BridgeResult:
                 f"→ 거절 대신 연결")
 
 
+# "연금 말고 부동산" 처럼 **연금 쪽을 명시적으로 배제한** 질의.
+# 이런 질의는 연금 어휘를 품고 있어도 연금 질문이 아니다.
+_EXCLUSION = ("말고", "말구", "빼고", "제외하고", "아니라")
+
+
+def _excludes_pension(question: str) -> bool:
+    """연금을 빼달라고 말한 질의인가.
+
+    '연금'이 들어 있다는 이유만으로 연금 질문이라고 보면 안 된다 —
+    "연금 말고 부동산 조언"이 정확히 그 반례다.
+    """
+    q = question or ""
+    for kw in ("연금", "퇴직연금", "연금저축", "IRP", "irp"):
+        i = q.find(kw)
+        if i < 0:
+            continue
+        # 어휘 바로 뒤 6자 안에 배제 표현이 오는지 본다
+        if any(e in q[i + len(kw): i + len(kw) + 6] for e in _EXCLUSION):
+            return True
+    return False
+
+
+def _is_pension_question(question: str) -> bool:
+    """제공 자료로 정상 답변할 수 있는 연금 질의인가.
+
+    ⚠️ 이 가드가 없으면 연결이 정상 질의를 가로챈다.
+       "IRP에서 부동산 매매 계약금으로 중도인출 할 수 있나요?" 는
+       '부동산' 신호에 걸리지만 실제로는 중도인출 사유를 묻는 연금 질문이다.
+    """
+    from app.analysis.refusal import _DOMAIN_KEYWORDS, _SOFT_DOMAIN
+
+    if _excludes_pension(question):
+        return False
+    q = question or ""
+    return any(k in q for k in _DOMAIN_KEYWORDS) or any(k in q for k in _SOFT_DOMAIN)
+
+
 def match_topic(question: str) -> Optional[BridgeTopic]:
+    """연결 대상 주제. 정상 연금 질의면 연결하지 않는다(None)."""
+    if _is_pension_question(question):
+        return None
     q = (question or "").lower()
     for t in BRIDGE_TOPICS:
         if any(s in q for s in t.signals):

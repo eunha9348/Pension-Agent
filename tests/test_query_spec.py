@@ -156,242 +156,83 @@ def test_의미감사는_결정론적_판정을_완화하지_못한다():
 
 
 # ════════════════════════════════════════════════════════════════
-# L1 tools 스키마 — HCX-005 거부(400 · 40009) 회귀
+# L1 · tools 없이 JSON 텍스트로 받는다
 # ════════════════════════════════════════════════════════════════
 #
-# 실사고: QUERY_SPEC_TOOL에 계산함수 15종 enum이 들어 있어서 HCX-005가
-# tools를 통째로 거부했다(HTTP 400 {"code":"40009"}). 그 결과 평가 42건
-# **전부**에서 L1이 실패하고 규칙 폴백으로만 돌았다. 진단 사다리에서
-# 스칼라·문자열배열·중첩객체·객체배열은 통과했고 값 많은 enum만 깨졌다.
+# HCX-005는 tools 페이로드를 간헐적으로 거부한다(400 · 40009).
+# 진단 3회에서 대조군 "tools 없는 일반 채팅"은 전부 200이었으므로,
+# 오류는 스키마의 특정 요소가 아니라 tools 기능 자체에 붙어 있다.
+# 그래서 평범한 텍스트 호출로 JSON을 받는다.
 
-def test_스키마에_큰_enum이_없다():
-    """enum을 되살리면 L1이 다시 통째로 죽는다 — 그건 조용히 일어난다."""
-    import json
+def test_tools를_쓰지_않는다():
+    """되살리면 40009가 함께 돌아온다 — 조용히 일어난다."""
+    import inspect
 
-    from app.analysis.query_spec import QUERY_SPEC_TOOL
+    from app.analysis import query_spec as qs
 
-    def _enums(node):
-        if isinstance(node, dict):
-            if "enum" in node:
-                yield node["enum"]
-            for v in node.values():
-                yield from _enums(v)
-        elif isinstance(node, list):
-            for v in node:
-                yield from _enums(v)
-
-    for e in _enums(QUERY_SPEC_TOOL):
-        assert len(e) <= 5, f"값이 많은 enum은 HCX-005가 거부한다: {e[:3]}..."
-    # 스키마가 통째로 비대해지는 것도 막는다
-    assert len(json.dumps(QUERY_SPEC_TOOL, ensure_ascii=False)) < 6000
+    src = inspect.getsource(qs)
+    assert "call_with_functions" not in src
+    assert not hasattr(qs, "QUERY_SPEC_TOOL")
+    assert not hasattr(qs, "SCHEMA_LADDER")
 
 
-def test_계산함수명은_description으로_안내된다():
-    """enum을 뺐으므로, 모델이 함수명을 알 수 있는 경로가 남아 있어야 한다."""
-    import json
-
-    from app.analysis.query_spec import QUERY_SPEC_TOOL
+def test_계산함수_목록이_프롬프트로_전달된다():
+    """enum으로 강제하지 않으므로 모델이 알 경로는 프롬프트뿐이다."""
+    from app.analysis.query_spec import l1_system_prompt
     from app.core.coverage_pipeline import CALC_REGISTRY
 
-    blob = json.dumps(QUERY_SPEC_TOOL, ensure_ascii=False)
-    assert "연금수령한도_계산" in blob
-    assert "퇴직소득세_감면율_계산" in blob
-    # 전부 들어 있어야 모델이 고를 수 있다
-    assert all(name in blob for name in CALC_REGISTRY)
+    p = l1_system_prompt()
+    assert all(name in p for name in CALC_REGISTRY)
+    assert "{calc_functions}" not in p       # 치환이 실제로 일어났는가
 
 
-def test_미등록_함수는_스키마가_아니라_계획감사가_막는다():
-    """enum을 뺀 근거 — 검증 관문은 그대로 남아 있어야 한다."""
-    from app.core.coverage_pipeline import CALC_REGISTRY
-    from app.core.supervisory_board import supervise_plan
+def test_JSON_응답을_형태에_관계없이_회수한다():
+    from app.analysis.query_spec import parse_spec_json
 
-    spec = {
-        "intent": "연금수령한도",
-        "asked_for": [{"id": "s1", "description": "한도", "type": "calculation"}],
-        "planned_calls": [
-            {"function": "존재하지_않는_함수", "args": {}},
-            {"function": "연금수령한도_계산", "args": {}},
-        ],
-    }
-    result, fixed = supervise_plan(spec, CALC_REGISTRY)
-    names = [c["function"] for c in fixed["planned_calls"]]
-    assert "존재하지_않는_함수" not in names
-    assert "연금수령한도_계산" in names
-    assert any(f.code == "UNKNOWN_FUNCTION" for f in result.findings)
+    ok = '{"intent":"세액공제","asked_for":[]}'
+    assert parse_spec_json(ok)["intent"] == "세액공제"
+    assert parse_spec_json(f"```json\n{ok}\n```")["intent"] == "세액공제"
+    assert parse_spec_json(f"분석 결과입니다.\n{ok}\n이상.")["intent"] == "세액공제"
 
 
-def test_축소_스키마도_큰_enum을_쓰지_않는다():
-    """폴백이 본 스키마와 같은 이유로 깨지면 폴백이 아니다."""
-    import json
+def test_우리_스키마가_아닌_JSON은_거부한다():
+    """모델이 분석 대신 답변을 지어낸 경우 — 규칙 폴백으로 가야 한다."""
+    from app.analysis.query_spec import parse_spec_json
 
-    from app.analysis.query_spec import MINIMAL_QUERY_SPEC_TOOL
-
-    blob = json.dumps(MINIMAL_QUERY_SPEC_TOOL, ensure_ascii=False)
-    assert "enum" not in blob
-    assert len(blob) < len(json.dumps(
-        __import__("app.analysis.query_spec", fromlist=["QUERY_SPEC_TOOL"]
-                   ).QUERY_SPEC_TOOL, ensure_ascii=False))
+    assert parse_spec_json('{"answer":"연금은 좋습니다"}') is None
+    assert parse_spec_json("죄송합니다 분석할 수 없습니다") is None
+    assert parse_spec_json("") is None
 
 
-def test_스키마_거부시_축소_스키마로_재시도한다():
-    """400을 맞았다고 곧장 규칙 폴백으로 떨어지면 search_terms를 잃는다."""
+def test_호출이_실패하면_규칙_폴백으로_간다():
     from app.analysis.query_spec import make_extract_query_spec
 
-    seen: list[int] = []
-
-    class _C:
-        is_mock = False
-
-        def call_with_functions(self, system, user, tools, purpose="", **kw):
-            seen.append(len(__import__("json").dumps(tools, ensure_ascii=False)))
-            if len(seen) == 1:
-                raise RuntimeError('HTTP 400: {"status":{"code":"40009"}}')
-            return {"name": "extract_query_spec",
-                    "arguments": {"intent": "연금수령한도",
-                                  "asked_for": [{"id": "s1",
-                                                 "description": "한도",
-                                                 "type": "calculation"}],
-                                  "search_terms": ["연금수령한도"]}}
-
-    extract = make_extract_query_spec(client=_C())
-    spec = extract("1억이고 10년차면 한도가?")
-    assert len(seen) == 2, "축소 스키마로 재시도해야 한다"
-    assert seen[1] < seen[0], "재시도는 더 작은 스키마여야 한다"
-    assert spec["source"].startswith("llm")
-
-
-def test_타임아웃은_축소_스키마로_재시도하지_않는다():
-    """스키마 문제가 아닌데 또 부르면 지연만 두 배가 된다."""
-    from app.analysis.query_spec import make_extract_query_spec
-
-    calls: list[str] = []
-
-    class _C:
-        is_mock = False
-
-        def call_with_functions(self, system, user, tools, purpose="", **kw):
-            calls.append(purpose)
-            raise RuntimeError("timeout")
-
-    extract = make_extract_query_spec(client=_C())
-    spec = extract("1억이고 10년차면 한도가?")
-    assert len(calls) == 1
-    assert spec["source"] != "llm"
-
-
-# ════════════════════════════════════════════════════════════════
-# 스키마 사다리 — 간헐적 400을 견디면서 거부는 흡수한다
-# ════════════════════════════════════════════════════════════════
-#
-# 실측: 같은 페이로드가 한 번은 400, 한 번은 200이었다(F2/P1이 실행마다
-# 뒤집혔다). 그러니 한 번 걸렸다고 영구 강등하면 멀쩡한 스키마를 잃고,
-# 반대로 영원히 재시도하면 진짜 거부를 못 넘긴다. 둘 다 회귀로 고정한다.
-
-import pytest
-
-from app.analysis import query_spec as qs
-
-
-@pytest.fixture(autouse=True)
-def _reset_ladder():
-    """사다리 위치는 모듈 전역이라 테스트끼리 샌다."""
-    qs.reset_schema_state()
-    yield
-    qs.reset_schema_state()
-
-
-class _Recorder:
-    """호출된 스키마 단계를 기록하는 대역."""
-    is_mock = False
-
-    def __init__(self, reject: set[str] | None = None, flaky_once: bool = False):
-        self.reject = reject or set()
-        self.flaky_once = flaky_once
-        self.calls: list[str] = []
-        self._flaked = False
-
-    def call_with_functions(self, system, user, tools, purpose="", **kw):
-        name = tools[0]["function"]["name"]
-        size = len(__import__("json").dumps(tools, ensure_ascii=False))
-        level = purpose.replace("l1_query_spec", "").lstrip("_") or "full"
-        self.calls.append(level)
-        if self.flaky_once and not self._flaked and level == "full":
-            self._flaked = True
-            raise RuntimeError('HTTP 400: {"status":{"code":"40009"}}')
-        if level in self.reject:
-            raise RuntimeError('HTTP 400: {"status":{"code":"40009"}}')
-        assert name and size
-        return {"name": "extract_query_spec",
-                "arguments": {"intent": "연금수령한도",
-                              "asked_for": [{"id": "s1", "description": "한도",
-                                             "type": "calculation"}]}}
-
-
-def test_전체가_거부되면_다음_단계로_내려간다():
-    c = _Recorder(reject={"full"})
-    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
-    assert c.calls == ["full", "reduced"]
-    assert spec["source"].startswith("llm")
-
-
-def test_두_단계가_거부되면_최소_스키마까지_내려간다():
-    c = _Recorder(reject={"full", "reduced"})
-    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
-    assert c.calls == ["full", "reduced", "minimal"]
-    assert spec["source"].startswith("llm")
-
-
-def test_전부_거부되면_규칙_폴백으로_간다():
-    c = _Recorder(reject={"full", "reduced", "minimal"})
-    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
-    assert c.calls == ["full", "reduced", "minimal"]
-    assert spec["source"] != "llm"
-    assert spec["asked_for"], "규칙 폴백은 여전히 슬롯을 채워야 한다"
-
-
-def test_간헐적_400_한_번으로는_강등하지_않는다():
-    """실측된 flakiness — 한 번 걸렸다고 접으면 멀쩡한 스키마를 영영 잃는다."""
-    extract = qs.make_extract_query_spec(client=_Recorder(flaky_once=True))
-    extract("1억이고 10년차면 한도가?")          # full 실패 → reduced 성공
-    assert qs._SCHEMA_STATE["index"] == 0, "아직 강등하면 안 된다"
-
-    c2 = _Recorder()                              # 이번엔 full이 정상
-    extract2 = qs.make_extract_query_spec(client=c2)
-    extract2("1억이고 10년차면 한도가?")
-    assert c2.calls == ["full"], "전체 스키마로 되돌아가야 한다"
-    assert qs._SCHEMA_STATE["fails"] == 0
-
-
-def test_연속_거부는_강등되어_다음_요청부터_건너뛴다():
-    """진짜 거부라면 매 요청마다 헛된 400을 다시 맞으면 안 된다."""
-    extract = qs.make_extract_query_spec(client=_Recorder(reject={"full"}))
-    extract("질의1")
-    extract("질의2")
-    assert qs._SCHEMA_STATE["index"] == 1, "연속 2회 거부 후 강등된다"
-
-    c3 = _Recorder(reject={"full"})
-    qs.make_extract_query_spec(client=c3)("질의3")
-    assert c3.calls == ["reduced"], "강등 후에는 full을 건너뛴다"
-
-
-def test_타임아웃은_사다리를_내려가지_않는다():
-    """스키마 문제가 아닌데 단계를 낮추면 지연만 늘고 정확도만 잃는다."""
-    class _Timeout:
+    class _Boom:
         is_mock = False
         def __init__(self):
             self.calls = 0
-        def call_with_functions(self, system, user, tools, purpose="", **kw):
+        def call(self, system, user, purpose="", **kw):
             self.calls += 1
             raise RuntimeError("timeout")
 
-    c = _Timeout()
-    spec = qs.make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
-    assert c.calls == 1
+    c = _Boom()
+    spec = make_extract_query_spec(client=c)("1억이고 10년차면 한도가?")
+    assert c.calls == 1, "재시도로 지연을 늘리지 않는다"
     assert spec["source"] != "llm"
+    assert spec["asked_for"], "규칙 폴백은 여전히 슬롯을 채운다"
 
 
-def test_사다리는_점점_작아진다():
-    """아래 단계가 위 단계보다 크면 폴백의 의미가 없다."""
-    import json
-    sizes = [len(json.dumps(t, ensure_ascii=False)) for _n, t in qs.SCHEMA_LADDER]
-    assert sizes == sorted(sizes, reverse=True), sizes
+def test_JSON을_받으면_LLM_경로로_처리한다():
+    from app.analysis.query_spec import make_extract_query_spec
+
+    class _Ok:
+        is_mock = False
+        def call(self, system, user, purpose="", **kw):
+            return ('{"intent":"연금수령한도",'
+                    '"asked_for":[{"id":"h","description":"한도",'
+                    '"type":"calculation","calc_function":"연금수령한도_계산"}],'
+                    '"search_terms":["연금수령한도"]}')
+
+    spec = make_extract_query_spec(client=_Ok())("1억이고 10년차면 한도가?")
+    assert spec["source"].startswith("llm")
+    assert "연금수령한도" in spec["search_terms"]

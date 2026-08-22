@@ -17,24 +17,24 @@
 
 from __future__ import annotations
 
-from app.analysis.query_spec import (MAX_SEARCH_TERMS, QUERY_SPEC_TOOL,
+from app.analysis.query_spec import (MAX_SEARCH_TERMS, l1_system_prompt,
                                      sanitize_search_terms)
 from app.analysis.vocab import DISTINCT_PAIRS, conflates_distinct_terms
 
 
 # ════════════════════════════════════════════════════════════════
-# 스키마 — L1이 검색어를 낼 수 있는가
+# 프롬프트 — L1이 검색어를 낼 수 있는가
 # ════════════════════════════════════════════════════════════════
+# tools 스키마를 버렸으므로(40009) 이 요구사항은 프롬프트가 진다.
+# 검사 대상만 옮겼을 뿐 지켜야 할 것은 같다.
 
-def test_L1_스키마에_검색어_필드가_있다():
-    props = QUERY_SPEC_TOOL[0]["function"]["parameters"]["properties"]
-    assert "search_terms" in props
+def test_L1_프롬프트에_검색어_필드가_있다():
+    assert "search_terms" in l1_system_prompt()
 
 
-def test_스키마가_용어_합치기를_금지한다():
-    """설명에 경고가 없으면 LLM이 한 글자 차이를 오타로 오인한다."""
-    desc = QUERY_SPEC_TOOL[0]["function"]["parameters"]["properties"]["search_terms"]["description"]
-    assert "연금실제수령연차" in desc
+def test_프롬프트가_용어_합치기를_금지한다():
+    """경고가 없으면 LLM이 한 글자 차이를 오타로 오인한다."""
+    assert "연금실제수령연차" in l1_system_prompt()
 
 
 def test_LLM_호출은_여전히_3개소다():
