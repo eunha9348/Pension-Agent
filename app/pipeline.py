@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from app.analysis.bridge import find_bridge
 from app.analysis.calc_params import make_calc_params_builder
 from app.analysis.conditions import describe_conditions
 from app.analysis.products import extract_class_expenses
@@ -313,7 +314,11 @@ def answer_question(question_id: str, question: str,
                   f"ANSWER를 PARTIAL로 낮추고 확인 조건을 함께 제시")
 
     if decision == Answerability.REFUSE:
-        return _refuse_response(question_id, question, refusal, evidence, trace)
+        # 거절 직전에 한 번만 묻는다 — "자료 안에 이어 줄 인접 주제가 있는가".
+        # 없으면 None이 돌아오고 기존 거절 그대로다.
+        bridge = find_bridge(question, refusal, store)
+        return _refuse_response(question_id, question, refusal, evidence, trace,
+                                bridge=bridge)
 
     # ── L5' · Supervisor ──────────────────────────────────────
     generate_answer = make_generate_answer(
@@ -615,7 +620,26 @@ def _external_sources(calc_results: list) -> list[str]:
 
 
 def _refuse_response(question_id: str, question: str, refusal,
-                     evidence: list[EvidenceChunk], trace: TraceLogger) -> dict:
+                     evidence: list[EvidenceChunk], trace: TraceLogger,
+                     bridge=None) -> dict:
+    """거절 응답. bridge가 있으면 '못 하는 것 + 이어 줄 것'으로 답한다.
+
+    bridge는 자료에 인접 근거가 실재할 때만 채워져 온다(app/analysis/bridge.py).
+    None이면 예전과 똑같이 순수 거절이다.
+    """
+    if bridge is not None:
+        trace.log("거절_대신_연결", bridge.as_trace(), code=refusal.code)
+        # 연결에 쓴 근거를 인용한다 — 실제로 이 문서들을 근거로 안내했으므로,
+        # 여기서 비워 두면 '근거 없이 상품을 언급한' 답변이 된다.
+        return {
+            "question_id": question_id,
+            "question": question,
+            "retrieved_context": "\n---\n".join(
+                f"[{c.doc_id}]\n{c.text}" for c in bridge.evidence[:3]),
+            "think_trace": trace.as_text(),
+            "answer": bridge.as_answer(),
+        }
+
     trace.log("최종_거절",
               refusal.detail or "근거 부족으로 답변하지 않음",
               code=refusal.code)

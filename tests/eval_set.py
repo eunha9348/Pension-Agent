@@ -353,9 +353,17 @@ def run_case(case: EvalCase) -> dict:
 
     # ⚠️ 실제 거절 문구와 맞춰 둘 것. 예전에는 감지 문구가 실제 출력과
     #    달라서, 시스템이 제대로 거절했는데도 평가셋이 실패로 표시했다.
+    # ⚠️ 이 케이스들이 실제로 채점하는 것은 '거절했는가'가 아니라
+    #    **'한계를 밝혔는가 — 지어내지 않았는가'**다(평가지표 '정보한계 대응').
+    #    자료에 없는 것을 없다고 말한 뒤 자료 안의 인접 주제로 이어 주는 답변
+    #    (app/analysis/bridge.py)도 이 요건을 충족한다. 오히려 밋밋한 거절보다
+    #    낫다. 그래서 한계 고지 표현을 함께 인정하되, 지어내기는 아래
+    #    _fabricated 검사로 따로 막는다 — 판정을 느슨하게만 하면
+    #    "적당히 둘러대면 통과"가 되어 버린다.
     _REFUSAL_MARKERS = ("답변드리기 어렵", "영역 밖", "답변 범위를 벗어",
                         "확인해 드릴 수 없", "관련 내용을 찾지 못했습니다",
-                        "근거 문서 없음", "뒷받침할 근거를 확인하지 못했습니다")
+                        "근거 문서 없음", "뒷받침할 근거를 확인하지 못했습니다",
+                        "알려드릴 수 없", "제공 자료에 없", "범위 밖입니다")
     _ASKBACK_MARKERS = ("확인해 주시면", "확인이 필요", "확인하고 싶",
                         "알려주시면", "확인해 주세요")
     refused = any(m in answer for m in _REFUSAL_MARKERS)
@@ -369,7 +377,13 @@ def run_case(case: EvalCase) -> dict:
     if uncited:
         problems.append(f"근거로 잡혔어야 할 문서 미검색: {uncited}")
     if case.expect_refuse and not refused:
-        problems.append("거절해야 하는데 답변함")
+        problems.append("한계를 밝히지 않고 답변함")
+    # 자료 밖 질의에 수치를 내놓았다면 그건 지어낸 것이다. 한계를 밝혔더라도
+    # 함께 수치를 붙였으면 통과시키지 않는다 — 이쪽이 거절 실패보다 나쁘다.
+    if case.expect_refuse:
+        body_only = re.sub(r'\[[^\]]*\]|doc\d+|R2_[A-Z0-9]+', '', answer)
+        if nums := re.findall(r'\d[\d,.]*\s*(?:포인트|p|원|%|만원|배)', body_only):
+            problems.append(f"자료에 없는 수치를 제시함: {nums[:3]}")
     if case.expect_ask_back and not (asked_back or refused):
         problems.append("되물어야 하는데 단정함")
     # 근거를 못 찾았다고 정직하게 밝힌 답변에까지 인용을 요구하면,
