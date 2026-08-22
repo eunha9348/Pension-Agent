@@ -755,8 +755,18 @@ def _retrieval_health(store) -> dict:
     enabled = bool(SETTINGS.use_embedding)
     active = enabled and vectors > 0
 
+    # 모델 자체를 못 불러온 경우(예: torch 미설치 이미지)를 가장 먼저 드러낸다.
+    # 벡터 파일은 멀쩡히 있으므로 위의 '벡터 0건' 경고에는 걸리지 않고,
+    # 겉보기에는 임베딩이 켜진 것처럼 보인 채로 계속 축퇴한다.
+    from app.retrieval.embedding import local_unavailable_reason
+    unavailable = local_unavailable_reason()
+
     warning = ""
-    if enabled and not vectors:
+    if unavailable:
+        warning = (f"⚠️ 로컬 임베딩 모델을 불러오지 못해 BM25 단독으로 동작 중 "
+                   f"({unavailable}). 이미지를 WITH_EMBEDDING=true 로 다시 "
+                   f"빌드하십시오: `WITH_EMBEDDING=true docker compose build`")
+    elif enabled and not vectors:
         warning = ("⚠️ 임베딩이 켜져 있으나 청크 벡터가 0건 — BM25 단독으로 동작 중. "
                    "`python -m app.ingest.build_embeddings` 를 실행하십시오.")
     elif active and vectors < len(store.chunks):

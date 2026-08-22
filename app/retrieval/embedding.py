@@ -72,6 +72,15 @@ def embedding_enabled() -> bool:
 
 _LOCAL_MODEL = None
 
+# 로컬 모델을 못 쓴 이유. 한 번만 경고하되 사실은 남겨 둔다 —
+# /health 가 이 값을 보고해야 "임베딩이 조용히 꺼진 채 도는" 상태를
+# 운영자가 알아챌 수 있다. (실제로 torch 없는 이미지로 평가가 돌았다.)
+_LOCAL_UNAVAILABLE: str = ""
+
+
+def local_unavailable_reason() -> str:
+    return _LOCAL_UNAVAILABLE
+
 
 def _local_model():
     """모델을 프로세스당 1회만 적재한다(수백 MB — 매번 읽으면 안 된다).
@@ -249,7 +258,14 @@ def embed_texts(texts: Sequence[str], *,
         log.warning("[embedding] 실패 → BM25 단독으로 축퇴: %s", e)
         return None
     except Exception as e:      # noqa: BLE001 — 모델 적재 실패 등
-        log.warning("[embedding] 로컬 모델 사용 불가 → BM25 단독으로 축퇴: %s", e)
+        # 모델이 없으면 질의마다 똑같이 실패한다 — 42문항 평가에서 같은 줄이
+        # 42번 찍혀 정작 읽어야 할 결과를 덮었다. 원인은 한 번만 알리고,
+        # 이후에는 조용히 축퇴한다(사실 자체는 /health 가 계속 보고한다).
+        global _LOCAL_UNAVAILABLE
+        if not _LOCAL_UNAVAILABLE:
+            _LOCAL_UNAVAILABLE = str(e)
+            log.warning("[embedding] 로컬 모델 사용 불가 → 이후 BM25 단독으로 "
+                        "축퇴합니다(이 경고는 한 번만 표시): %s", e)
         return None
 
     for k, v in zip(keys, vecs):

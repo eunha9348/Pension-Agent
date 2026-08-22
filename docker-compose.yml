@@ -12,6 +12,14 @@
 #
 # ━━ 키는 이미지에 들어가지 않는다 ━━
 # .env 를 env_file 로 주입하므로 이미지·저장소 어디에도 키가 남지 않는다.
+#
+# ⚠️ 모든 서비스가 같은 이미지 태그(pension-agent:latest)를 만든다.
+#    그래서 build 인자가 서비스마다 다르면, **마지막에 빌드된 것이 앞의 것을
+#    덮어쓴다.** 실제로 사고가 났다 — eval 에만 WITH_EMBEDDING 인자가 없어서
+#    `docker compose build agent embed eval` 이 torch 없는 이미지를 만들었고,
+#    임베딩이 조용히 BM25 단독으로 축퇴했다.
+#    → build 블록이 있는 서비스는 **전부 같은 args** 를 가져야 한다.
+#      tests/test_compose_consistency.py 가 이를 검사한다.
 
 services:
   agent:
@@ -79,6 +87,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
     env_file:
       - path: .env
         required: false
@@ -92,6 +102,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
     volumes:
       - ./data/corpus:/app/data/corpus:ro
     entrypoint: []
@@ -127,6 +139,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
     env_file:
       - path: .env
         required: false
@@ -144,6 +158,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
     volumes:
       - ./data/corpus:/app/data/corpus:ro
       - ./data/index:/app/data/index
