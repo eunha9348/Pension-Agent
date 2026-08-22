@@ -216,7 +216,16 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
                   ask_back="총급여(또는 종합소득) 구간"),
     ],
     "사적연금_원천징수_계산": [
+        # ⚠️ 금액은 **세액**에만 필요하다. 세율(r_withholding)은 나이와
+        #    수령형태만으로 정해진다. 예전에는 이 인자가 필수라서
+        #    "만 80세인데 몇 퍼센트 떼나요"처럼 **요율만 묻는 질의**에도
+        #    금액을 요구하며 계산을 통째로 접었고, 답변에서 3.3%가 통째로
+        #    빠졌다(평가 E-14). 산출 가능한 것은 내주고, 금액이 필요한
+        #    부분만 확인 요청으로 돌린다.
         ParamSpec("P_private_monthly", _get("private_pension_monthly_manwon"),
+                  required=False, default=0.0,
+                  assumption="월 연금수령액을 알려주지 않으셔서 세율만 계산했습니다. "
+                             "실제 원천징수 세액은 수령액에 따라 달라집니다",
                   ask_back="월 연금수령액"),
         # 연령별 차등과세(5.5/4.4/3.3%)의 기준이라 임의 가정 불가
         ParamSpec("Age", _get("age"), ask_back="연금 수령 시점의 나이"),

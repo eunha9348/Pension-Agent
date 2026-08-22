@@ -111,9 +111,20 @@ class Deadline:
 
 def _exploit(evidence: list[EvidenceChunk], query_spec: dict,
              conditions: dict, trace: TraceLogger) -> tuple[list[EvidenceChunk], list[str]]:
-    """구법탐지 → 엔티티충돌 → 가입자격 → 하드제약 (순차).
+    """근거를 다듬고 제도적 제약을 모은다.
 
-    반환: (통과한 근거, 하드제약 경고 문구)
+    반환: (통과한 근거, 경고 문구)
+
+    ━━ 가입자격은 여기서 판정하지 않는다 ━━
+    예전에는 구법탐지 → 엔티티충돌 → **가입자격** → 하드제약 순으로 한 줄에
+    엮여 있었다. 문제는 실제 사용자 질의가 대부분 짧다는 것이다 —
+    "나 몇 살인데 연금 계획 좀" 같은 질문에는 판매 클래스도 계좌 유형도 없다.
+    그러면 조건이 없어 가입자격 판정이 **조용히 통째로 건너뛰어졌고**,
+    경고도 되묻기도 남지 않았다.
+
+    그래서 성격이 다른 둘을 분리했다:
+      · 여기(_exploit)  — 근거 문서를 고르고 다듬는 규칙. 조건이 없어도 돈다.
+      · _eligibility()  — 사용자 조건이 있어야만 가능한 판정. 마지막에 따로.
     """
     warnings: list[str] = []
     is_tax_query = query_spec.get("intent") in _TAX_INTENTS
@@ -152,20 +163,47 @@ def _exploit(evidence: list[EvidenceChunk], query_spec: dict,
                   "필터 후 근거가 0건이 되어 점수 임계값만 낮춰 상위 3건 유지 "
                   "(구법 제외는 유지)")
 
-    # ── 3. 가입자격 ──
+    # ── 3. 하드제약 (조건 기반 — 근거 필터와 독립) ──
+    warnings.extend(_hard_constraints(conditions, trace))
+    return kept, warnings
+
+
+# 가입자격을 물은 것으로 볼 신호. 이게 없으면 판정 자체가 질의와 무관하므로
+# 굳이 되묻지 않는다 — 확인 항목은 최대 2건이라 자리가 아깝다(CLAUDE.md).
+_ELIGIBILITY_SIGNALS = ("클래스", "가입", "class", "총보수", "수수료",
+                        "어떤 상품", "상품 추천", "펀드")
+
+
+def _eligibility(conditions: dict, question: str,
+                 trace: TraceLogger) -> tuple[list[str], list[str]]:
+    """판매 클래스 가입자격 판정. 반환: (경고, 확인 요청 항목)
+
+    조건이 모자라면 **침묵하지 않고 무엇이 필요한지 되묻는다.**
+    짧은 질의가 대부분이므로 이 경로가 오히려 정상 경로에 가깝다.
+    """
     fund_class = conditions.get("fund_class")
     account_type = conditions.get("account_type")
+
     if fund_class and account_type:
         verdict = check_class_eligibility(fund_class, account_type)
         trace.log("L4_가입자격",
                   f"{fund_class} × {account_type} → "
                   f"{'가입 가능' if verdict['eligible'] else '가입 불가'}: {verdict['reason']}")
-        if not verdict["eligible"]:
-            warnings.append(verdict["reason"])
+        return ([] if verdict["eligible"] else [verdict["reason"]]), []
 
-    # ── 4. 하드제약 ──
-    warnings.extend(_hard_constraints(conditions, trace))
-    return kept, warnings
+    if not any(s in (question or "") for s in _ELIGIBILITY_SIGNALS):
+        return [], []       # 가입자격을 묻지 않은 질의 — 되물을 이유가 없다
+
+    missing = []
+    if not fund_class:
+        missing.append("가입하려는 판매 클래스(예: C-Pe, C-Re)")
+    if not account_type:
+        missing.append("연금계좌 유형(연금저축 / IRP / DC)")
+    trace.log("L4_가입자격_보류",
+              f"가입자격 판정에 필요한 조건 미확인 {missing} → "
+              f"단정하지 않고 확인을 요청")
+    return ([f"현재 주신 정보로는 가입 가능 여부를 확정할 수 없습니다 "
+             f"({', '.join(missing)} 미확인)"], missing)
 
 
 def _hard_constraints(conditions: dict, trace: TraceLogger) -> list[str]:
@@ -317,6 +355,15 @@ def answer_question(question_id: str, question: str,
         for item in trap_context["ask_back_candidates"]:
             if len(ask_back_items) < 2 and item not in ask_back_items:
                 ask_back_items.append(item)
+
+    # ── 가입자격 — 조건이 가장 많이 모인 지금 판정한다 ────────
+    # L4 안에 있을 때는 L1 조건만 봤는데, 계산 단계에서 조건이 더 확정되므로
+    # 여기서 보는 편이 정확하다. 조건이 없으면 확인 요청으로 넘어간다.
+    elig_warnings, elig_missing = _eligibility(conditions, question, trace)
+    constraint_warnings.extend(elig_warnings)
+    for item in elig_missing:
+        if len(ask_back_items) < 2 and item not in ask_back_items:
+            ask_back_items.append(item)
 
     # ── 답변가능성 판정 ───────────────────────────────────────
     refusal = check_refusal(question, grounding, evidence_count=len(evidence))

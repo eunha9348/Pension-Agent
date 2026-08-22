@@ -173,3 +173,47 @@ def test_단위없는_맨숫자는_금액으로_해석하지_않는다():
     """'1500'을 1500원으로 읽으면 1만배 오차가 난다. 해석을 거부하는 게 맞다."""
     assert parse_amount_to_manwon("1500") is None
     assert parse_amount_to_manwon("연금 10년차") is None
+
+
+# ════════════════════════════════════════════════════════════════
+# 부분 계산 — 산출 가능한 것은 내준다
+# ════════════════════════════════════════════════════════════════
+#
+# 실사고(평가 E-14): "만 80세인데 세금 몇 퍼센트 떼나요"는 **요율**을 묻는데,
+# 빌더가 월 수령액을 필수로 요구해 계산을 통째로 접었다. 그 결과 답변에서
+# 3.3%가 빠졌다. 세율은 나이·수령형태만으로 정해지고 금액은 세액에만 쓰인다.
+
+def test_금액이_없어도_원천징수_세율은_나온다():
+    from app.analysis.calc_params import make_calc_params_builder
+    from app.core.coverage_pipeline import CALC_REGISTRY, RequirementSlot
+
+    slot = RequirementSlot("w", "원천징수율", "calculation",
+                           calc_function="사적연금_원천징수_계산")
+    b = make_calc_params_builder({"age": 80, "is_annuity_type": False})
+    result = CALC_REGISTRY["사적연금_원천징수_계산"](**b(slot))
+    assert result["r_withholding"] == 0.033
+
+
+def test_금액이_없으면_세액을_단정하지_않는다():
+    """0원을 답으로 내놓으면 맞지만 오해를 부른다 — 한계를 밝혀야 한다."""
+    from app.analysis.calc_params import make_calc_params_builder
+    from app.core.coverage_pipeline import RequirementSlot
+
+    slot = RequirementSlot("w", "원천징수율", "calculation",
+                           calc_function="사적연금_원천징수_계산")
+    b = make_calc_params_builder({"age": 80, "is_annuity_type": False})
+    b(slot)
+    assert any("세율만" in a for a in b.assumption_items())
+
+
+def test_금액이_있으면_세액까지_계산한다():
+    from app.analysis.calc_params import make_calc_params_builder
+    from app.core.coverage_pipeline import CALC_REGISTRY, RequirementSlot
+
+    slot = RequirementSlot("w", "원천징수", "calculation",
+                           calc_function="사적연금_원천징수_계산")
+    b = make_calc_params_builder({"age": 80, "is_annuity_type": False,
+                                  "private_pension_monthly_manwon": 100})
+    result = CALC_REGISTRY["사적연금_원천징수_계산"](**b(slot))
+    assert result["T_withholding"] > 0
+    assert b.assumption_items() == []

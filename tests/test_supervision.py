@@ -134,3 +134,50 @@ def test_정상_계획은_승인된다():
     result, safe = supervise_plan(spec, {"연금수령한도_계산"})
     assert result.verdict == Verdict.APPROVE
     assert safe["planned_calls"]
+
+
+# ════════════════════════════════════════════════════════════════
+# L4 · 가입자격은 조건이 없어도 침묵하지 않는다
+# ════════════════════════════════════════════════════════════════
+#
+# 예전에는 `if fund_class and account_type:` 안에만 판정이 있어서, 조건이
+# 하나라도 없으면 경고도 되묻기도 없이 통째로 건너뛰었다. 실제 사용자 질의는
+# 대부분 짧아서("총보수 낮은 클래스 뭐예요") 이 침묵 경로가 오히려 정상 경로였다.
+
+def test_조건이_다_있으면_가입자격을_판정한다():
+    from app.core.coverage_pipeline import TraceLogger
+    from app.pipeline import _eligibility
+
+    w, missing = _eligibility({"fund_class": "C-Re", "account_type": "연금저축"},
+                              "C-Re 클래스로 가입할 수 있나요?", TraceLogger())
+    assert missing == []
+
+
+def test_조건이_없으면_되묻는다():
+    """단정하지 않되 침묵하지도 않는다."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.pipeline import _eligibility
+
+    w, missing = _eligibility({}, "총보수 가장 낮은 클래스로 가입하고 싶은데요",
+                              TraceLogger())
+    assert missing, "무엇이 필요한지 알려야 한다"
+    assert w and "확정할 수 없" in w[0]
+
+
+def test_가입자격을_묻지_않은_질의는_되묻지_않는다():
+    """확인 항목은 최대 2건이라 무관한 되묻기가 자리를 차지하면 안 된다."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.pipeline import _eligibility
+
+    w, missing = _eligibility({}, "연금수령한도가 얼마인가요?", TraceLogger())
+    assert (w, missing) == ([], [])
+
+
+def test_가입자격은_계산_이후에_판정된다():
+    """조건이 가장 많이 모인 시점에 봐야 정확하다."""
+    import inspect
+
+    import app.pipeline as p
+
+    src = inspect.getsource(p.answer_question)
+    assert src.index("run_calculations") < src.index("_eligibility(")
