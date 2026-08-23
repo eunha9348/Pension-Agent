@@ -275,3 +275,56 @@ def test_LLM_age가_정수로_표시된다():
     desc = describe_conditions(c)
     assert "80세" in desc
     assert "80.0세" not in desc
+
+
+# ════════════════════════════════════════════════════════════════
+# 단위 혼동 — L1 금액이 규칙 파싱을 덮어써 1만배 오차를 내면 안 된다
+# ════════════════════════════════════════════════════════════════
+#
+# 계산함수는 전부 만원 단위다(CLAUDE.md). L1은 "1억 원"을 10000으로 줘야 할
+# 자리에 1(억)이나 100000000(원)을 주기도 하는데, 예전에는 그 값이 규칙
+# 파싱 결과를 무조건 덮어써 "연금수령한도 0만원" 같은 **확신에 찬 오답**이
+# 나갔다. 규칙 파싱은 사용자가 쓴 글자를 명시적 단위 변환으로 읽은 것이므로,
+# 자릿수가 크게 어긋나면 규칙 쪽을 믿는다.
+
+_Q_1억 = "계좌에 1억 원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?"
+
+
+def test_L1이_억_단위로_착각해도_규칙값을_지킨다():
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(_Q_1억, llm_conditions={"account_value_manwon": 1})
+    assert c["account_value_manwon"] == 10000.0
+
+
+def test_L1이_원_단위로_착각해도_규칙값을_지킨다():
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(_Q_1억,
+                          llm_conditions={"account_value_manwon": 100000000})
+    assert c["account_value_manwon"] == 10000.0
+
+
+def test_버린_사실을_한계고지에_남긴다():
+    """조용히 버리면 왜 그 값이 안 쓰였는지 추적할 수 없다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(_Q_1억, llm_conditions={"account_value_manwon": 1})
+    assert any("자릿수" in n for n in c.get("condition_notes", []))
+
+
+def test_같은_자릿수_이견은_L1을_존중한다():
+    """단위 사고만 막는 것이지 L1 판단을 통째로 무시하는 것이 아니다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(_Q_1억, llm_conditions={"account_value_manwon": 12000})
+    assert c["account_value_manwon"] == 12000.0
+
+
+def test_규칙이_못_읽은_금액은_L1_값을_쓴다():
+    """비교 대상이 없으면 L1이 유일한 정보원이다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("연금 세금이 궁금해요",
+                          llm_conditions={"severance_manwon": 20000})
+    assert c["severance_manwon"] == 20000.0

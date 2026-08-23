@@ -80,6 +80,42 @@ _NUMERIC_CONDITION_KEYS = {"age", "pension_year", "actual_receipt_year",
                           "service_years", "years_elapsed"}
 
 
+# 단위 혼동으로 볼 배수. 만원↔억, 만원↔원은 전부 10,000배 차이다.
+# 100배를 문턱으로 두면 그 사고는 잡히고, 같은 자릿수 안의 정당한 이견
+# (규칙이 600을 읽고 L1이 900을 읽는 등)은 건드리지 않는다.
+_UNIT_CONFUSION_RATIO = 100.0
+
+
+def _unit_confusion(key: str, rule_value, llm_value) -> bool:
+    """L1이 준 금액이 단위를 잘못 잡은 것으로 보이는가.
+
+    ━━ 왜 필요한가 ━━
+    계산함수는 전부 **만원 단위**다(CLAUDE.md). 그런데 L1은 "1억 원"을
+    만원으로 환산해 10000을 줘야 할 자리에 1(억 단위)이나 100000000(원 단위)을
+    주기도 한다. 예전에는 그 값이 규칙 파싱 결과를 **무조건 덮어썼고**,
+    1만배 오차가 그대로 계산에 들어가 "연금수령한도 0만원" 같은
+    **확신에 찬 오답**이 나갔다.
+
+    규칙 파싱은 사용자가 쓴 글자("1억 원")를 명시적 단위 변환으로 읽은
+    것이므로, 자릿수가 크게 어긋나면 규칙 쪽을 믿는다. 같은 자릿수 안의
+    차이는 L1이 문맥을 더 잘 봤을 수 있으므로 그대로 둔다.
+    """
+    if not key.endswith("_manwon"):
+        return False
+    if not isinstance(rule_value, (int, float)) or rule_value <= 0:
+        return False        # 규칙이 못 읽었으면 L1 값이 유일한 정보다
+    if llm_value <= 0:
+        return True         # 금액이 0 이하일 수는 없다
+    ratio = max(rule_value, llm_value) / min(rule_value, llm_value)
+    return ratio >= _UNIT_CONFUSION_RATIO
+
+
+def _fmt(v) -> str:
+    """조건 노트에 쓸 짧은 수치 표기."""
+    f = float(v)
+    return f"{int(f):,}" if f.is_integer() else f"{f:,.4g}"
+
+
 def derive_conditions(question: str,
                       llm_conditions: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """질의 원문 + L1 조건을 정규 스키마로 병합.
@@ -218,9 +254,17 @@ def derive_conditions(question: str,
             if isinstance(v, bool):
                 continue
             try:
-                c[k] = float(v)
+                val = float(v)
             except (TypeError, ValueError):
                 continue    # 숫자가 아니면 조용히 버린다 — 지어낼 수 없다
+            if _unit_confusion(k, c.get(k), val):
+                # 규칙이 읽은 값을 지키고, 버렸다는 사실을 남긴다
+                c.setdefault("condition_notes", []).append(
+                    f"질의에서 읽은 금액({_fmt(c[k])}만원)과 분석 결과"
+                    f"({_fmt(val)}만원)의 자릿수가 크게 달라, 질의 원문에서 읽은 "
+                    f"값으로 계산했습니다")
+                continue
+            c[k] = val
         else:
             c[k] = v
 

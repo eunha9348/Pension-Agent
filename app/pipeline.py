@@ -341,6 +341,11 @@ def _answer_question_impl(question_id: str, question: str,
         trace.log("계획_감사", "실행 계획 승인 — 미등록 호출 없음")
 
     conditions = query_spec.get("user_conditions") or {}
+    # 계산이 틀렸을 때 "조건이 잘못 잡힌 것"과 "계산이 잘못된 것"을 가르는
+    # 유일한 단서다. 특히 금액 단위 사고(만원↔억↔원)는 이 줄이 없으면
+    # 답변만 보고는 원인을 좁힐 수 없다.
+    trace.log("확정_조건", ", ".join(f"{k}={v}" for k, v in conditions.items())
+                          or "확인된 조건 없음")
 
     # ── L2 · 함정 감지 ────────────────────────────────────────
     trap_context = build_trap_context(question)

@@ -449,7 +449,7 @@ def _dump(r: dict) -> None:
     print(f"   │ {', '.join(ids) if ids else '(없음)'}  ·  {len(context)}자")
     print("   ├─ think_trace 중 계산·감사 구간 " + "─" * 31)
     keep = [ln for ln in trace.splitlines()
-            if any(k in ln for k in ("L5", "L6", "계산", "감사", "검증",
+            if any(k in ln for k in ("L5", "L6", "계산", "감사", "검증", "조건",
                                      "REVISE", "BLOCK", "DOWNGRADE", "실패"))]
     for line in keep[:25] or ["(해당 없음)"]:
         print(f"   │ {line[:160]}")
