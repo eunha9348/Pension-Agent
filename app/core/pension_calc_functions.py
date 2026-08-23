@@ -85,19 +85,44 @@ def calc_np_benefit(I_final_monthly: float, r_irr: float) -> dict:
 # 2. 사적연금 (연금저축 / IRP)
 # ════════════════════════════════════════════════
 
-def calc_private_contribution_limit(X_pension_saving: float, Y_irp_personal: float,
-                                     r_tax_credit: float) -> dict:
+# 세액공제 한도 — 현행 기준. 구법(700/1200)과 혼동하면 안 된다(함정 C5).
+LIMIT_PENSION_SAVING = 600      # 연금저축 단독
+LIMIT_COMBINED = 900            # 연금저축 + IRP 합산
+LIMIT_ANNUAL_CONTRIB = 1800     # 연간 총 납입한도
+
+
+def calc_private_contribution_limit(X_pension_saving=None, Y_irp_personal=None,
+                                     r_tax_credit: float = 0.165) -> dict:
     """[2.1] 사적연금 납입한도 검증 및 세액공제액.
     r_tax_credit: 소득 구간에 따라 13.2% 또는 16.5% (호출 측에서 판단 후 전달)
     한도: 연금저축 단독 600만원 / 연금저축+IRP 합산 900만원 / 총 납입한도 1,800만원
+
+    ━━ 한도는 납입액을 몰라도 정해진다 ━━
+    한도 셋은 제도가 정한 상수이므로 납입액과 무관하다. 예전에는 이 값들이
+    수식 안에만 있고 **출력되지 않아서**, "얼마까지 받을 수 있나요"처럼
+    한도를 묻는 질의에 답이 나가도 600·900이 문장에 실릴 보장이 없었다
+    (평가 E-01). 이제 항상 함께 반환한다.
+
+    납입액을 모르면 세액공제액은 **내지 않는다.** 0원으로 굴리면
+    "세액공제액 = 0만원"이라는 맞지만 오해를 부르는 답이 되기 때문이다.
+    한도만 알려주고 납입액은 확인 요청으로 돌리는 것이 옳다.
     """
-    is_limit_exceeded = (X_pension_saving + Y_irp_personal) > 1800
-    A_eligible = min(min(X_pension_saving, 600) + Y_irp_personal, 900)
-    A_tax_credit = A_eligible * r_tax_credit
-    return {
-        "IsLimitExceeded": is_limit_exceeded,
-        "A_tax_credit": round(A_tax_credit, 4),
+    out = {
+        "연금저축_단독_한도": LIMIT_PENSION_SAVING,
+        "연금저축_IRP_합산_한도": LIMIT_COMBINED,
+        "연간_총납입한도": LIMIT_ANNUAL_CONTRIB,
     }
+    if X_pension_saving is None and Y_irp_personal is None:
+        out["note"] = ("납입액이 확인되지 않아 한도만 안내합니다. "
+                       "실제 세액공제액은 납입액과 소득 구간에 따라 달라집니다.")
+        return out
+
+    x = X_pension_saving or 0.0
+    y = Y_irp_personal or 0.0
+    A_eligible = min(min(x, LIMIT_PENSION_SAVING) + y, LIMIT_COMBINED)
+    out["IsLimitExceeded"] = (x + y) > LIMIT_ANNUAL_CONTRIB
+    out["A_tax_credit"] = round(A_eligible * r_tax_credit, 4)
+    return out
 
 
 def calc_private_withholding(P_private_monthly: float, Age: int, IsAnnuityType: bool) -> dict:

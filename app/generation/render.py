@@ -19,6 +19,9 @@ _LABELS = {
     "special_rule_applied": "2013.3.1 이전 가입 특례 적용",
     "A_tax_credit": "세액공제액",
     "IsLimitExceeded": "연간 납입한도(1,800만원) 초과",
+    "연금저축_단독_한도": "연금저축 단독 세액공제 한도",
+    "연금저축_IRP_합산_한도": "연금저축+IRP 합산 세액공제 한도",
+    "연간_총납입한도": "연간 총 납입한도",
     "r_withholding": "원천징수세율",
     "T_withholding": "원천징수세액",
     "P_private_excess": "1,500만원 초과분",
@@ -43,6 +46,7 @@ _LABELS = {
 # ⚠️ 휴리스틱만으로 단위를 정하면 사고가 난다. 실제로 "적용 분모 = 10만원"처럼
 #    개수를 금액으로 찍는 버그가 있었다. 아는 키는 명시적으로 못 박는다.
 _UNIT_MANWON = {
+    "연금저축_단독_한도", "연금저축_IRP_합산_한도", "연간_총납입한도",
     "limit", "A_tax_credit", "T_withholding", "P_private_excess", "difference",
     "C_np_copay", "P_np_monthly", "P_np_annual",
     "근속연수공제", "환산급여", "환산급여공제", "퇴직소득_과세표준",
@@ -113,8 +117,19 @@ def render_calc_result(result: Any, indent: str = "  ") -> str:
         return f"{indent}{result}"
 
     if "variants" in result and isinstance(result["variants"], list):
+        variants = result["variants"]
+        rendered = [render_calc_result(v.get("result"), indent)
+                    for v in variants]
+        # ⚠️ 조건별 결과가 전부 같으면 한 번만 찍는다. 같은 내용을 조건 딱지만
+        #    바꿔 두 번 늘어놓으면 "소득 구간에 따라 한도가 다르다"는 **틀린
+        #    인상**을 준다 — 실제로 세액공제 한도(600/900)는 소득과 무관하다.
+        #    갈리는 건 공제율뿐이고, 납입액을 모르면 공제율은 쓰이지 않는다.
+        #    다만 "조건을 따져봤다"는 사실까지 버리면 안 되므로 한 줄로 남긴다.
+        if len(rendered) > 1 and len(set(rendered)) == 1:
+            labels = " · ".join(str(v.get("label", "조건")) for v in variants)
+            return f"{indent}※ 아래 값은 {labels} 모두 동일합니다\n" + rendered[0]
         blocks = []
-        for v in result["variants"]:
+        for v, body in zip(variants, rendered):
             blocks.append(f"{indent}· {v.get('label', '조건')}:")
             blocks.append(render_calc_result(v.get("result"), indent + "    "))
         return "\n".join(blocks)

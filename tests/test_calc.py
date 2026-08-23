@@ -105,6 +105,45 @@ def test_연간_납입한도_1800만원_초과_판정():
     assert calc_private_contribution_limit(600, 300, 0.165)["IsLimitExceeded"] is False
 
 
+# ── 한도 자체를 묻는 질의 (E-01 회귀) ──────────────────────────
+# 한도 셋은 제도가 정한 상수라 납입액과 무관하다. 예전에는 수식 안에만
+# 있고 반환되지 않아, "얼마까지 세액공제 받나요"에 600·900이 답변에 실릴
+# 보장이 없었다. 아래 셋이 이 회귀를 막는다.
+
+def test_한도는_납입액과_무관하게_항상_반환된다():
+    for args in [(), (600, 300, 0.165), (0, 0, 0.132), (2000, 500, 0.165)]:
+        out = calc_private_contribution_limit(*args)
+        assert out["연금저축_단독_한도"] == 600, args
+        assert out["연금저축_IRP_합산_한도"] == 900, args
+        assert out["연간_총납입한도"] == 1800, args
+
+
+def test_납입액을_모르면_세액공제액을_내지_않는다():
+    """0으로 굴리면 '세액공제액 0만원'이라는 맞지만 오해를 부르는 답이 된다."""
+    out = calc_private_contribution_limit()
+    assert "A_tax_credit" not in out
+    assert "IsLimitExceeded" not in out
+    assert "한도만" in out["note"]
+
+
+def test_납입액이_한쪽만_있어도_세액공제액은_계산된다():
+    """한쪽만 모르는 것은 '전부 모름'이 아니다 — 아는 쪽으로 계산한다."""
+    only_saving = calc_private_contribution_limit(X_pension_saving=600,
+                                                  r_tax_credit=0.165)
+    assert only_saving["A_tax_credit"] == pytest.approx(99.0)
+
+    only_irp = calc_private_contribution_limit(Y_irp_personal=900,
+                                               r_tax_credit=0.165)
+    assert only_irp["A_tax_credit"] == pytest.approx(148.5)
+
+
+def test_한도_수치가_구법값이_아니다():
+    """700/1200/4000은 개정 전 수치다(함정 C5). 섞이면 즉시 오답이다."""
+    out = calc_private_contribution_limit()
+    assert 700 not in out.values()
+    assert 1200 not in out.values()
+
+
 @pytest.mark.parametrize("age,annuity,rate", [
     (60, False, 0.055),
     (75, False, 0.044),

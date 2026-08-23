@@ -147,6 +147,46 @@ def test_기본값_사용은_가정으로_기록된다():
     assert any("국민연금" in n for n in notes)      # 0으로 계산했다는 사실이 남는다
 
 
+# ════════════════════════════════════════════════════════════════
+# 한도 질의는 막지 말고 계산한다 (E-01 회귀)
+# ════════════════════════════════════════════════════════════════
+# 예전에는 REQUIRE_ANY가 납입액 없는 질의의 계산을 통째로 막았다. 그러면
+# "얼마까지 받을 수 있나요"에 600·900이 답변에 실릴 보장이 사라진다.
+# 한도는 상수이므로 계산해서 내보내고, 의미 없는 세액공제액만 빼는 게 맞다.
+
+def test_납입액_없는_한도질의도_계산까지_간다():
+    cond = derive_conditions("연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?")
+    builder = make_calc_params_builder(cond)
+    slots = run_calculations([_slot("사적연금_납입한도_세액공제_계산")], builder)
+    assert slots[0].status == SlotStatus.CALC_DONE
+
+
+def test_한도질의_렌더링에_600과_900이_실린다():
+    """LLM이 숫자를 빠뜨려도 결정론적 계산 결과에는 남아 있어야 한다."""
+    from app.generation.render import render_calc_result
+
+    cond = derive_conditions("연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?")
+    builder = make_calc_params_builder(cond)
+    slots = run_calculations([_slot("사적연금_납입한도_세액공제_계산")], builder)
+    text = render_calc_result(slots[0].calc_result)
+
+    assert "600" in text
+    assert "900" in text
+    assert "700만원" not in text        # 구법 수치가 섞이면 안 된다
+    assert "1,200만원" not in text
+
+
+def test_한도만_안내할_때_세액공제액_0원이_찍히지_않는다():
+    from app.generation.render import render_calc_result
+
+    cond = derive_conditions("연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?")
+    builder = make_calc_params_builder(cond)
+    slots = run_calculations([_slot("사적연금_납입한도_세액공제_계산")], builder)
+    text = render_calc_result(slots[0].calc_result)
+
+    assert "세액공제액 = 0만원" not in text
+
+
 def test_미등록_함수는_예외로_강등된다():
     builder = make_calc_params_builder({})
     with pytest.raises(MissingCalcParams):

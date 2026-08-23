@@ -49,12 +49,16 @@ class MissingCalcParams(Exception):
 #    "세액공제액 = 0만원"이라는 **맞지만 쓸모없고 오해를 부르는** 답을 낸다.
 #    납입액을 아예 안 밝힌 질문은 대개 '한도가 얼마냐'를 묻는 것이므로,
 #    계산을 접고 근거 문서의 한도를 설명하거나 되물어야 한다.
-REQUIRE_ANY: dict[str, tuple[tuple[str, ...], str]] = {
-    "사적연금_납입한도_세액공제_계산": (
-        ("pension_saving_manwon", "irp_manwon", "combined_contribution_manwon"),
-        "연금저축·IRP에 각각 얼마를 납입했는지(또는 납입 예정인지)",
-    ),
-}
+# ⚠️ 지금은 비어 있다. 세액공제 계산이 여기 있었으나 걷어냈다 —
+#    막는 대신 **계산함수가 스스로 한도만 반환**하도록 고쳤기 때문이다.
+#    막아 두면 "얼마까지 받을 수 있나요"(한도 질의)에 600·900이 답변에
+#    실릴 보장이 사라진다(평가 E-01). 한도는 납입액과 무관한 상수이므로
+#    계산해서 내보내는 것이 맞고, 의미 없는 세액공제액만 빼면 된다.
+#
+#    새 항목을 추가하기 전에 먼저 물을 것: 인자가 없을 때 **정말 아무것도
+#    낼 수 없는가**, 아니면 일부만 내면 되는가. 후자라면 여기가 아니라
+#    계산함수에서 부분 반환으로 푸는 것이 옳다.
+REQUIRE_ANY: dict[str, tuple[tuple[str, ...], str]] = {}
 
 
 # ── 인자 값 범위 검증 ──────────────────────────────────────────
@@ -202,16 +206,19 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
 
     # ── 사적연금 납입·수령 ─────────────────────────────────────
     "사적연금_납입한도_세액공제_계산": [
+        # ⚠️ default를 0.0이 아니라 None으로 둔다. 계산함수가 '0원을 넣었다'와
+        #    '납입액을 모른다'를 구분해야 한다 — 후자에 0을 넘기면
+        #    "세액공제액 0만원"이라는 오해를 부르는 답이 나간다.
         ParamSpec("X_pension_saving", _get("pension_saving_manwon"),
-                  required=False, default=0.0,
-                  assumption="연금저축 납입액이 확인되지 않아 0원으로 계산"),
+                  required=False, default=None,
+                  assumption="연금저축 납입액이 확인되지 않아 한도만 안내"),
         # 합산액만 확인된 경우("합쳐서 900만원")도 여기로 들어온다.
         # 합산 기준으로 계산했다는 사실은 conditions["condition_notes"]에 기록돼
         # 답변의 [한계 고지]로 올라간다.
         ParamSpec("Y_irp_personal", _first("irp_manwon",
                                            "combined_contribution_manwon"),
-                  required=False, default=0.0,
-                  assumption="IRP 개인부담금이 확인되지 않아 0원으로 계산"),
+                  required=False, default=None,
+                  assumption="IRP 개인부담금이 확인되지 않아 한도만 안내"),
         ParamSpec("r_tax_credit", _tax_credit_rate, variants=_RATE_VARIANTS,
                   ask_back="총급여(또는 종합소득) 구간"),
     ],
