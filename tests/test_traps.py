@@ -137,3 +137,38 @@ def test_high_이하는_강제하지_않는다():
     checks = [{"id": "X1", "severity": "high", "correction": "주의하십시오",
                "verify_any": ["없는말"]}]
     assert _enforce_critical_traps("답변", checks, TraceLogger()) == "답변"
+
+
+# ════════════════════════════════════════════════════════════════
+# ask_back이 비면 함정을 감지하고도 단정해 버린다
+# ════════════════════════════════════════════════════════════════
+#
+# 실사고(L-02): "솔로몬 국공채 단기/중장기/장기 뭐가 달라요? 안정적인 걸
+# 원해요."에서 D2가 정확히 감지됐는데도 답변이 단정했다. D2의 ask_back이
+# 빈 문자열이라 되묻기 후보가 0건이 됐기 때문이다 — 감지는 성공하고
+# 그 결과가 답변에 도달하지 못한 유형이다.
+
+def test_D2는_되묻기_문구를_제공한다():
+    from app.core.trap_rules import TRAPS
+
+    d2 = next(t for t in TRAPS if t.id == "D2")
+    assert (d2.ask_back or "").strip(), "ask_back이 비면 감지하고도 단정한다"
+
+
+def test_위험등급_비교_질의는_되묻기_후보가_생긴다():
+    from app.core.trap_rules import build_trap_context
+
+    ctx = build_trap_context("솔로몬 국공채 단기 중장기 장기 뭐가 달라요? 안정적인 걸 원해요.")
+    assert "D2" in ctx["detected"]
+    assert ctx["ask_back_candidates"], "되묻기 후보가 0건이면 단정으로 흐른다"
+
+
+def test_무관한_질의에는_D2_되묻기가_붙지_않는다():
+    """D2는 '안전·위험·비교' 같은 넓은 단어로 발동한다 — 확인 항목은
+    최대 2건이라 무관한 되묻기가 자리를 차지하면 안 된다."""
+    from app.core.trap_rules import build_trap_context
+
+    for q in ("연금수령한도가 얼마인가요?",
+              "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?"):
+        ctx = build_trap_context(q)
+        assert "D2" not in ctx["detected"], q

@@ -348,6 +348,33 @@ EVAL_CASES: list[EvalCase] = [
 # 실행
 # ════════════════════════════════════════════════════════════════
 
+def _includes(answer: str, term: str) -> bool:
+    """must_include 항목이 답변에 실렸는가.
+
+    ━━ 금액은 표기가 흔들려도 같은 값이다 ━━
+    실사고(E-04): 시스템은 한도를 정확히 1,200만원으로 계산했고 답변에도
+    실었는데, LLM이 "1200만원"(쉼표 없이)이라고 써서 문자열 일치 검사가
+    실패로 처리했다. 계산·검증·보강 장치는 전부 정상이었고 답도 맞았다 —
+    **채점기만 틀렸다.**
+
+    verify_calc_presence()가 같은 이유로 이미 parse_amount_expressions로
+    표기를 흡수하고 있다. 채점도 같은 기준을 써야 앞뒤가 맞는다.
+
+    ⚠️ 느슨해지는 것이 아니다. 금액이 아닌 항목("연금실제수령연차", "전액",
+       "공적연금")은 parse_amount_expressions가 빈 결과를 주므로 예전처럼
+       **완전 일치**로만 통과한다. 값이 다른 금액도 여전히 실패한다.
+    """
+    if term in answer:
+        return True
+    from app.analysis.units import parse_amount_expressions
+
+    want = [v for _s, _e, v in parse_amount_expressions(term)]
+    if not want:
+        return False        # 금액이 아니면 문자열 일치가 유일한 기준이다
+    have = {v for _s, _e, v in parse_amount_expressions(answer)}
+    return all(w in have for w in want)
+
+
 def run_case(case: EvalCase) -> dict:
     from app.pipeline import answer_question
 
@@ -355,7 +382,7 @@ def run_case(case: EvalCase) -> dict:
     answer = body["answer"]
     context = body.get("retrieved_context") or ""
 
-    missing = [t for t in case.must_include if t not in answer]
+    missing = [t for t in case.must_include if not _includes(answer, t)]
     leaked = [t for t in case.must_not_include if t in answer]
     uncited = [d for d in case.must_cite if d not in context]
 
