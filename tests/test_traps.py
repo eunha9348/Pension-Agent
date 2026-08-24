@@ -555,3 +555,43 @@ def test_trigger_none이_실제로_배제한다():
         blocked = base + " " + r.trigger_none[0]
         assert r.id not in [t.id for t in detect_traps(blocked)], (
             f"{r.id}: 제외어 '{r.trigger_none[0]}'가 있는데도 발동했다")
+
+
+# ════════════════════════════════════════════════════════════════
+# C4 — '얼마까지'만 빼고 나머지는 건드리지 않는다
+# ════════════════════════════════════════════════════════════════
+# '얼마까지'가 "얼마까지 인출할 수 있나요"(E-04, 연금수령한도 질의)를
+# 걸었다. B2에서 뺐던 것과 같은 이유다.
+#
+# ⚠️ 그렇다고 '세액공제'·'600'·'900'까지 좁히면 안 된다. C4는
+#    R2_KR5111450067·R2_KR5111420047을 검색에 예약하는 **유일한 규칙**이고
+#    그 둘이 600/900만원 한도 표를 담은 문서다. 좁히면 세액공제 문항들이
+#    핵심 근거를 통째로 잃는다. 그 회귀를 아래 테스트가 막는다.
+
+_C4_PINNED = {"R2_KR5111450067", "R2_KR5111420047"}
+
+
+@pytest.mark.parametrize("question", [
+    "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?",
+    "총급여 4000만원인데 연금저축에 600만원 넣으면 세액공제 얼마인가요?",
+    "연금저축에 900만원 넣으면 다 공제되나요?",
+    "연금저축만 있는데도 900만원까지 공제되나요?",
+])
+def test_세액공제_질의는_한도표_문서를_예약한다(question):
+    """C4가 이 예약의 유일한 공급원이다 — 좁히다 잃으면 근거가 사라진다."""
+    from app.core.trap_rules import build_trap_context
+
+    ctx = build_trap_context(question)
+    docs = {d for ch in ctx["checks"] for d in ch["docs"]}
+    assert docs & _C4_PINNED, f"{question} — 한도표 문서 예약이 사라졌다"
+
+
+@pytest.mark.parametrize("question", [
+    "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+    "연금 받은 지 12년 됐는데 아직도 인출한도가 있나요?",
+])
+def test_C4는_인출한도_질의를_걸지_않는다(question):
+    """세액공제 한도 얘기가 연금수령한도 질의에 붙으면 안 된다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "C4" not in [t.id for t in detect_traps(question)], question
