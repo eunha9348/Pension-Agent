@@ -81,3 +81,57 @@ def test_기존_판정경로는_그대로다():
         [_slot(), _slot(SlotStatus.MISSING)], evidence_count=3) == Answerability.PARTIAL
     assert decide_answerability([_slot(required=False)], evidence_count=3) \
         == Answerability.ANSWER
+
+
+# ════════════════════════════════════════════════════════════════
+# 개인 계좌 조회 — 상품명이 끼는 형태 (E-36)
+# ════════════════════════════════════════════════════════════════
+# "제 연금 수령액이 얼마인지 알려주세요"가 거절되지 않았다. 두 가지가
+# 겹쳤다: (1) '수령액'이 계좌 데이터 어휘 목록에 없었고, (2) 소유격과
+# 계좌 어휘 사이에 상품명("제 **연금** 수령액")이 끼면 패턴이 끊겼다.
+#
+# 이 패턴은 넓히다 오탐이 나기 쉬운 자리다(과거 '해지' 오탐 이력).
+# 거절해야 할 것과 거절하면 안 되는 것을 함께 못 박는다.
+
+@pytest.mark.parametrize("q", [
+    "제 연금 수령액이 얼마인지 알려주세요.",
+    "내 IRP 평가액 얼마인가요?",
+    "본인 퇴직연금 적립금 조회해줘",
+    "내 연금저축 수익률 확인해줘",
+    "제 계좌 잔고 알려주세요",
+])
+def test_개인_계좌_조회는_거절한다(q):
+    r = check_refusal(q)
+    assert r.refuse and r.code == "PII_REQUEST", q
+
+
+@pytest.mark.parametrize("q", [
+    # 제도가 정하는 값 — 계좌를 몰라도 답할 수 있다
+    "연금 수령액은 어떻게 계산하나요?",
+    "제 나이에는 연금 수령액이 어떻게 정해지나요?",
+    "내 연금저축 세액공제 얼마나 되는지 알려줘",
+    "연금수령한도가 얼마인가요?",
+    "제가 55세인데 연금 수령한도 알려주세요",
+    "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?",
+    # 사용자가 금액을 직접 준 계산 질의 — 조회 요구가 아니다
+    "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+    "제 상황에서 세금이 얼마나 나오는지 알려주세요",
+])
+def test_제도_질의는_개인정보로_오인하지_않는다(q):
+    r = check_refusal(q)
+    assert not (r.refuse and r.code == "PII_REQUEST"), q
+
+
+def test_개인계좌_거절문구는_한계를_명시한다():
+    """채점도 사용자도 '확인해 드릴 수 없다'는 말을 보고 판단한다."""
+    r = check_refusal("제 연금 수령액이 얼마인지 알려주세요.")
+    assert "확인해 드릴 수 없" in r.reason
+
+
+def test_평가셋에서_개인계좌_거절은_E36_하나뿐이다():
+    """패턴을 넓힌 뒤 다른 문항이 휩쓸리지 않았는지 전수로 본다."""
+    from tests.eval_set import EVAL_CASES
+
+    hits = [c.id for c in EVAL_CASES
+            if (r := check_refusal(c.question)).refuse and r.code == "PII_REQUEST"]
+    assert hits == ["E-36"], f"개인정보 거절로 잡힌 문항: {hits}"
