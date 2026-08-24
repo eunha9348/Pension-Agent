@@ -323,3 +323,82 @@ def test_트리거_맥락조건이_실제로_좁힌다():
             continue        # 주제어가 맥락어를 이미 품은 경우는 건너뛴다
         assert r.id not in [t.id for t in detect_traps(bare)], (
             f"{r.id}: 주제어 '{bare}'만으로 확정됐다 — 맥락 조건이 무력하다")
+
+
+# ════════════════════════════════════════════════════════════════
+# 미탐 — 사람이 실제로 쓰는 표현을 놓치지 않는다
+# ════════════════════════════════════════════════════════════════
+# 오탐 감사 중에 발견됐다. 평가셋은 42문항 전부 통과하는데도 두 함정이
+# 조용히 안 잡히고 있었다 — 함정 라벨은 채점 대상이 아니기 때문이다.
+#
+#   A7  "IRP에서 3000만원만 빼서 쓸 수 있나요?"   → 부분인출 불가 경고 없음
+#   E6  "작년 퇴직금이랑 올해 퇴직금 정산이…"      → 정산특례 경고 없음
+#
+# A7이 놓친 이유가 핵심이다. 사람은 부분 인출을 '일부·부분'이라 말하지 않고
+# **금액을 집어서** 말한다("3000만원만 빼서").
+
+@pytest.mark.parametrize("question", [
+    "IRP에서 3000만원만 빼서 쓸 수 있나요?",
+    "IRP에서 500만원만 인출할 수 있나요?",
+    "IRP에서 필요한 만큼만 찾아 쓸 수 있나요?",
+    "IRP 일부만 해지하고 싶어요",
+])
+def test_A7은_금액을_집은_부분인출_표현도_잡는다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "A7" in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "작년 퇴직금이랑 올해 퇴직금 정산이 어떻게 되나요?",
+    "퇴직금 정산 특례가 뭔가요?",
+    "퇴직금을 두 번 받았는데 세금은 어떻게 되나요?",
+    "중간정산 받은 게 있는데 합산되나요?",
+])
+def test_E6은_퇴직금_정산_표현을_잡는다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "E6" in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    # 연말정산은 전혀 다른 제도다 — 맨 '정산'을 넣었다면 여기서 걸렸을 것이다
+    "연말정산 때 뭐 챙겨야 하나요?",
+    "연말정산에서 연금저축 공제 받으려면 어떻게 하나요?",
+])
+def test_E6은_연말정산을_끌어오지_않는다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "E6" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "집 사려고 IRP에서 중도인출하면 세금이 어떻게 되나요?",
+    "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?",
+    "IRP 계좌를 새로 만들고 싶은데 어떻게 하나요?",
+    "퇴직금을 IRP 말고 제 통장으로 바로 받을 수 있나요?",
+])
+def test_A7은_부분인출_맥락이_없으면_걸리지_않는다(question):
+    """IRP가 나왔다는 이유만으로 '전액 해지해야 합니다'를 붙이면 안 된다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "A7" not in [t.id for t in detect_traps(question)], question
+
+
+def test_평가셋_전문항의_기대_함정이_전부_감지된다():
+    """문항별로 하나씩 놓치지 않도록 전수로 못 박는다."""
+    from app.core.trap_rules import detect_traps
+    from tests.eval_set import EVAL_CASES
+
+    missed = []
+    for case in EVAL_CASES:
+        if not case.trap:
+            continue
+        expected = [e.strip().split(" ")[0]
+                    for e in case.trap.replace("—", " ").split("·") if e.strip()]
+        expected = [e for e in expected if len(e) == 2 and e[0].isalpha()]
+        got = [t.id for t in detect_traps(case.question)]
+        lost = [e for e in expected if e not in got]
+        if lost:
+            missed.append((case.id, lost))
+    assert not missed, f"기대 함정을 놓친 문항: {missed}"
