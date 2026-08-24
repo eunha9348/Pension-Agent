@@ -172,3 +172,65 @@ def test_무관한_질의에는_D2_되묻기가_붙지_않는다():
               "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?"):
         ctx = build_trap_context(q)
         assert "D2" not in ctx["detected"], q
+
+
+# ════════════════════════════════════════════════════════════════
+# 교정문 자기충족성 — 강제 삽입이 실제로 판정을 푸는가
+# ════════════════════════════════════════════════════════════════
+# _enforce_critical_traps는 미반영 critical 함정의 correction을 답변에
+# 덧붙인다. 그런데 그 correction이 **자기 검증용어를 담지 않으면**,
+# 삽입해도 미반영 판정이 그대로 남는다 — 안전망이 돌긴 도는데 아무것도
+# 고치지 못한다. C1이 정확히 그 상태였다(평가 E-09 '전액' 누락).
+#
+# 규칙별 개별 테스트로는 이런 결함을 또 놓친다. 26종 전수로 못 박는다.
+
+def test_교정문은_자기_검증용어를_담는다():
+    from app.core.trap_rules import TRAPS, term_present, verify_terms_for
+
+    broken = []
+    for r in TRAPS:
+        terms = verify_terms_for(r.id)
+        corr = (r.correction or "").strip()
+        # correction이 빈 규칙은 '임의 판단 금지'라 의도적으로 비워 둔 것이다
+        # (C6). 강제 삽입 대상도 아니므로 검사하지 않는다.
+        if not terms or not corr:
+            continue
+        if not any(term_present(corr, t) for t in terms):
+            broken.append((r.id, terms))
+
+    assert not broken, (
+        "교정문을 삽입해도 미반영 판정이 풀리지 않는 규칙: "
+        + ", ".join(f"{i}(검증용어 {t})" for i, t in broken))
+
+
+def test_C1_교정문은_전액을_명시한다():
+    """초과분 과세 오해를 푸는 문장에서 '전액'은 빠질 수 없는 단어다."""
+    from app.core.trap_rules import TRAPS
+
+    c1 = next(t for t in TRAPS if t.id == "C1")
+    assert "전액" in c1.correction
+    assert "초과분" in c1.correction
+
+
+def test_critical_함정_강제삽입은_한_번에_해소된다():
+    """삽입 후 다시 검사하면 미반영 목록이 비어야 한다.
+
+    비지 않으면 같은 문장을 몇 번이고 덧붙이는 무한 반복이 된다.
+    """
+    from app.core.trap_rules import build_trap_context, unaddressed_traps
+
+    ctx = build_trap_context(
+        "연금을 연 2000만원 받으면 1500만원 넘는 500만원에만 세금 붙나요?")
+    assert "C1" in ctx["detected"]
+
+    draft = "1,500만원을 초과하면 분리과세 또는 종합과세를 선택할 수 있습니다."
+    remaining = [t for t in unaddressed_traps(draft, ctx["checks"])
+                 if t.get("severity") == "critical" and t.get("correction")]
+    assert remaining, "이 질의는 critical 함정이 미반영 상태여야 한다"
+
+    draft += "\n\n" + "\n".join(f"※ {t['correction']}" for t in remaining)
+
+    still = [t for t in unaddressed_traps(draft, ctx["checks"])
+             if t.get("severity") == "critical" and t.get("correction")]
+    assert not still, f"삽입 후에도 미반영으로 남는 함정: {[t['id'] for t in still]}"
+    assert "전액" in draft
