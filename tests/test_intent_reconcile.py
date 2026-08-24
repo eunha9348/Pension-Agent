@@ -151,3 +151,92 @@ def test_시스템_프롬프트가_수치_관계를_요구한다():
     """'600만원 또는 900만원 중 선택'은 근거의 '적은 금액'을 오독한 것이다."""
     from app.generation.answer_prompt import SUPERVISOR_SYSTEM_PROMPT
     assert "적은 금액" in SUPERVISOR_SYSTEM_PROMPT
+
+
+# ════════════════════════════════════════════════════════════════
+# 계산 슬롯은 MAX_SLOTS 절단에 잘려나가지 않는다 (E-14)
+# ════════════════════════════════════════════════════════════════
+# 규칙 슬롯은 LLM 슬롯 뒤에 붙는다. L1이 슬롯을 MAX_SLOTS만큼 내놓으면
+# 규칙이 찾은 계산 슬롯이 통째로 잘렸다. 계산이 안 돌면 calc_results가
+# 비고, 비면 verify_calc_presence가 대조 없이 통과한다 — 계산값이
+# 답변에 도달하는지 보장하는 장치 전체가 무력화된다.
+
+Q_WONCHEON = "만 80세인데 연금 받을 때 세금 몇 퍼센트 떼나요?"
+
+
+def _llm_gave_three_fact_slots() -> dict:
+    """계산함수를 안 고르고 사실 슬롯만 MAX_SLOTS만큼 채운 L1 산출물."""
+    from app.analysis.query_spec import sanitize_spec
+
+    return sanitize_spec({
+        "intent": "연금과세",
+        "asked_for": [
+            {"id": "s1", "description": "연령별 원천징수세율",
+             "type": "fact", "required": True},
+            {"id": "s2", "description": "연금소득 과세 방식",
+             "type": "fact", "required": True},
+            {"id": "s3", "description": "지방소득세 포함 여부",
+             "type": "fact", "required": False},
+        ],
+        "search_terms": ["원천징수세율"], "plan": [],
+    }, Q_WONCHEON)
+
+
+def test_LLM_슬롯이_꽉_차도_계산슬롯은_살아남는다():
+    out = reconcile_spec(_llm_gave_three_fact_slots(),
+                         rule_based_spec(Q_WONCHEON), Q_WONCHEON)
+    fns = {s.get("calc_function") for s in out["asked_for"]}
+    assert "사적연금_원천징수_계산" in fns
+
+
+def test_계산슬롯을_살려도_슬롯_상한은_지킨다():
+    """상한을 넘기면 답변이 산만해진다 — 자리를 늘리는 게 아니라 바꾸는 것이다."""
+    from app.analysis.query_spec import MAX_SLOTS
+
+    out = reconcile_spec(_llm_gave_three_fact_slots(),
+                         rule_based_spec(Q_WONCHEON), Q_WONCHEON)
+    assert len(out["asked_for"]) <= MAX_SLOTS
+
+
+def test_살아남은_계산슬롯은_실행계획에도_오른다():
+    """슬롯만 남고 planned_calls에 없으면 계산은 여전히 안 돈다."""
+    out = reconcile_spec(_llm_gave_three_fact_slots(),
+                         rule_based_spec(Q_WONCHEON), Q_WONCHEON)
+    assert any(c["function"] == "사적연금_원천징수_계산"
+               for c in out["planned_calls"])
+
+
+def test_오분류_경로는_계산슬롯_우대에_흔들리지_않는다():
+    """명퇴 질의의 '세액공제'는 계산 슬롯이지만 되살리면 안 된다.
+
+    계산 슬롯을 무조건 우대하면 이미 내린 오분류 판정을 뒤집는다.
+    """
+    out = reconcile_spec(_llm_said_tax_credit(),
+                         rule_based_spec(Q_MYEONGTOE), Q_MYEONGTOE)
+    ids = [s["id"] for s in out["asked_for"]]
+    assert not any(i.startswith("seaek_gongje") for i in ids)
+    assert any(i.startswith("myeongtoe") for i in ids)
+
+
+def test_평가셋_전문항에서_규칙_계산슬롯이_보존된다():
+    """문항별로 하나씩 놓치지 않도록 전수로 못 박는다."""
+    from app.analysis.query_spec import MAX_SLOTS, sanitize_spec
+    from tests.eval_set import EVAL_CASES
+
+    filler = {"intent": "일반", "search_terms": [], "plan": [],
+              "asked_for": [{"id": f"x{i}", "description": f"설명{i}",
+                             "type": "fact", "required": True}
+                            for i in range(MAX_SLOTS)]}
+    lost = []
+    for case in EVAL_CASES:
+        fb = rule_based_spec(case.question)
+        want = {s.get("calc_function") for s in fb["asked_for"]
+                if s.get("calc_function")}
+        if not want:
+            continue
+        out = reconcile_spec(sanitize_spec(dict(filler), case.question),
+                             fb, case.question)
+        got = {s.get("calc_function") for s in out["asked_for"]}
+        if not want <= got or len(out["asked_for"]) > MAX_SLOTS:
+            lost.append((case.id, sorted(want - got)))
+    assert not lost, f"계산 슬롯을 잃은 문항: {lost}"

@@ -368,6 +368,44 @@ _TAX_CREDIT_SIGNALS = ("세액공제", "공제한도", "공제 한도", "소득�
 MAX_SLOTS = 3      # 슬롯이 많으면 답변이 산만해진다
 
 
+def _cap_keeping_calc(llm_slots: list[dict],
+                      rule_slots: list[dict]) -> list[dict]:
+    """LLM 슬롯을 우선하되 **규칙이 찾은 계산 슬롯의 자리는 보장한다.**
+
+    ━━ 왜 그냥 자르면 안 되는가 ━━
+    규칙 슬롯은 LLM 슬롯 **뒤에** 붙는다. 그래서 L1이 슬롯을 3개만 내놔도
+    규칙이 찾아낸 계산 슬롯이 통째로 잘려나갔다. 계산이 안 돌면
+    calc_results가 비고, calc_results가 비면 verify_calc_presence는 대조할
+    대상이 없어 **무조건 통과**한다. 결국 "함수가 만든 숫자가 사용자에게
+    도달하는지"를 보장하는 장치 전체가 조용히 무력화된다
+    (평가 E-14, 원천징수세율 3.3%가 답변에서 사라짐).
+
+    역설적이게도 L1이 429로 죽으면 규칙 스펙이 그대로 쓰여 계산이 돌았다.
+    LLM이 성공할 때만 숫자가 사라지는 상태였다.
+
+    사실 슬롯 하나를 덜 보여주는 것과 계산을 통째로 건너뛰는 것 중에는
+    전자가 낫다. 자리 다툼이 나면 계산 슬롯이 이긴다.
+
+    ⚠️ 이 함수는 **정상 병합 경로 전용**이다. 오분류(misclassified) 경로에는
+       쓰지 말 것. 거기서는 "LLM이 고른 계산함수 자체가 이 질의에 맞지 않다"고
+       이미 판정한 상태라, 계산 슬롯이라는 이유로 되살리면 판정을 뒤집는다
+       (명퇴 질의에 신규 납입 세액공제를 끌어오는 L-01 오답이 그것이다).
+
+    표시 순서는 건드리지 않는다 — 무엇을 남길지만 고르고 원래 순서로 되돌린다.
+    """
+    merged = llm_slots + rule_slots
+    if len(merged) <= MAX_SLOTS:
+        return merged
+    # 규칙이 찾은 계산 슬롯이 먼저 자리를 잡고, 남는 자리를 원래 순서로 채운다
+    kept = [s for s in rule_slots if s.get("calc_function")][:MAX_SLOTS]
+    keep = {id(s) for s in kept}
+    for s in merged:
+        if len(keep) >= MAX_SLOTS:
+            break
+        keep.add(id(s))
+    return [s for s in merged if id(s) in keep]
+
+
 def reconcile_spec(spec: dict, fallback: dict, question: str) -> dict:
     """LLM 분석과 규칙 분석을 합친다. 도메인 판단은 규칙이 이긴다.
 
@@ -408,8 +446,10 @@ def reconcile_spec(spec: dict, fallback: dict, question: str) -> dict:
     missing = [s for s in rule_slots if s.get("id") not in seen]
 
     if missing:
-        merged = (missing + llm_slots) if misclassified else (llm_slots + missing)
-        out["asked_for"] = merged[:MAX_SLOTS]
+        # 오분류 경로는 규칙 슬롯을 앞세우는 것으로 이미 우선순위가 정해져
+        # 있다 — 그대로 자른다. 정상 경로에서만 계산 슬롯 자리를 보장한다.
+        out["asked_for"] = ((missing + llm_slots)[:MAX_SLOTS] if misclassified
+                            else _cap_keeping_calc(llm_slots, missing))
         if not misclassified:
             out["source"] = out.get("source", "llm") + "+rule(슬롯보강)"
 
