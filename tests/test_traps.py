@@ -234,3 +234,92 @@ def test_critical_함정_강제삽입은_한_번에_해소된다():
              if t.get("severity") == "critical" and t.get("correction")]
     assert not still, f"삽입 후에도 미반영으로 남는 함정: {[t['id'] for t in still]}"
     assert "전액" in draft
+
+
+# ════════════════════════════════════════════════════════════════
+# 오탐 억제 — 넓은 주제어가 엉뚱한 질의를 끌어오지 않는다
+# ════════════════════════════════════════════════════════════════
+# 2026-08-24 실배포에서 "연금저축이랑 IRP 합쳐서 세액공제 얼마까지"에
+# 함정 4건이 걸렸고 그 중 3건이 오탐이었다. 결과는 두 가지였다.
+#   · 1,500만원 분리과세 설명(C2)과 구법 경고(C5)가 답변에 강제 삽입
+#   · 무관한 B2 미반영을 이유로 답변 등급이 ASK_BACK으로 강등
+# 원인은 주제어가 너무 넓었던 것이다 — '총'이 총보수를, '한도'가
+# 세액공제 한도를, '세액공제'가 세제 질의 전부를 걸었다.
+
+_FP_QUERIES = {
+    "E-01": "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?",
+    "E-02": "총급여 4000만원인데 연금저축에 600만원 넣으면 세액공제 얼마인가요?",
+    "E-04": "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+    "E-05": "1억이고 연금수령 10년차면 한도가 어떻게 되나요?",
+    "E-07": "연금수령한도가 얼마인가요?",
+    "E-09": "연금을 연 2000만원 받으면 1500만원 넘는 500만원에만 세금 붙나요?",
+    "E-15": "총보수가 가장 낮은 클래스로 가입하고 싶은데 어떤 게 좋나요?",
+    "E-33": "ISA 만기 자금을 연금계좌로 옮기면 1800만원 한도에 포함되나요?",
+}
+
+
+@pytest.mark.parametrize("qid,question", sorted(_FP_QUERIES.items()))
+def test_B2는_수령한도_연차_맥락에서만_걸린다(qid, question):
+    """'한도'·'얼마까지'로 걸리면 세액공제·납입한도 질의가 전부 끌려온다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "B2" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("qid,question", sorted(_FP_QUERIES.items()))
+def test_C2는_1500만원_합산_맥락에서만_걸린다(qid, question):
+    """'총'이 '총보수'를, '합쳐서'가 '연금저축이랑 IRP 합쳐서'를 걸었다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "C2" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("qid,question", sorted(_FP_QUERIES.items()))
+def test_C5는_구법_수치가_등장할_때만_걸린다(qid, question):
+    """답변이 현행 수치를 쓰는 한 구법 경고를 붙일 이유가 없다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "C5" not in [t.id for t in detect_traps(question)], question
+
+
+# ── 정탐은 그대로 살아 있어야 한다 ─────────────────────────────
+# 오탐만 보고 조이면 감지를 통째로 죽이게 된다. 양쪽을 함께 못 박는다.
+
+@pytest.mark.parametrize("trap_id,question", [
+    ("B2", "연금 받은 지 12년 됐는데 아직도 인출한도가 있나요?"),
+    ("C2", "국민연금까지 합쳐서 1500만원 넘으면 분리과세 선택해야 하나요?"),
+    ("C5", "자료에 세액공제 한도가 700만원이라고 나오는데 맞나요?"),
+])
+def test_정탐은_유지된다(trap_id, question):
+    from app.core.trap_rules import detect_traps
+
+    assert trap_id in [t.id for t in detect_traps(question)], question
+
+
+def test_C5_교정문은_답변을_구법이라고_부정하지_않는다():
+    """지시대명사를 쓰면 맞는 답에 붙었을 때 그 답을 부정한다.
+
+    예전 문구 "해당 수치는 개정 전 기준입니다"는 답변이 현행 수치를
+    정확히 제시한 경우에도 그대로 삽입돼, 맞는 답을 구법으로 만들었다.
+    """
+    from app.core.trap_rules import TRAPS
+
+    c5 = next(t for t in TRAPS if t.id == "C5")
+    assert "해당 수치는 개정 전 기준" not in c5.correction
+    # 현행 기준을 직접 밝힌다 — 무엇이 현행인지 문장 자체가 담아야 한다
+    assert "600만원" in c5.correction and "900만원" in c5.correction
+    assert "현행" in c5.correction
+
+
+def test_트리거_맥락조건이_실제로_좁힌다():
+    """trigger_context가 붙은 규칙은 주제어만으로는 걸리지 않아야 한다."""
+    from app.core.trap_rules import TRAPS, detect_traps
+
+    for r in TRAPS:
+        if not r.trigger_context:
+            continue
+        bare = r.trigger_keywords[0]
+        if any(c in bare for c in r.trigger_context):
+            continue        # 주제어가 맥락어를 이미 품은 경우는 건너뛴다
+        assert r.id not in [t.id for t in detect_traps(bare)], (
+            f"{r.id}: 주제어 '{bare}'만으로 확정됐다 — 맥락 조건이 무력하다")
