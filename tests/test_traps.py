@@ -437,3 +437,121 @@ def test_B2는_연금수령_연차_맥락은_잡는다(question):
     from app.core.trap_rules import detect_traps
 
     assert "B2" in [t.id for t in detect_traps(question)], question
+
+
+# ════════════════════════════════════════════════════════════════
+# A1·A2·B1 — critical 규칙의 오탐 (강제 삽입되므로 가장 해롭다)
+# ════════════════════════════════════════════════════════════════
+# critical 함정만 교정문이 답변에 강제 삽입된다. 그래서 이 세 규칙의
+# 오탐은 곧바로 "엉뚱한 문장이 사용자 답변에 실린다"가 된다.
+#
+#   A1  맨 '인출'이 **인출한도**를 걸었다 → 한도 질의에 주택구입 설명이 붙음
+#   A2  DB 질의에 IRP·연금저축 비교가 붙어, 맞는 답(A3)을 밀어냄
+#   B1  맨 '연차'가 한도 계산의 **입력**까지 걸었다 → 퇴직소득세 감면 설명이 붙음
+
+@pytest.mark.parametrize("question", [
+    "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+    "연금 받은 지 12년 됐는데 아직도 인출한도가 있나요?",
+    "IRP에서 3000만원만 빼서 쓸 수 있나요?",
+    "연금수령한도가 얼마인가요?",
+    "DB형인데 중도인출 받을 수 있나요?",
+])
+def test_A1은_사유나_과세_맥락이_없으면_걸리지_않는다(question):
+    """한도·금액 질의에 '주택구입 목적은…' 설명이 붙으면 안 된다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "A1" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "집 사려고 IRP에서 중도인출하면 세금이 어떻게 되나요?",
+    "전세 때문에 중도인출 했었는데 또 할 수 있나요?",
+    "요양 때문에 인출하려는데 몇 개월 이상 치료여야 하나요?",
+    "해외이주 하는데 연금계좌에서 꺼내면 세금이 어떻게 되나요?",
+    "중도인출하면 세금 얼마나 떼나요?",
+])
+def test_A1은_인출사유_과세_질의를_잡는다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "A1" in [t.id for t in detect_traps(question)], question
+
+
+def test_A1_교정문은_사유_하나를_못박지_않는다():
+    """전세·요양 질의에도 삽입되므로 주택구입만 예로 들면 엉뚱해진다.
+
+    C5에서 겪은 것과 같은 결함이다 — 교정문이 상황을 가정하면
+    강제 삽입될 때 답변과 어긋난다.
+    """
+    from app.core.trap_rules import TRAPS
+
+    a1 = next(t for t in TRAPS if t.id == "A1")
+    # 양방향(사유이지만 저율과세 아님 / 사유 아니지만 저율과세)을 모두 진술한다
+    assert "전세보증금" in a1.correction
+    assert "해외이주" in a1.correction
+    assert "기타소득세" in a1.correction and "연금소득세" in a1.correction
+
+
+@pytest.mark.parametrize("question", [
+    "DB형인데 중도인출 받을 수 있나요?",
+    "DB제도인데 중도인출 되나요?",
+    "확정급여형에서 중도인출 가능한가요?",
+    "DB에서 중도인출 할 수 있나요?",
+])
+def test_A2는_DB_질의에_IRP비교를_붙이지_않는다(question):
+    """DB는 IRP도 연금저축도 아니다 — 비교 자체가 성립하지 않는다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "A2" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "연금저축은 아무 때나 중도인출 되는데 IRP도 똑같나요?",
+    "집 사려고 IRP에서 중도인출하면 세금이 어떻게 되나요?",
+    # 계좌 유형을 안 밝힌 질의에는 그대로 발동해야 한다 —
+    # 그때는 "어느 계좌인지"가 바로 되물어야 할 항목이다
+    "전세 때문에 중도인출 했었는데 또 할 수 있나요?",
+])
+def test_A2는_IRP_연금저축_및_유형미상_질의를_잡는다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "A2" in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+    "1억이고 연금수령 10년차면 한도가 어떻게 되나요?",
+    "연금수령 5년차인데 인출한도가 얼마인가요?",
+])
+def test_B1은_한도계산_입력으로_쓰인_연차를_걸지_않는다(question):
+    """거기서는 연금수령연차가 맞는 개념이라, 감면 연차 얘기는 초점을 흐린다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "B1" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "연금 개시하고 11년 됐는데 퇴직소득세 40% 감면 맞나요?",
+    "연금수령연차랑 연금실제수령연차랑 같은 말 아닌가요?",
+    "이연퇴직소득은 세율이 3.3%인가요 아니면 감면율로 계산하나요?",
+    "명퇴수당을 연금계좌에 넣으면 세금감면이 되나요?",
+])
+def test_B1은_퇴직소득세_감면_맥락을_잡는다(question):
+    """감면율을 정하는 건 연금실제수령연차다 — 여기가 B1의 본질이다."""
+    from app.core.trap_rules import detect_traps
+
+    assert "B1" in [t.id for t in detect_traps(question)], question
+
+
+def test_trigger_none이_실제로_배제한다():
+    """제외 조건을 형식적으로만 달아두면 이 테스트가 잡는다."""
+    from app.core.trap_rules import TRAPS, detect_traps
+
+    for r in TRAPS:
+        if not r.trigger_none:
+            continue
+        base = r.trigger_keywords[0]
+        assert r.id in [t.id for t in detect_traps(base)], (
+            f"{r.id}: 주제어만으로도 안 걸린다 — 이 테스트가 무의미해진다")
+        blocked = base + " " + r.trigger_none[0]
+        assert r.id not in [t.id for t in detect_traps(blocked)], (
+            f"{r.id}: 제외어 '{r.trigger_none[0]}'가 있는데도 발동했다")
