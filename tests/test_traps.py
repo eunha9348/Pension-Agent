@@ -402,3 +402,38 @@ def test_평가셋_전문항의_기대_함정이_전부_감지된다():
         if lost:
             missed.append((case.id, lost))
     assert not missed, f"기대 함정을 놓친 문항: {missed}"
+
+
+# ════════════════════════════════════════════════════════════════
+# B2 — 세야 하는 건 연금수령연차지 근속연수가 아니다
+# ════════════════════════════════════════════════════════════════
+# 오탐을 좁히면서 맥락어로 맨 "N년"(11~40)을 썼는데, 이게 근속연수·
+# 가입기간·근무기간까지 연금수령연차로 착각했다. 평가셋 42문항에는
+# 그런 질의가 없어 드러나지 않았다 — 평가셋이 좁아서지 안전해서가 아니다.
+#
+#   "근속 20년인데 연금수령한도가 얼마인가요?"  → B2 발동 (근속 ≠ 수령연차)
+#
+# B2는 medium이라 강제 삽입은 안 되지만, 미반영 시 답변 등급을 깎는다.
+
+@pytest.mark.parametrize("question", [
+    "근속 20년인데 연금수령한도가 얼마인가요?",
+    "가입한 지 15년 된 계좌인데 연금수령한도가 어떻게 되나요?",
+    "30년 근무하고 퇴직하는데 인출한도가 있나요?",
+    "연금수령한도가 얼마인가요?",
+])
+def test_B2는_근속연수를_연금수령연차로_읽지_않는다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "B2" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "연금 받은 지 12년 됐는데 아직도 인출한도가 있나요?",
+    "연금수령 12년차인데 수령한도가 있나요?",
+    "연금 개시하고 15년 됐는데 인출한도가 남아있나요?",
+    "연금수령한도는 언제까지 적용되나요?",
+])
+def test_B2는_연금수령_연차_맥락은_잡는다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "B2" in [t.id for t in detect_traps(question)], question
