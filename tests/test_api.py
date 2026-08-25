@@ -132,3 +132,45 @@ def test_예상치_못한_예외도_5필드로_축퇴한다(monkeypatch):
               "think_trace", "answer"):
         assert out.get(k), f"{k}가 비었다"
     assert out["question_id"] == "Q-1"
+
+
+# ════════════════════════════════════════════════════════════════
+# /ui — 사람이 직접 써 보는 화면
+# ════════════════════════════════════════════════════════════════
+# 평가와 무관한 부가 경로다. 다만 두 가지를 반드시 지켜야 한다.
+#   ① /answer 계약을 건드리지 않는다 (평가 규격은 변경 불가)
+#   ② 외부 리소스를 불러오지 않는다 — 배포 환경에 아웃바운드가 없거나
+#      CDN이 막혀 있으면 화면이 통째로 깨진다
+
+def test_ui가_HTML을_반환한다():
+    r = client.get("/ui")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "<title>연금 Agent</title>" in r.text
+
+
+def test_ui는_외부_리소스를_불러오지_않는다():
+    """CDN·외부 폰트에 의존하면 망 없는 환경에서 화면이 깨진다."""
+    r = client.get("/ui")
+    for marker in ("http://", "https://", "//cdn", "//unpkg", "//fonts."):
+        assert marker not in r.text, f"외부 리소스 참조 발견: {marker}"
+
+
+def test_ui_파일이_패키지에_포함돼_있다():
+    """Dockerfile은 app/ 를 통째로 COPY한다 — 파일이 app/ 밖으로 나가면
+    이미지에서 사라진다. 실제로 scripts/ 가 빠져 사고가 난 적이 있다."""
+    from app.main import _UI_FILE
+
+    assert _UI_FILE.exists(), f"UI 파일 없음: {_UI_FILE}"
+    assert "app" in _UI_FILE.parts, "UI 파일이 app/ 밖에 있으면 이미지에 안 들어간다"
+
+
+def test_ui를_추가해도_answer_계약은_그대로다():
+    """부가 경로 때문에 평가 경로가 흔들리면 안 된다."""
+    body = _get("연금수령한도가 얼마인가요?", qid="UI-001")
+    assert set(body) == set(REQUIRED_FIELDS)
+    assert body["question_id"] == "UI-001"
+
+
+def test_root가_ui_경로를_안내한다():
+    assert "/ui" in client.get("/").json()["endpoints"]

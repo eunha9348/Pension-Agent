@@ -21,8 +21,10 @@ import traceback
 
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import SETTINGS
 from app.ingest.store import get_store
@@ -120,6 +122,27 @@ def answer(question_id: str = Query(..., description="평가 문항 ID"),
         }, question_id, question))
 
 
+_UI_FILE = Path(__file__).parent / "web" / "chat.html"
+
+
+@app.get("/ui", response_class=HTMLResponse)
+def ui() -> HTMLResponse:
+    """사람이 직접 써 보는 화면. 평가와는 무관한 부가 경로다.
+
+    ⚠️ /answer 는 건드리지 않는다 — 평가 규격은 변경 불가다.
+       이 화면도 결국 같은 GET /answer 를 부르므로, 여기서 보이는 것이
+       채점자가 받는 것과 정확히 같다. 별도 경로로 우회하지 말 것.
+    """
+    try:
+        return HTMLResponse(_UI_FILE.read_text(encoding="utf-8"))
+    except OSError as e:
+        log.error("UI 파일을 읽지 못했습니다: %s", e)
+        return HTMLResponse(
+            "<h1>UI 파일을 찾을 수 없습니다</h1>"
+            f"<p>{_UI_FILE} 이 이미지에 포함됐는지 확인하십시오.</p>",
+            status_code=500)
+
+
 @app.get("/health")
 def health() -> dict:
     info = health_info()
@@ -132,7 +155,7 @@ def health() -> dict:
 def root() -> dict:
     return {
         "service": "연금 Agent",
-        "endpoints": ["/answer?question_id=&question=", "/health"],
+        "endpoints": ["/answer?question_id=&question=", "/health", "/ui"],
         "llm_mock": bool(getattr(get_client(), "is_mock", False)),
         "corpus_kind": get_store().corpus_kind,
         "note": "설정은 .env 참고. CLOVA_API_KEY 를 채우면 실연동으로 전환됩니다.",

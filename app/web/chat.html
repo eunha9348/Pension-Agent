@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>연금 Agent</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --line:#e2e5ea; --ink:#1c2128;
+    --muted:#6b7480; --accent:#1f6f4a; --accent-soft:#e8f2ec;
+    --warn-bg:#fff4e5; --warn-line:#f0c48a; --warn-ink:#8a5300;
+    --code:#f2f4f7;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#12151a; --panel:#181c22; --line:#2a3038; --ink:#e6e9ee;
+      --muted:#98a2b0; --accent:#5fbf8f; --accent-soft:#172b22;
+      --warn-bg:#2e2313; --warn-line:#6b4f22; --warn-ink:#e8b866;
+      --code:#1f242b;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",
+         "Malgun Gothic","Noto Sans KR",sans-serif;
+  }
+  header{
+    position:sticky; top:0; z-index:5; background:var(--panel);
+    border-bottom:1px solid var(--line); padding:12px 20px;
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  }
+  header h1{font-size:16px; margin:0; font-weight:650; letter-spacing:-.01em}
+  header .sub{color:var(--muted); font-size:12.5px}
+  .spacer{flex:1}
+  .pill{
+    font-size:12px; padding:3px 9px; border-radius:999px;
+    border:1px solid var(--line); color:var(--muted); white-space:nowrap;
+  }
+  .pill.ok{color:var(--accent); border-color:var(--accent); background:var(--accent-soft)}
+  main{max-width:900px; margin:0 auto; padding:20px 16px 190px}
+  .banner{
+    background:var(--warn-bg); border:1px solid var(--warn-line);
+    color:var(--warn-ink); padding:11px 14px; border-radius:10px;
+    font-size:13.5px; margin-bottom:18px;
+  }
+  .examples{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:20px}
+  .chip{
+    background:var(--panel); border:1px solid var(--line); color:var(--ink);
+    border-radius:999px; padding:7px 13px; font-size:13px; cursor:pointer;
+    font-family:inherit;
+  }
+  .chip:hover{border-color:var(--accent); color:var(--accent)}
+  .turn{margin-bottom:26px}
+  .q{
+    background:var(--accent-soft); border:1px solid var(--line);
+    border-radius:12px; padding:11px 15px; font-weight:600;
+    display:inline-block; max-width:100%;
+  }
+  .card{
+    background:var(--panel); border:1px solid var(--line);
+    border-radius:12px; margin-top:12px; overflow:hidden;
+  }
+  .card .body{padding:16px 18px; white-space:pre-wrap; word-break:break-word}
+  .meta{
+    padding:8px 18px; border-top:1px solid var(--line);
+    font-size:12.5px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap;
+  }
+  details{border-top:1px solid var(--line)}
+  summary{
+    padding:10px 18px; cursor:pointer; font-size:13.5px; color:var(--muted);
+    user-select:none;
+  }
+  summary:hover{color:var(--ink)}
+  details pre{
+    margin:0; padding:14px 18px; background:var(--code); overflow-x:auto;
+    font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    white-space:pre-wrap; word-break:break-word; max-height:460px;
+  }
+  .waiting{color:var(--muted); font-size:14px; padding:16px 18px}
+  .bar{height:3px; background:var(--line); border-radius:3px; overflow:hidden; margin-top:10px}
+  .bar i{display:block; height:100%; background:var(--accent); width:0; transition:width .4s linear}
+  footer{
+    position:fixed; left:0; right:0; bottom:0; background:var(--panel);
+    border-top:1px solid var(--line); padding:12px 16px;
+  }
+  .composer{max-width:900px; margin:0 auto; display:flex; gap:10px; align-items:flex-end}
+  textarea{
+    flex:1; resize:none; border:1px solid var(--line); border-radius:10px;
+    padding:11px 13px; font:inherit; background:var(--bg); color:var(--ink);
+    min-height:46px; max-height:150px;
+  }
+  textarea:focus{outline:2px solid var(--accent); outline-offset:-1px}
+  button.send{
+    background:var(--accent); color:#fff; border:0; border-radius:10px;
+    padding:0 20px; height:46px; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button.send:disabled{opacity:.5; cursor:not-allowed}
+  .hint{max-width:900px; margin:8px auto 0; font-size:12px; color:var(--muted)}
+  .err{color:#c0392b}
+  @media (prefers-color-scheme: dark){ .err{color:#ff8a7a} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>연금 Agent</h1>
+  <span class="sub">제10회 미래에셋증권 AI Festival</span>
+  <span class="spacer"></span>
+  <span class="pill" id="pill-corpus">코퍼스 확인 중</span>
+  <span class="pill" id="pill-llm">LLM 확인 중</span>
+</header>
+
+<main>
+  <div id="banner-slot"></div>
+
+  <div class="examples" id="examples"></div>
+
+  <div id="feed"></div>
+</main>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="연금 관련 질문을 입력하세요 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
+    <button class="send" id="send">질문</button>
+  </div>
+  <div class="hint">한 번의 질의마다 독립적으로 처리됩니다(평가 규격과 동일한 단일 요청). 보통 20~30초 걸립니다.</div>
+</footer>
+
+<script>
+const EXAMPLES = [
+  "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?",
+  "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+  "만 80세인데 연금 받을 때 세금 몇 퍼센트 떼나요?",
+  "집 사려고 IRP에서 중도인출하면 세금이 어떻게 되나요?",
+  "연금을 연 2000만원 받으면 1500만원 넘는 500만원에만 세금 붙나요?",
+];
+
+const $ = (s) => document.querySelector(s);
+const feed = $("#feed"), input = $("#input"), sendBtn = $("#send");
+let busy = false, seq = 0;
+
+// ── 예시 질문 ────────────────────────────────────────────────
+EXAMPLES.forEach((q) => {
+  const b = document.createElement("button");
+  b.className = "chip"; b.type = "button"; b.textContent = q;
+  b.onclick = () => { input.value = q; input.focus(); };
+  $("#examples").appendChild(b);
+});
+
+// ── 서버 상태 ────────────────────────────────────────────────
+// mock 코퍼스·mock LLM으로 돌고 있는 걸 모르고 쓰는 사고를 막는다.
+fetch("/").then(r => r.json()).then((s) => {
+  const real = s.corpus_kind !== "mock";
+  const pc = $("#pill-corpus");
+  pc.textContent = real ? "실물 코퍼스" : "mock 코퍼스";
+  pc.className = "pill" + (real ? " ok" : "");
+
+  const llmReal = !s.llm_mock;
+  const pl = $("#pill-llm");
+  pl.textContent = llmReal ? "HyperCLOVA X 연동" : "mock LLM";
+  pl.className = "pill" + (llmReal ? " ok" : "");
+
+  const warn = [];
+  if (!real) warn.push("mock 코퍼스로 동작 중입니다 — 실제 제공 문서가 아닙니다.");
+  if (!llmReal) warn.push("CLOVA 실연동 없이 mock LLM으로 동작 중입니다.");
+  if (warn.length) {
+    const d = document.createElement("div");
+    d.className = "banner";
+    d.textContent = "⚠ " + warn.join(" / ");
+    $("#banner-slot").appendChild(d);
+  }
+}).catch(() => {});
+
+// ── 답변 렌더링 ──────────────────────────────────────────────
+// 답변 본문에는 **굵게** 와 "─── 근거 문서 ───" 블록이 섞여 온다.
+function splitAnswer(text) {
+  const i = text.indexOf("─── 근거 문서");
+  return i === -1 ? [text, ""] : [text.slice(0, i).trimEnd(), text.slice(i)];
+}
+function esc(s) {
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+function fmt(s) {
+  return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+function addTurn(question) {
+  const wrap = document.createElement("div");
+  wrap.className = "turn";
+  const q = document.createElement("div");
+  q.className = "q"; q.textContent = question;
+  wrap.appendChild(q);
+
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = '<div class="waiting">답변을 만들고 있습니다… '
+    + '<span class="t">0.0초</span><div class="bar"><i></i></div></div>';
+  wrap.appendChild(card);
+
+  feed.appendChild(wrap);
+  wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+  return card;
+}
+
+function fillCard(card, data, secs) {
+  const [body, sources] = splitAnswer(data.answer || "");
+  card.innerHTML = "";
+
+  const b = document.createElement("div");
+  b.className = "body"; b.innerHTML = fmt(body);
+  card.appendChild(b);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = `${secs.toFixed(1)}초 · 근거 ${(data.retrieved_context || "").length.toLocaleString()}자`;
+  card.appendChild(meta);
+
+  const panes = [];
+  if (sources) panes.push(["답변에 인용된 근거 문서", sources.trim()]);
+  if (data.retrieved_context) panes.push(["검색된 근거 원문 (retrieved_context)", data.retrieved_context]);
+  if (data.think_trace) panes.push(["사고·추론 과정 (think_trace)", data.think_trace]);
+
+  panes.forEach(([label, content]) => {
+    const d = document.createElement("details");
+    const s = document.createElement("summary");
+    s.textContent = label;
+    const p = document.createElement("pre");
+    p.textContent = content;
+    d.append(s, p);
+    card.appendChild(d);
+  });
+}
+
+function fillError(card, msg) {
+  card.innerHTML = "";
+  const b = document.createElement("div");
+  b.className = "body err";
+  b.textContent = "요청에 실패했습니다 — " + msg;
+  card.appendChild(b);
+}
+
+// ── 전송 ─────────────────────────────────────────────────────
+async function ask() {
+  const q = input.value.trim();
+  if (!q || busy) return;
+  busy = true; sendBtn.disabled = true;
+  input.value = ""; input.style.height = "auto";
+
+  const card = addTurn(q);
+  const t0 = performance.now();
+  const timer = setInterval(() => {
+    const s = (performance.now() - t0) / 1000;
+    const el = card.querySelector(".t");
+    if (el) el.textContent = s.toFixed(1) + "초";
+    const bar = card.querySelector(".bar i");
+    // 45초 예산 기준으로 눈금만 채운다 (실제 진행률이 아니라 경과 표시)
+    if (bar) bar.style.width = Math.min(96, (s / 45) * 100) + "%";
+  }, 100);
+
+  const id = "UI-" + String(++seq).padStart(3, "0");
+  const url = "/answer?question_id=" + encodeURIComponent(id)
+            + "&question=" + encodeURIComponent(q);
+
+  try {
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 120000);
+    const res = await fetch(url, { signal: ctl.signal });
+    clearTimeout(to);
+    const secs = (performance.now() - t0) / 1000;
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    fillCard(card, await res.json(), secs);
+  } catch (e) {
+    fillError(card, e.name === "AbortError" ? "응답이 120초를 넘었습니다" : String(e.message || e));
+  } finally {
+    clearInterval(timer);
+    busy = false; sendBtn.disabled = false; input.focus();
+  }
+}
+
+sendBtn.onclick = ask;
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
+});
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(150, input.scrollHeight) + "px";
+});
+input.focus();
+</script>
+</body>
+</html>
