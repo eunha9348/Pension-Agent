@@ -73,6 +73,14 @@ _AMOUNT_HINTS = ("limit", "한도", "세액", "금액", "공제", "T_", "A_", "P
 _SKIP_KEYS = {"source", "rate_source", "DEPRECATED", "note", "⚠️", "기준", "action",
               "doc_id", "markers", "is_legacy_suspect", "reason", "params", "label"}
 
+# ⚠️ False일 때는 아예 싣지 않는 플래그.
+#    "연간 납입한도(1,800만원) 초과 = 아니오"는 아무 정보도 주지 않으면서
+#    경고처럼 읽힌다. 실제로 900만원 납입 건에서 L5'가 이 줄을 보고
+#    "연간 납입한도를 초과했습니다"라고 쓴 사례가 있다(300건 감사 A03).
+#    ⚠️ eligible(가입 가능)처럼 **False가 곧 결론인 키는 넣지 말 것.**
+#    "가입 가능 = 아니오"는 반드시 답변에 실려야 한다.
+_SKIP_IF_FALSE = {"IsLimitExceeded", "special_rule_applied"}
+
 
 def _is_rate(key: str, value: float) -> bool:
     k = key.lower()
@@ -137,6 +145,8 @@ def render_calc_result(result: Any, indent: str = "  ") -> str:
     lines = []
     for k, v in result.items():
         if k in _SKIP_KEYS:
+            continue
+        if k in _SKIP_IF_FALSE and v is False:
             continue
         if isinstance(v, dict):
             lines.append(f"{indent}{label_of(k)}:")

@@ -66,7 +66,12 @@ SUPERVISOR_SYSTEM_PROMPT = """당신은 연금 상담 답변을 작성하는 상
 
 [한계 고지]
 확인이 필요한 항목, 제공 자료 밖 기준을 쓴 부분, 개인 사정에 따라
-달라지는 부분. 없으면 "추가 확인이 필요한 사항은 없습니다."
+달라지는 부분. 적을 것이 없으면 이 답변이 무엇을 근거로 한 일반 기준인지
+한 문장으로 밝히십시오.
+⚠️ "추가 확인이 필요한 사항은 없습니다" 같은 **완결 선언은 쓰지 마십시오.**
+   검색이 빗나갔는지 여부를 이 단계에서는 알 수 없으므로, 근거가 엉뚱해도
+   확신에 찬 문장이 그대로 나갑니다. 실제로 무관한 회사 연혁을 근거로
+   답하면서 이 문구를 붙인 사례가 있습니다.
 
 한국어로, 상담원의 어조로 작성하십시오."""
 
@@ -196,7 +201,12 @@ def render_template_answer(query_spec: dict,
     if missing:
         limits.append(", ".join(missing) + "은(는) 제공 자료로 확정하기 어렵습니다")
     if not limits:
-        limits.append("추가 확인이 필요한 사항은 없습니다.")
+        # ⚠️ "추가 확인이 필요한 사항은 없습니다"를 쓰면 안 된다.
+        #    이 시점에서는 검색이 빗나갔는지 알 수 없다. 실제로 무관한 회사
+        #    연혁을 근거로 답하면서 이 문구를 붙인 사례가 있다(300건 감사).
+        #    완결을 선언하는 대신 무엇을 근거로 한 기준인지 밝힌다.
+        limits.append("제공 자료 범위에서 확인한 일반 기준입니다. "
+                      "개별 계좌·상품·가입 시점에 따라 달라질 수 있습니다")
     lines.extend(f"· {l}" for l in limits)
 
     return "\n".join(lines)
@@ -224,6 +234,15 @@ def _evidence_snippet(evidence: list[EvidenceChunk], doc_ids: list[str],
     # 순위(안정 정렬)를 유지하면서 관련도가 높은 청크를 앞으로
     ordered = sorted((c for c in evidence if c.doc_id in doc_ids),
                      key=_relevance, reverse=True)
+
+    # ⚠️ 슬롯 핵심어가 **하나도** 없는 청크는 인용하지 않는다.
+    #    이 인용문은 [조건별 결론] 자리에 그대로 들어간다. 검색이 빗나갔을 때
+    #    무관한 원문이 답변 본문이 되어 나가는 경로가 여기다 — 실측 감사에서
+    #    ESG 회사 연혁이 '국민연금 제도'의 근거로, 펀드 클래스 표가
+    #    '주택연금 가입연령'의 근거로 실렸다.
+    #    근거를 못 찾았다고 밝히는 편이 엉뚱한 원문을 내미는 것보다 낫다.
+    if kws and ordered and _relevance(ordered[0]) == 0:
+        return ""
 
     for c in ordered:
         text = " ".join(c.text.split())

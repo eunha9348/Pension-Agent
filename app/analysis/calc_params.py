@@ -229,8 +229,11 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
         #    금액을 요구하며 계산을 통째로 접었고, 답변에서 3.3%가 통째로
         #    빠졌다(평가 E-14). 산출 가능한 것은 내주고, 금액이 필요한
         #    부분만 확인 요청으로 돌린다.
+        # ⚠️ default를 0.0이 아니라 None으로 둔다. '0원을 받는다'와 '수령액을
+        #    모른다'는 다르다 — 0을 넘기면 "원천징수세액 0만원"이라는
+        #    맞지만 오해를 부르는 답이 나간다(300건 감사 지적).
         ParamSpec("P_private_monthly", _get("private_pension_monthly_manwon"),
-                  required=False, default=0.0,
+                  required=False, default=None,
                   assumption="월 연금수령액을 알려주지 않으셔서 세율만 계산했습니다. "
                              "실제 원천징수 세액은 수령액에 따라 달라집니다",
                   ask_back="월 연금수령액"),

@@ -83,6 +83,43 @@ class _TextExtractor(HTMLParser):
         return re.sub(r'\n\s*\n+', '\n', out).strip()
 
 
+# 같은 글자가 2회 연속인 쌍이 4번 이상 이어지는 구간.
+# PDF 텍스트 레이어가 이중으로 그려졌을 때 나타난다 —
+#   원문 "…× 120 ÷ (11 − 연금수령연차)…"
+#   추출 "…× 112200 ((1111 -- 연연금금수수령령연연차차))…"
+# 4쌍 이상을 요구하므로 "1100원", "가입자가" 같은 정상 표현은 걸리지 않는다
+# (mock 코퍼스 26개 파일 전수 확인 결과 오탐 0건).
+_DOUBLE_CHAR = r'[가-힣0-9A-Za-z(),.\-−×÷%]'
+# ① 오염 판정용 — 4쌍 이상 연속. 정상 문서에서는 사실상 나오지 않는다.
+_DOUBLED_STRONG = re.compile(rf'(?:({_DOUBLE_CHAR})\1){{4,}}')
+# ② 복구용 — 2쌍 이상. ①로 오염이 확인된 텍스트 안에서만 쓴다.
+_DOUBLED_WEAK = re.compile(rf'(?:({_DOUBLE_CHAR})\1){{2,}}')
+
+
+def looks_doubled(text: str) -> bool:
+    """이중 렌더링으로 깨진 텍스트인가 (고신뢰 판정)."""
+    return bool(text) and _DOUBLED_STRONG.search(text) is not None
+
+
+def repair_doubled_glyphs(text: str) -> str:
+    """이중으로 그려진 PDF 텍스트에서 중복 글자를 걷어낸다.
+
+    ━━ 왜 2단계인가 ━━
+    전역으로 중복을 지우면 "1100원", "가입"처럼 정상 표기가 망가진다.
+    그렇다고 임계값을 높게(4쌍) 잡으면 "112200"(=120), "평가가액액"(=평가액)
+    처럼 **짧게 끊긴 구간**을 놓친다. 실제 깨짐은 이 둘이 섞여 나온다:
+        원문 "평가액 × 120 ÷ (11 − 연금수령연차)"
+        추출 "평가가액액 × 112200 ((1111 -- 연연금금수수령령연연차차))"
+
+    그래서 ① 4쌍 이상이라는 **높은 문턱으로 오염된 텍스트를 먼저 특정**하고,
+    ② 그 안에서만 2쌍 이상을 복구한다. 정상 텍스트는 ①에서 걸러져
+    아예 손대지 않으므로 오탐이 번지지 않는다.
+    """
+    if not looks_doubled(text):
+        return text
+    return _DOUBLED_WEAK.sub(lambda m: m.group(0)[::2], text)
+
+
 def _decode(raw: bytes) -> str:
     for enc in ("utf-8", "utf-8-sig", "cp949", "euc-kr"):
         try:

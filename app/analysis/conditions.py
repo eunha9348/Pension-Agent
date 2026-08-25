@@ -38,6 +38,52 @@ _COMBINED_SIGNALS = ("합쳐", "합산", "합해", "다 합", "총합", "같이 
 _NEAR_WINDOW = 25
 
 
+# 금액 뒤에 이 말이 오면 잔고가 아니라 **납입액**이다.
+_CONTRIB_VERB = re.compile(r'(납입|넣|불입|납부|적립하|저축하)')
+_CONTRIB_WINDOW = 14        # "900만원을 한꺼번에 납입" 정도까지 본다
+
+
+def _followed_by_contribution(question: str, value: float) -> bool:
+    """그 금액 표현 바로 뒤에 납입 동사가 오는가.
+
+    "연금계좌에 900만원 **납입**하면" → True (납입액)
+    "계좌에 1억원 **있고**"            → False (평가액)
+    """
+    for start, end, v in parse_amount_expressions(question or ""):
+        if v == value:
+            if _CONTRIB_VERB.search(question[end:end + _CONTRIB_WINDOW]):
+                return True
+    return False
+
+
+# 금액 앞뒤에 이 말이 붙으면 납입액이 아니라 **잔고**다.
+_BALANCE_NOUN = ("평가액", "평가금액", "적립금", "잔고", "잔액", "모아둔", "쌓인")
+_BALANCE_VERB = re.compile(r'(있|쌓여|모았|모아|보유)')
+
+
+def _is_balance_amount(question: str, value: float) -> bool:
+    """그 금액이 납입액이 아니라 계좌 잔고를 가리키는가.
+
+    "IRP **평가액**이 3억원"        → True  (잔고)
+    "IRP에 **적립금** 5000만원 있는데" → True  (잔고)
+    "IRP에 900만원 **넣으면**"       → False (납입액)
+
+    ━━ 왜 필요한가 ━━
+    잔고를 납입액으로 읽으면 세액공제를 3억원 납입 기준으로 계산한다.
+    연 납입한도가 1,800만원이므로 애초에 불가능한 전제다.
+    """
+    q = question or ""
+    for start, end, v in parse_amount_expressions(q):
+        if v != value:
+            continue
+        before = q[max(0, start - 12):start]
+        if any(n in before for n in _BALANCE_NOUN):
+            return True
+        if _BALANCE_VERB.search(q[end:end + 8]):
+            return True
+    return False
+
+
 def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[float]:
     """키워드에 **가장 가까운 금액 표현 하나**를 고른다.
 
@@ -149,8 +195,15 @@ def derive_conditions(question: str,
         c["join_before_2013"] = True
 
     # ── 금액 ──
+    # ⚠️ 잔고를 납입액으로 읽으면 안 된다. "IRP 평가액이 3억원인데 세액공제는?"
+    #    에서 3억을 납입액으로 잡으면 연 납입한도(1,800만원)로는 불가능한
+    #    전제로 세액공제를 계산한다.
     saving = _find_amount_near(q, ("연금저축", "연저축"))
+    if saving is not None and _is_balance_amount(q, saving):
+        saving = None
     irp = _find_amount_near(q, ("IRP", "irp", "개인형"))
+    if irp is not None and _is_balance_amount(q, irp):
+        irp = None
     if (saving is not None and saving == irp
             and any(k in q for k in _COMBINED_SIGNALS)):
         # "연금저축이랑 IRP 합쳐서 900만원" — 같은 절에서 두 계좌가 같은 금액으로
@@ -167,8 +220,26 @@ def derive_conditions(question: str,
             c["irp_manwon"] = irp
     if (sev := _find_amount_near(q, ("퇴직금", "퇴직급여", "명예퇴직", "명퇴"))) is not None:
         c["severance_manwon"] = sev
-    if (av := _find_amount_near(q, ("평가액", "적립금", "잔고", "계좌에", "쌓여", "모았"))) is not None:
-        c["account_value_manwon"] = av
+    # ⚠️ '계좌에'는 잔고 표지가 아니라 **위치 표지**다. "연금계좌에 900만원
+    #    납입하면"의 900은 평가액이 아니라 납입액인데, 예전에는 평가액으로
+    #    읽어 세액공제 계산이 통째로 빗나갔다(300건 감사 A03).
+    #    금액 바로 뒤에 납입 동사가 오면 잔고로 보지 않는다.
+    if (av := _find_amount_near(q, ("평가액", "적립금", "잔고", "계좌에",
+                                    "쌓여", "모았"))) is not None:
+        if not _followed_by_contribution(q, av):
+            c["account_value_manwon"] = av
+
+    # "연금계좌에 900만원 납입" — 연금계좌는 연금저축과 퇴직연금을 아우르는
+    # 상위 개념이라 어느 쪽에도 안 걸린다. 구분이 없으므로 합산으로 본다
+    # (연금저축·IRP 합산이 확인되지 않을 때와 같은 처리 · 가정은 고지한다).
+    if not any(k in c for k in ("pension_saving_manwon", "irp_manwon",
+                                "combined_contribution_manwon")):
+        pc = _find_amount_near(q, ("연금계좌", "연금 계좌"))
+        if pc is not None and _followed_by_contribution(q, pc):
+            c["combined_contribution_manwon"] = pc
+            c.setdefault("condition_notes", []).append(
+                "연금저축과 IRP의 납입액 구분이 확인되지 않아 합산액 기준으로 계산했습니다. "
+                "연금저축 단독 납입액이 600만원을 넘으면 결과가 달라질 수 있습니다")
     if (inc := _find_amount_near(q, ("총급여", "연봉", "종합소득"))) is not None:
         c["total_income_manwon"] = inc
         c["income_type"] = "종합소득" if "종합소득" in q else "총급여"

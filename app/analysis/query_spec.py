@@ -144,6 +144,21 @@ class TopicRule:
     # "한도" 같은 일반어를 키워드로 쓰면 다른 주제(세액공제 한도)까지 끌어오므로,
     # 넓은 키워드에는 반드시 배제어를 함께 둔다.
     exclude: tuple[str, ...] = ()
+    # 계산 슬롯을 만들 조건이 되는 conditions 키. 비어 있으면 **항상** 만든다
+    # (기존 동작). 지정하면 아래 셋 중 하나라도 성립할 때만 계산 슬롯을 만들고,
+    # 아니면 사실 슬롯만 남긴다.
+    #   ① 이 키 중 하나가 conditions에 있다 (계산에 넣을 사용자 값이 있다)
+    #   ② 질의가 그 값 자체를 직접 묻는다 ("얼마", "몇 퍼센트" …)
+    #
+    # ━━ 왜 필요한가 ━━
+    # 주제어 하나로 계산을 걸면, 그 단어가 들어갔을 뿐 계산과 무관한 질의까지
+    # 계산 결과를 답변 자리에 받는다. 실측 300건에서 43건이 납입액 없이
+    # 세액공제 계산으로 라우팅돼 **전부 같은 한도 카드**를 답으로 받았다
+    # ("배우자 명의로 납입해도 공제되나요?", "연말정산 서류가 뭔가요?" 까지).
+    # 그 43건 중 PASS는 3건뿐이었고, 그 3건은 실제로 한도를 묻는 질의였다.
+    #
+    # 사실 슬롯은 그대로 남으므로 검색·함정 유도는 영향받지 않는다.
+    calc_needs: tuple[str, ...] = ()
 
 
 # 순서가 중요하다 — 앞의 규칙이 더 구체적인 주제다.
@@ -159,9 +174,17 @@ TOPIC_RULES: list[TopicRule] = [
     TopicRule("연금수령연차", ("연차", "기산", "2013"),
               "suryeong_yeoncha", "연금수령연차 기산",
               "연금수령연차_계산", "연금수령연차 기산 규칙"),
-    TopicRule("세액공제", ("세액공제", "공제한도", "공제 한도", "소득공제"),
+    # '환급·돌려받다'는 사용자가 세액공제를 부르는 가장 흔한 말이다.
+    # 이게 없어서 "IRP에 900만원 넣으면 얼마나 돌려받나요?"가 주제 미매칭으로
+    # 떨어져 계산이 아예 안 돌았고, 숫자를 LLM이 지어냈다(300건 감사 A03·A04).
+    # 다만 퇴직소득세 환급·투자손실 환급은 전혀 다른 제도라 배제한다.
+    TopicRule("세액공제", ("세액공제", "공제한도", "공제 한도", "소득공제",
+                        "환급", "돌려받", "돌려 받"),
               "seaek_gongje", "연금저축·IRP 세액공제",
-              "사적연금_납입한도_세액공제_계산", "연금저축·IRP 세액공제 한도"),
+              "사적연금_납입한도_세액공제_계산", "연금저축·IRP 세액공제 한도",
+              exclude=("퇴직소득세", "손실"),
+              calc_needs=("pension_saving_manwon", "irp_manwon",
+                          "combined_contribution_manwon")),
     TopicRule("과세방식", ("분리과세", "종합과세", "1500", "1,500", "천오백"),
               "gwase_bangsik", "1,500만원 초과 시 과세방식 선택",
               "과세방식_비교_계산", "연금소득 과세방식 선택 기준"),
@@ -209,6 +232,24 @@ def _match_topics(question: str) -> list[TopicRule]:
     return out[:3]      # 슬롯이 너무 많으면 답변이 산만해진다
 
 
+# 계산 결과 값 자체를 묻는 표현. 이게 있으면 사용자 값이 없어도 계산한다
+# ("세액공제 한도가 **얼마**인가요?" 는 상수라도 그 상수가 곧 답이다).
+_VALUE_ASK = ("얼마", "몇 퍼센트", "몇%", "몇 %", "얼마나 되", "계산")
+
+
+def _wants_calc(rule: TopicRule, question: str, conditions: dict) -> bool:
+    """이 주제에서 계산 슬롯을 만들어야 하는가.
+
+    calc_needs가 비어 있으면 기존대로 항상 만든다 — 규칙별로 근거를 확인한
+    것만 좁힌다. 근거 없이 전부에 걸면 그게 또 다른 오작동이 된다.
+    """
+    if not rule.calc_needs:
+        return True
+    if any(k in conditions for k in rule.calc_needs):
+        return True
+    return any(a in question for a in _VALUE_ASK)
+
+
 def rule_based_spec(question: str) -> dict:
     """LLM 없이 질의 스펙을 만든다."""
     conditions = derive_conditions(question)
@@ -225,7 +266,7 @@ def rule_based_spec(question: str) -> dict:
                 "description": r.fact_description,
                 "type": "fact", "required": True,
             })
-        if r.calc_function:
+        if r.calc_function and _wants_calc(r, question, conditions):
             asked_for.append({
                 "id": f"{r.slot_id}_calc",
                 "description": r.description,

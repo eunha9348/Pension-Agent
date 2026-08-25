@@ -125,8 +125,16 @@ def calc_private_contribution_limit(X_pension_saving=None, Y_irp_personal=None,
     return out
 
 
-def calc_private_withholding(P_private_monthly: float, Age: int, IsAnnuityType: bool) -> dict:
+def calc_private_withholding(P_private_monthly=None, Age=None,
+                             IsAnnuityType: bool = False) -> dict:
     """[2.2] 사적연금 원천징수세율 및 1,500만원 초과분 산출.
+
+    ━━ 수령액을 모르면 세액을 내지 않는다 ━━
+    세율은 나이·수령형태만으로 정해지지만 **세액은 수령액이 있어야** 나온다.
+    예전에는 수령액이 없을 때 0으로 굴려서 "원천징수세액 = 0만원",
+    "1,500만원 초과분 = 0만원"을 출력했다. 0원은 사실이 아니라 **미입력**인데,
+    사용자에게는 "세금이 0원"으로 읽힌다. 실측 300건 감사에서 지적됐다.
+    한도만 아는 경우 한도만 냈던 calc_private_contribution_limit과 같은 원칙이다.
 
     ⚠️ 규격서 원문 순서상 IsAnnuityType 체크가 Age 체크보다 먼저 적용됩니다.
        즉 '종신형 + 80세 이상' 조합은 3.3%가 아니라 4.4%로 계산됩니다.
@@ -136,6 +144,11 @@ def calc_private_withholding(P_private_monthly: float, Age: int, IsAnnuityType: 
        프로젝트 내 세제 관련 원본 문서로 재확인 후 필요시 분기 순서만
        바꾸면 됩니다 (로직 구조는 그대로 유지 가능).
     """
+    if Age is None:
+        # 연령별 차등과세의 기준이라 임의 가정이 불가능하다. 조용히 기본값을
+        # 쓰면 55세 미만으로 취급돼 16.5%가 나가므로 예외로 끊는다.
+        raise ValueError("Age는 필수입니다 — 연령별 차등과세의 기준입니다")
+
     if IsAnnuityType:
         r = 0.044
     elif Age >= 80:
@@ -147,14 +160,16 @@ def calc_private_withholding(P_private_monthly: float, Age: int, IsAnnuityType: 
     else:
         r = 0.165  # 55세 미만 해지/수령 시 기타소득세 기준
 
+    out = {"r_withholding": r}
+    if P_private_monthly is None:
+        out["note"] = ("월 수령액이 확인되지 않아 세율만 안내합니다. "
+                       "원천징수세액은 수령액에 따라 달라집니다.")
+        return out
+
     P_annual = 12 * P_private_monthly
-    T_withholding = min(P_annual, 1500) * r
-    P_excess = max(0.0, P_annual - 1500)
-    return {
-        "r_withholding": r,
-        "T_withholding": round(T_withholding, 4),
-        "P_private_excess": round(P_excess, 4),
-    }
+    out["T_withholding"] = round(min(P_annual, 1500) * r, 4)
+    out["P_private_excess"] = round(max(0.0, P_annual - 1500), 4)
+    return out
 
 
 # ════════════════════════════════════════════════

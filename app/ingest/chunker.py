@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.ingest.loader import repair_doubled_glyphs
 from app.ingest.zip_parser import ParsedDocument, Page
 
 # 목표 청크 길이(문자). 너무 길면 근거 인용이 뭉툭해지고,
@@ -153,6 +154,10 @@ def chunk_document(doc: ParsedDocument,
         if not buf:
             return
         text = "\n".join(b.text for b in buf).strip()
+        # ⚠️ 이중 렌더링 PDF 복구는 **locator를 뽑기 전에** 해야 한다.
+        #    조항 표기가 "제제6666조조"처럼 깨진 채로 굳으면 근거 표기까지
+        #    망가진다. 여기가 모든 텍스트가 반드시 지나가는 단일 지점이다.
+        text = repair_doubled_glyphs(text)
         if not text:
             buf.clear()
             return
