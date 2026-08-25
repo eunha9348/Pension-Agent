@@ -14,7 +14,7 @@ import pytest
 
 from app.analysis.conditions import derive_conditions
 from app.analysis.calc_params import make_calc_params_builder
-from app.analysis.query_spec import rule_based_spec
+from app.analysis.query_spec import reconcile_spec, rule_based_spec, sanitize_spec
 from app.core.coverage_pipeline import (RequirementSlot, SlotStatus,
                                         run_calculations)
 from app.generation.render import render_calc_result
@@ -275,3 +275,87 @@ def test_가입불가는_False라도_반드시_싣는다():
 
     assert "eligible" not in _SKIP_IF_FALSE
     assert render_calc_result({"eligible": False}).strip() != ""
+
+
+# ════════════════════════════════════════════════════════════════
+# 실서버 재검증에서 발견된 결함 2건 (CHK-03, 300건 감사와 무관한 신규 발견)
+# ════════════════════════════════════════════════════════════════
+# 위 라우팅 수정을 서버에 반영한 뒤 실제 응답으로 재검증하는 과정에서
+# 발견됐다. 300건 감사에는 없던, 라우팅 수정이 계산 슬롯을 더 자주 만들게
+# 되면서 비로소 드러난 결함들이다.
+
+def test_같은_키에_규칙값이_없어도_원문_금액을_천장으로_쓴다():
+    """900만원 납입인데 L1이 pension_saving_manwon=9,000,000을 준 사례.
+
+    규칙 파서는 이 질의에서 combined_contribution_manwon만 채우고
+    pension_saving_manwon은 비워 둔다. 예전 가드는 "같은 키에 규칙값이
+    있을 때만" 비교했으므로, 비교 대상이 없어 900만배 부풀려진 값이
+    그대로 통과했다. 그 결과 900만원 납입인데 "연간 납입한도(1,800만원)
+    초과"로 잘못 표시됐다.
+    """
+    question = "총급여 5천만원 근로자가 연금계좌에 900만원 납입하면 환급액은 얼마인가요?"
+    c = derive_conditions(question, llm_conditions={"pension_saving_manwon": 9000000})
+    assert "pension_saving_manwon" not in c
+    assert c.get("combined_contribution_manwon") == 900
+
+    from app.core.pension_calc_functions import calc_private_contribution_limit
+
+    out = calc_private_contribution_limit(
+        c.get("pension_saving_manwon"), c.get("combined_contribution_manwon"), 0.165)
+    assert out["IsLimitExceeded"] is False
+    assert out["A_tax_credit"] == pytest.approx(148.5)
+
+
+def test_정상_LLM_금액은_그대로_유지된다():
+    """오염 방어가 정상 값까지 지우면 안 된다 — 양방향 회귀."""
+    c = derive_conditions("계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+                          llm_conditions={"account_value_manwon": 10000, "pension_year": 1})
+    assert c.get("account_value_manwon") == 10000
+
+
+def test_같은_자릿수_내_미세_차이는_LLM_값을_따른다():
+    """자릿수가 어긋난 게 아니라 L1이 문맥을 더 정확히 읽은 경우다."""
+    c = derive_conditions("계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?",
+                          llm_conditions={"account_value_manwon": 10000.5})
+    assert c.get("account_value_manwon") == pytest.approx(10000.5)
+
+
+def test_LLM이_자기_표현으로_낸_계산_슬롯이_규칙_슬롯과_중복되지_않는다():
+    """L1이 파라프레이즈한 설명으로 계산 슬롯을 내면, 규칙이 같은 계산함수를
+    다시 추가해 [조건별 결론]에 같은 계산 결과가 두 번 실렸다(id는 다르지만
+    calc_function이 같은 경우 — 예전 dedup은 id로만 걸렀다).
+    """
+    question = "총급여 5천만원 근로자가 연금계좌에 900만원 납입하면 환급액은 얼마인가요?"
+    fb = rule_based_spec(question)
+    llm = sanitize_spec({
+        "intent": "세액공제",
+        "asked_for": [
+            {"id": "s1", "description": "총급여 5천만 원 근로자의 세액 공제 후 환급액",
+             "type": "calculation", "required": True,
+             "calc_function": TAX_CREDIT_FN},
+        ],
+        "search_terms": [], "plan": [],
+    }, question)
+    out = reconcile_spec(llm, fb, question)
+    fns = [s.get("calc_function") for s in out["asked_for"] if s.get("calc_function")]
+    assert fns.count(TAX_CREDIT_FN) == 1, f"계산 슬롯이 중복됐다: {fns}"
+    assert len(out["planned_calls"]) == len(
+        {c["function"] for c in out["planned_calls"]}), "planned_calls도 중복 없어야 한다"
+
+
+def test_규칙_계산슬롯_dedup이_사실_슬롯까지_지우지_않는다():
+    """계산은 중복 제거하되, 근거 검색을 유도하는 사실 슬롯은 남아야 한다."""
+    question = "총급여 5천만원 근로자가 연금계좌에 900만원 납입하면 환급액은 얼마인가요?"
+    fb = rule_based_spec(question)
+    llm = sanitize_spec({
+        "intent": "세액공제",
+        "asked_for": [
+            {"id": "s1", "description": "환급액",
+             "type": "calculation", "required": True,
+             "calc_function": TAX_CREDIT_FN},
+        ],
+        "search_terms": [], "plan": [],
+    }, question)
+    out = reconcile_spec(llm, fb, question)
+    ids = [s["id"] for s in out["asked_for"]]
+    assert "seaek_gongje_fact" in ids

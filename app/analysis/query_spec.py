@@ -484,7 +484,16 @@ def reconcile_spec(spec: dict, fallback: dict, question: str) -> dict:
     llm_slots = list(out.get("asked_for") or [])
     rule_slots = list(fallback.get("asked_for") or [])
     seen = {s.get("id") for s in llm_slots}
-    missing = [s for s in rule_slots if s.get("id") not in seen]
+    # ⚠️ id뿐 아니라 calc_function으로도 걸러야 한다. L1이 자기 표현으로 쓴
+    # 슬롯("총급여 5천만 원 근로자의 … 환급액", id=s1)과 규칙 슬롯
+    # (id=seaek_gongje_calc)이 **같은 계산함수**를 가리키면, id가 달라 이
+    # 필터를 통과해 계산 결과가 [조건별 결론]에 두 번 실렸다(300건 감사에서
+    # 발견). 규칙 슬롯은 이미 계획 감사·화이트리스트를 통과한 함수만 골라
+    # 두므로, LLM이 같은 함수를 이미 물었다면 규칙 쪽은 중복이다.
+    llm_calc_fns = {s.get("calc_function") for s in llm_slots if s.get("calc_function")}
+    missing = [s for s in rule_slots
+              if s.get("id") not in seen
+              and not (s.get("calc_function") and s.get("calc_function") in llm_calc_fns)]
 
     if missing:
         # 오분류 경로는 규칙 슬롯을 앞세우는 것으로 이미 우선순위가 정해져

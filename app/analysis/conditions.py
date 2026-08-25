@@ -132,7 +132,8 @@ _NUMERIC_CONDITION_KEYS = {"age", "pension_year", "actual_receipt_year",
 _UNIT_CONFUSION_RATIO = 100.0
 
 
-def _unit_confusion(key: str, rule_value, llm_value) -> bool:
+def _unit_confusion(key: str, rule_value, llm_value,
+                    text_ceiling: Optional[float] = None) -> bool:
     """L1이 준 금액이 단위를 잘못 잡은 것으로 보이는가.
 
     ━━ 왜 필요한가 ━━
@@ -145,14 +146,29 @@ def _unit_confusion(key: str, rule_value, llm_value) -> bool:
     규칙 파싱은 사용자가 쓴 글자("1억 원")를 명시적 단위 변환으로 읽은
     것이므로, 자릿수가 크게 어긋나면 규칙 쪽을 믿는다. 같은 자릿수 안의
     차이는 L1이 문맥을 더 잘 봤을 수 있으므로 그대로 둔다.
+
+    ━━ text_ceiling — 같은 키에 규칙값이 없을 때 ━━
+    규칙이 이 키를 아예 못 채운 경우(예: "연금계좌에 900만원"처럼 연금저축/
+    IRP 구분이 없어 combined_contribution_manwon만 채워지고
+    pension_saving_manwon은 비는 경우), 비교 대상이 없어 가드가 통째로
+    무력화됐다. 실제로 L1이 900을 9,000,000으로 잘못 준 값이 그대로 통과해,
+    900만원 납입인데 "연간 납입한도(1,800만원) 초과"로 잘못 표시됐다.
+
+    질의 원문에 실제로 등장한 금액 중 **가장 큰 값**을 대신 천장으로 쓴다.
+    L1은 추출기이지 계산기가 아니므로, 답이 어떤 _manwon이든 원문에 쓰인
+    숫자 중 하나에서 나왔어야 한다. 원문 최대값보다 100배 이상 크면
+    거의 확실히 원·만원 단위 혼동이다.
     """
     if not key.endswith("_manwon"):
         return False
-    if not isinstance(rule_value, (int, float)) or rule_value <= 0:
-        return False        # 규칙이 못 읽었으면 L1 값이 유일한 정보다
+    baseline = rule_value
+    if not isinstance(baseline, (int, float)) or baseline <= 0:
+        baseline = text_ceiling
+    if not isinstance(baseline, (int, float)) or baseline <= 0:
+        return False        # 비교할 게 아무것도 없으면 L1 값이 유일한 정보다
     if llm_value <= 0:
         return True         # 금액이 0 이하일 수는 없다
-    ratio = max(rule_value, llm_value) / min(rule_value, llm_value)
+    ratio = max(baseline, llm_value) / min(baseline, llm_value)
     return ratio >= _UNIT_CONFUSION_RATIO
 
 
@@ -313,6 +329,11 @@ def derive_conditions(question: str,
     #    format_manwon()이 float()으로 변환하다 죽었고, 그 예외가 위로
     #    뚫고 나가 요청 전체가 실패했다. LLM 출력은 신뢰할 수 없는 입력이므로
     #    경계에서 막아야 한다 — 원거리에서 죽으면 원인을 찾기도 어렵다.
+    # 원문에 실제로 쓰인 금액 중 최댓값. 같은 키에 규칙값이 없을 때
+    # _unit_confusion의 비교 천장으로 쓴다.
+    _text_amounts = [v for _, _, v in parse_amount_expressions(q)]
+    _text_ceiling = max(_text_amounts) if _text_amounts else None
+
     for k, v in (llm_conditions or {}).items():
         if v in (None, "", []):
             continue
@@ -328,12 +349,18 @@ def derive_conditions(question: str,
                 val = float(v)
             except (TypeError, ValueError):
                 continue    # 숫자가 아니면 조용히 버린다 — 지어낼 수 없다
-            if _unit_confusion(k, c.get(k), val):
-                # 규칙이 읽은 값을 지키고, 버렸다는 사실을 남긴다
-                c.setdefault("condition_notes", []).append(
-                    f"질의에서 읽은 금액({_fmt(c[k])}만원)과 분석 결과"
-                    f"({_fmt(val)}만원)의 자릿수가 크게 달라, 질의 원문에서 읽은 "
-                    f"값으로 계산했습니다")
+            if _unit_confusion(k, c.get(k), val, _text_ceiling):
+                # 규칙이 읽은 값이 있으면 그 값을 지키고, 없으면(천장값만으로
+                # 걸린 경우) 아예 버린다 — 지어낼 근거가 없다.
+                if k in c:
+                    c.setdefault("condition_notes", []).append(
+                        f"질의에서 읽은 금액({_fmt(c[k])}만원)과 분석 결과"
+                        f"({_fmt(val)}만원)의 자릿수가 크게 달라, 질의 원문에서 읽은 "
+                        f"값으로 계산했습니다")
+                else:
+                    c.setdefault("condition_notes", []).append(
+                        f"분석 결과({_fmt(val)}만원)가 질의 원문의 금액과 자릿수가 "
+                        f"크게 달라 반영하지 않았습니다")
                 continue
             c[k] = val
         else:
