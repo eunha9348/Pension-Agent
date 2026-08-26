@@ -264,7 +264,13 @@ def derive_conditions(question: str,
     if (m := re.search(r'(?:매달|매월|월)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q)):
         if (v := parse_amount_to_manwon(m.group(1))) is not None:
             c["private_pension_monthly_manwon"] = v
-    if (m := re.search(r'(?:연간|1년에|해마다|매년)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q)):
+    # ⚠️ '연간'만 받으면 안 된다. "연 1200만원 받으면"처럼 '연간'의 축약형인
+    #    맨 '연'이 훨씬 흔한데, 그동안 이 규칙에 없어서 원천징수 계산에
+    #    쓸 금액이 통째로 안 잡혔다(실측 감사 L10·L11·L12·L13·L19 5건 전부
+    #    "월 수령액이 확인되지 않아 세율만 안내합니다"로 계산이 비었다).
+    #    '연'을 목록 맨 뒤에 둔다 — '연간'이 먼저 매칭되게 순서를 지킨다.
+    #    '국민연금'·'연령' 같은 복합어는 연 뒤에 공백이 없어 오매칭되지 않는다.
+    if (m := re.search(r'(?:연간|1년에|해마다|매년|연)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q)):
         if (v := parse_amount_to_manwon(m.group(1))) is not None:
             c["private_pension_annual_manwon"] = v
 

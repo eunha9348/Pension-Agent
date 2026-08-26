@@ -311,6 +311,32 @@ def test_C5_교정문은_답변을_구법이라고_부정하지_않는다():
     assert "현행" in c5.correction
 
 
+# ── C5: 자기 상황 서술 vs 자료·소문 인용 ────────────────────────
+# 700만·1200만이 걸리는 문장 전부가 "자료 속 구법 수치" 얘기는 아니다.
+# 그 금액이 우연히 구법 수치와 같은 자기 상황 서술(A08·L10)에 구법
+# 경고를 붙이면, 사용자가 말한 적도 없는 "자료가 틀렸다"는 얘기가 된다.
+
+@pytest.mark.parametrize("qid,question", [
+    ("A08", "연금저축에 1200만원을 넣으면 1200만원 전부 세액공제 되나요?"),
+    ("L10", "만 65세가 연금으로 연 1200만원 받으면 세금은 얼마인가요?"),
+])
+def test_C5는_자기_상황_서술에는_걸리지_않는다(qid, question):
+    from app.core.trap_rules import detect_traps
+
+    assert "C5" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("qid,question", [
+    ("F10", "분리과세 기준이 1200만원에서 1500만원으로 언제 바뀌었나요?"),
+    ("M01", "연금저축 세액공제 한도가 1200만원으로 올랐다던데 맞나요?"),
+    ("M03", "사적연금 분리과세 기준이 아직 1200만원 맞죠?"),
+])
+def test_C5는_자료_소문_인용에는_걸린다(qid, question):
+    from app.core.trap_rules import detect_traps
+
+    assert "C5" in [t.id for t in detect_traps(question)], question
+
+
 def test_트리거_맥락조건이_실제로_좁힌다():
     """trigger_context가 붙은 규칙은 주제어만으로는 걸리지 않아야 한다."""
     from app.core.trap_rules import TRAPS, detect_traps
