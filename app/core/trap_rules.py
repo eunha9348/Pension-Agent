@@ -620,6 +620,33 @@ TRAPS: list[TrapRule] = [
 # 감지 로직
 # ════════════════════════════════════════════════════════════════
 
+_HAS_DIGIT = re.compile(r'\d')
+# 숫자 주제어는 **수 경계**에서만 일치해야 한다.
+#
+# ━━ 왜 필요한가 ━━
+# 맨 부분문자열로 맞추면 '600'이 "연금수령한도가 3**600**만원인데"(감사 L25)의
+# 3600 안에서 걸린다. 그 결과 연금수령한도 질의에 세액공제 규칙(C4)이 붙었다.
+# 이건 주제어를 아무리 다듬어도 안 없어진다 — 수를 문자열로 보는 한 남는다.
+# 앞뒤에 숫자나 자릿점(,)이 붙어 있으면 그 수의 일부이므로 일치로 치지 않는다.
+# 소수점도 앞쪽만 막는다 — '15%'가 "0.15%"에 걸리면 안 되지만, '600'이
+# "600.5"의 앞부분을 잡는 경우는 이 도메인에 없고 막으면 '16.5%'가 깨진다.
+_NUM_KW_CACHE: dict[str, re.Pattern] = {}
+
+
+def _kw_pattern(kw: str) -> re.Pattern:
+    if (p := _NUM_KW_CACHE.get(kw)) is None:
+        p = _NUM_KW_CACHE[kw] = re.compile(
+            rf'(?<![\d,.]){re.escape(kw)}(?![\d,])')
+    return p
+
+
+def _kw_in(query: str, kw: str) -> bool:
+    """주제어가 질의에 들어 있는가. 숫자를 포함한 주제어만 수 경계를 본다."""
+    if _HAS_DIGIT.search(kw):
+        return _kw_pattern(kw).search(query) is not None
+    return kw in query
+
+
 def detect_traps(query: str, severity_filter: str | None = None) -> list[TrapRule]:
     """질의에 걸리는 함정 규칙을 반환.
 
@@ -627,19 +654,24 @@ def detect_traps(query: str, severity_filter: str | None = None) -> list[TrapRul
     trigger_all이 지정된 경우 그 단어들이 모두 있어야 하며,
     trigger_context가 지정된 경우 그 중 하나가 더 있어야 하고,
     trigger_none 중 하나라도 있으면 확정되지 않는다.
+
+    숫자 주제어의 일치 판정은 _kw_in이 수 경계까지 확인한다 — 네 조건 모두
+    같은 함수를 쓴다. 한 곳만 경계를 보면 조건 간 기준이 어긋난다.
     """
     hits = []
     for rule in TRAPS:
         if severity_filter and rule.severity != severity_filter:
             continue
-        if not any(k in query for k in rule.trigger_keywords):
+        if not any(_kw_in(query, k) for k in rule.trigger_keywords):
             continue
-        if rule.trigger_all and not all(k in query for k in rule.trigger_all):
+        if rule.trigger_all and not all(_kw_in(query, k)
+                                        for k in rule.trigger_all):
             continue
-        if rule.trigger_context and not any(k in query
+        if rule.trigger_context and not any(_kw_in(query, k)
                                             for k in rule.trigger_context):
             continue
-        if rule.trigger_none and any(k in query for k in rule.trigger_none):
+        if rule.trigger_none and any(_kw_in(query, k)
+                                     for k in rule.trigger_none):
             continue
         hits.append(rule)
     return hits

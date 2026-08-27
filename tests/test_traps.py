@@ -337,6 +337,63 @@ def test_C5는_자료_소문_인용에는_걸린다(qid, question):
     assert "C5" in [t.id for t in detect_traps(question)], question
 
 
+# ── 숫자 주제어는 수 경계에서만 일치한다 ────────────────────────
+# '600'이 "3600만원" 안에서 걸려, 연금수령한도 질의에 세액공제 규칙(C4)이
+# 붙었다(감사 L25). 주제어를 다듬어서는 못 없앤다 — 수를 문자열로 보는 한 남는다.
+
+@pytest.mark.parametrize("text,kw,expected", [
+    # 다른 수의 일부이면 일치가 아니다
+    ("연금수령한도가 3600만원인데", "600", False),
+    ("6000만원", "600", False),
+    ("1,600만원", "600", False),
+    ("3900만원", "900", False),
+    ("1700만원", "700만", False),
+    ("21500", "1500", False),
+    ("0.15%", "15%", False),
+    ("16.5%", "15%", False),
+    # 그 수 자체이면 일치다
+    ("600만원", "600", True),
+    ("900만원", "900", True),
+    ("1,500만원", "1,500", True),
+    ("1500만원", "1500", True),
+    ("15%", "15%", True),
+    ("16.5%", "16.5%", True),
+    ("2013년", "2013", True),
+    ("700만원", "700만", True),
+])
+def test_숫자_주제어는_수_경계를_본다(text, kw, expected):
+    from app.core.trap_rules import _kw_in
+
+    assert _kw_in(text, kw) is expected
+
+
+def test_숫자없는_주제어는_부분문자열_그대로다():
+    """경계 규칙을 한글까지 적용하면 조사가 붙은 표현을 놓친다."""
+    from app.core.trap_rules import _kw_in
+
+    assert _kw_in("중도인출을 하면", "중도인출")
+    assert _kw_in("퇴직소득세는", "퇴직소득세")
+
+
+def test_C4는_연금수령한도_질의에_걸리지_않는다():
+    """L25 회귀 — '3600만원'의 600에 세액공제 규칙이 붙던 실측 오탐."""
+    from app.core.trap_rules import detect_traps
+
+    q = "연금수령한도가 3600만원인데 5000만원을 인출하면 초과분 세금은 어떻게 되나요?"
+    assert "C4" not in [t.id for t in detect_traps(q)]
+
+
+@pytest.mark.parametrize("question", [
+    "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?",
+    "총급여 7000만원인 사람이 연금저축 600만원만 납입하면 환급액은 얼마인가요?",
+    "900만원 한도를 연금저축 600만원과 IRP 300만원으로 꼭 나눠야 하나요?",
+])
+def test_수_경계를_넣어도_세액공제_정탐은_유지된다(question):
+    from app.core.trap_rules import detect_traps
+
+    assert "C4" in [t.id for t in detect_traps(question)], question
+
+
 def test_트리거_맥락조건이_실제로_좁힌다():
     """trigger_context가 붙은 규칙은 주제어만으로는 걸리지 않아야 한다."""
     from app.core.trap_rules import TRAPS, detect_traps
