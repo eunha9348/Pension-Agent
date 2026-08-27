@@ -665,10 +665,17 @@ def build_llm_audit_payload(answer: str,
                             evidence_texts: list[str],
                             calc_results: list[dict],
                             question: str,
-                            ask_back_items: Optional[list[str]] = None) -> str:
+                            ask_back_items: Optional[list[str]] = None,
+                            law_articles: Optional[list] = None,
+                            candidate_traps: Optional[list[dict]] = None) -> str:
     """의미 감사용 입력 구성.
 
     생성 과정(프롬프트·추론)은 의도적으로 제외한다 — 감사 독립성.
+
+    law_articles가 주어지면 함정 적용 여부 판정도 **이 호출 안에서** 함께
+    받는다. 별도 호출을 만들지 않는 이유는 LLM 호출을 3개소(L1·L5'·L6)로
+    고정해 둔 설계 때문이다 — 여기에 하나를 더하면 단일 GET의 시간 예산이
+    무너진다.
     """
     parts = [f"[질문]\n{question}", f"\n[심사 대상 답변]\n{answer}"]
 
@@ -685,7 +692,60 @@ def build_llm_audit_payload(answer: str,
     if ask_back_items:
         parts.append("\n[답변이 확인 요청한 항목]\n" + " / ".join(ask_back_items))
 
+    if law_articles:
+        parts.append(
+            "\n[법령 조문 원문 — 아래 조문만 근거로 쓸 수 있다]\n"
+            "※ 인용은 반드시 아래 원문에서 **글자 그대로** 옮길 것. "
+            "요약하거나 바꿔 쓰면 검증에서 폐기된다.")
+        for a in law_articles[:12]:
+            parts.append(f"\n<{a.ref}> (시행 {a.effective_date})\n{a.text[:800]}")
+
+    if candidate_traps:
+        parts.append(
+            "\n[판정 대상 함정 — 각 항목이 이 질의에 실제로 적용되는지 "
+            "조문 근거로 판정할 것]")
+        for t in candidate_traps:
+            parts.append(f"  · {t.get('id')}: {t.get('title')}")
+        parts.append(
+            "\n판정은 law_judgements 배열로 낼 것. 각 항목은 "
+            "{trap_id, applies, law_ref, quote, rationale} 이며 "
+            "quote는 위 조문 원문에서 그대로 옮긴 12자 이상의 문장이어야 한다. "
+            "근거가 될 조문을 찾지 못하면 그 항목은 아예 내지 말 것 — "
+            "지어낸 인용은 폐기되고 기록에 남는다.")
+
     return "\n".join(parts)
+
+
+def _load_audit_json(raw: str) -> Optional[dict]:
+    """감사 응답에서 JSON 객체를 꺼낸다. 실패하면 None."""
+    import json
+    text = (raw or "").strip()
+    text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text).strip()
+    try:
+        data = json.loads(text)
+    except Exception:
+        m = re.search(r'\{.*\}', text, re.S)
+        if not m:
+            return None
+        try:
+            data = json.loads(m.group())
+        except Exception:
+            return None
+    return data if isinstance(data, dict) else None
+
+
+def law_judgements_from_audit(raw: str) -> list:
+    """감사 응답에 실린 함정 판정(law_judgements)을 꺼낸다.
+
+    ⚠️ 여기서 나온 판정은 **아직 검증되지 않았다.** 반드시
+    citation_guard.verify_judgements()를 통과시킨 뒤에 쓸 것.
+    """
+    from app.law.citation_guard import parse_law_judgements
+
+    data = _load_audit_json(raw)
+    if not data:
+        return []
+    return parse_law_judgements(data.get("law_judgements"))
 
 
 def parse_llm_audit(raw: str) -> tuple[Verdict, list[Finding], list[str]]:
@@ -694,25 +754,11 @@ def parse_llm_audit(raw: str) -> tuple[Verdict, list[Finding], list[str]]:
     감사자가 응답을 못 주는 것과 '문제없음'은 다르다.
     파싱 실패 시 APPROVE로 간주하되, 감사가 수행되지 않았음을 별도 기록한다.
     """
-    import json
-    text = (raw or "").strip()
-    text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text).strip()
-
-    try:
-        data = json.loads(text)
-    except Exception:
-        m = re.search(r'\{.*\}', text, re.S)
-        if not m:
-            return Verdict.APPROVE, [Finding(
-                "의미감사", "PARSE_FAIL", Verdict.APPROVE,
-                "감사 응답을 해석하지 못함 — 의미 감사가 수행되지 않음",
-                "")], []
-        try:
-            data = json.loads(m.group())
-        except Exception:
-            return Verdict.APPROVE, [Finding(
-                "의미감사", "PARSE_FAIL", Verdict.APPROVE,
-                "감사 응답을 해석하지 못함 — 의미 감사가 수행되지 않음", "")], []
+    data = _load_audit_json(raw)
+    if data is None:
+        return Verdict.APPROVE, [Finding(
+            "의미감사", "PARSE_FAIL", Verdict.APPROVE,
+            "감사 응답을 해석하지 못함 — 의미 감사가 수행되지 않음", "")], []
 
     try:
         verdict = Verdict(str(data.get("verdict", "APPROVE")).upper())
