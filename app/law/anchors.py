@@ -160,8 +160,15 @@ BLOCKED_ANCHORS: dict[str, str] = {
 # C2 (1,500만원 산정에서 제외되는 소득)
 #   --grep '분리과세연금소득'이 소득세법 제64조의4를 잡았고, 거기에
 #   "분리과세연금소득 외의 연금소득에 100분의 15를 곱하여"까지는 있으나
-#   **1,500만원 기준 자체가 발췌에 없었다.** 기준 금액이 두 규칙의 요점이라
-#   그 문장을 확인하기 전에는 달 수 없다. 제20조의3 쪽을 더 봐야 한다.
+#   **1,500만원 기준 자체가 발췌에 없었다.**
+#
+#   ⚠️ 실측 확인(2026-08-28): 수집본 7,426건에서 아래 표기 모두 0건이다.
+#        '1,500만원'  0건
+#        '연금소득' + '1천500만원'  0건
+#        '1천500만원'  1건 — 조특법 제88조의4(우리사주조합원), 연금과 무관
+#      즉 이 기준 금액은 수집한 6개 법령에 그 표기로 존재하지 않는다.
+#      수치가 시행령에 위임돼 있거나 다른 표기일 수 있으므로, 표기를
+#      추측하지 말고 --ref 로 관련 조문을 직접 열어 확인할 것.
 #
 # C3 (15% vs 16.5% 지방소득세 포함 여부)
 #   제59조의3 제1항의 '100분의 12/15'는 **세액공제율**이지 분리과세율이
@@ -221,6 +228,10 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--grep", nargs="+", metavar="용어",
                    help="주어진 용어가 **모두** 든 조문을 찾는다. "
                         "탐색어를 맞춰가며 앵커를 찾을 때 쓴다.")
+    g.add_argument("--ref", nargs="+", metavar="조문",
+                   help="조문 참조로 직접 열어 본다 (예: --ref '소득세법 제14조'). "
+                        "수치 표기를 몰라 --grep 으로 못 찾을 때 쓴다. "
+                        "항을 생략하면 그 조의 항 전부를 보여준다.")
     ap.add_argument("--show", type=int, default=400,
                     help="--grep 시 조문당 출력할 글자 수 (기본 400)")
     ap.add_argument("--limit", type=int, default=12,
@@ -236,6 +247,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"조문 {len(store)}건 · 법령 {', '.join(store.law_names)}\n")
+
+    if a.ref:
+        # 조문 번호는 여기서 '질의'로만 쓰인다 — 틀리면 결과가 안 나올 뿐,
+        # 잘못된 근거가 만들어지지 않는다. 앵커 등재는 원문을 본 뒤에 한다.
+        for ref in a.ref:
+            arts = store.get_candidates(ref)
+            print(f"── {ref} → {len(arts)}건")
+            if not arts:
+                print("     없음 — 법령명 표기나 조 번호를 확인하십시오"
+                      f" (수집된 법령: {', '.join(store.law_names)})\n")
+                continue
+            for art in arts:
+                print(f"\n  [{art.ref}]  시행 {art.effective_date}")
+                print(f"  {art.text[:a.show]}")
+            print()
+        return 0
 
     if a.grep:
         hits = store.search(*a.grep)
