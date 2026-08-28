@@ -109,6 +109,66 @@ def test_내용이_전부_비면_예외를_던진다():
         parse_law_xml(empty.encode("utf-8"), "시험법", "u")
 
 
+# ── 호·목 누락 ★ 실수집본에서 드러난 결함 ──────────────────────
+# 항내용만 뽑으면 그 아래 '각 호'가 통째로 사라진다. 법령은 실질 내용을
+# 호에 두는 경우가 많아, 1,500만원 분리과세 기준 같은 핵심 수치가
+# 수집본에 아예 없었다(--grep 0건으로 확인).
+
+_XML_호 = """<?xml version="1.0" encoding="UTF-8"?>
+<법령>
+  <기본정보>
+    <법령명_한글>시험법</법령명_한글>
+    <시행일자>20260101</시행일자>
+  </기본정보>
+  <조문>
+    <조문단위>
+      <조문번호>14</조문번호>
+      <조문내용>제14조(과세표준의 계산)</조문내용>
+      <항>
+        <항번호>3</항번호>
+        <항내용>③다음 각 호에 따른 소득의 금액은 종합소득과세표준을 계산할 때 합산하지 아니한다.</항내용>
+        <호>
+          <호번호>9</호번호>
+          <호내용>9. 연금소득의 합계액이 연 1천500만원 이하인 경우 그 연금소득</호내용>
+        </호>
+      </항>
+    </조문단위>
+  </조문>
+</법령>
+"""
+
+
+def _parse_호():
+    return parse_law_xml(_XML_호.encode("utf-8"), "시험법", "u", "t")
+
+
+def test_항_아래의_호가_원문에_담긴다():
+    arts = _parse_호()
+    a = next(a for a in arts if a.ref == "시험법 제14조 제3항")
+    assert "1천500만원" in a.text, (
+        "각 호가 누락됐다 — 법령의 실질 내용 상당수가 호에 있다")
+    assert "합산하지 아니한다" in a.text, "항 본문도 함께 있어야 한다"
+
+
+def test_항번호가_본문_앞에_붙지_않는다():
+    """_text는 항번호까지 훑으므로 떼어내지 않으면 '3③다음...'이 된다."""
+    arts = _parse_호()
+    a = next(a for a in arts if a.ref == "시험법 제14조 제3항")
+    assert not a.text.startswith("3③"), a.text[:20]
+    assert a.text.startswith("③"), a.text[:20]
+
+
+def test_호가_담겨도_인용검증이_통과한다():
+    """수집 → 대조까지 이어지는지. 호에 있는 수치를 인용할 수 있어야 한다."""
+    from app.law.citation_guard import verify_citation
+    from app.law.store import LawStore
+
+    store = LawStore(_parse_호())
+    c = verify_citation(store, "시험법 제14조 제3항",
+                        "연금소득의 합계액이 연 1천500만원 이하인 경우")
+    assert c.ok, c.reason
+
+
 def test_파싱_결과가_인용검증에_그대로_쓰인다():
     """수집 → 저장 → 대조가 한 줄로 이어지는지."""
     from app.law.citation_guard import verify_citation

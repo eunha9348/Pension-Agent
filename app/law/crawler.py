@@ -88,6 +88,31 @@ def _text(el: ET.Element | None) -> str:
     return "".join(el.itertext())
 
 
+def _strip_leading(text: str, prefix: str) -> str:
+    """앞에 붙은 번호 토큰을 뗀다. 항번호 '3'이 본문 앞에 붙는 것을 없앤다."""
+    t = (text or "").strip()
+    p = (prefix or "").strip()
+    if p and t.startswith(p):
+        t = t[len(p):].strip()
+    return t
+
+
+def _clause_text(c: ET.Element) -> str:
+    """항 하나의 원문 — 그 아래 호·목까지 포함한다.
+
+    ⚠️ 여기서 항내용만 뽑으면 **각 호가 통째로 사라진다.**
+       실제로 그랬다(2026-08-28 실수집본):
+         "③다음 각 호에 따른 소득의 금액은 종합소득과세표준을 계산할 때
+           합산하지 아니한다."  ← 정작 '각 호'가 없다
+       법령은 실질 내용을 호에 두는 경우가 많아, 1,500만원 분리과세 기준
+       같은 핵심 수치가 통째로 수집되지 않았다.
+
+       itertext는 각 텍스트 노드를 한 번씩만 훑으므로 호가 항내용 안에
+       중첩돼 있든 형제로 놓여 있든 중복 없이 모두 담긴다.
+    """
+    return _strip_leading(_text(c), _text(c.find("항번호")))
+
+
 def _article_label(no: str, branch: str) -> str:
     """조문번호(59) + 가지번호(3) → '제59조의3'."""
     no = (no or "").strip()
@@ -142,7 +167,7 @@ def parse_law_xml(xml_bytes: bytes, law_name: str, source_url: str,
         if clauses:
             for c in clauses:
                 cno = _text(c.find("항번호")).strip()
-                body = _text(c.find("항내용")).strip() or _text(c).strip()
+                body = _clause_text(c)
                 if not body:
                     continue
                 out.append(LawArticle(
@@ -152,6 +177,11 @@ def parse_law_xml(xml_bytes: bytes, law_name: str, source_url: str,
                     source_url=source_url, fetched_at=fetched_at))
         else:
             body = _text(u.find("조문내용")).strip()
+            # 항이 없는 조문은 호가 조문내용의 형제로 놓이기도 한다.
+            # 이미 담긴 것은 다시 붙이지 않는다(중첩된 경우 중복 방지).
+            for h in u.findall("호"):
+                if (t := _text(h).strip()) and t not in body:
+                    body = f"{body}\n{t}".strip()
             if not body:
                 continue
             out.append(LawArticle(
