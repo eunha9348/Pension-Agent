@@ -20,6 +20,7 @@ build_answer는 bool만 보지만, 파이프라인은 상세 결과가 필요하
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from app.core.coverage_pipeline import EvidenceChunk, RequirementSlot, SlotStatus
@@ -28,6 +29,8 @@ from app.core.numeric_verifier import (verify_calc_presence,
                                        verify_source_disclosure)
 from app.core.supervisory_board import (Finding, SupervisionResult, Verdict,
                                         supervise, supervise_hybrid)
+
+log = logging.getLogger(__name__)
 
 
 class GroundingVerdict(int):
@@ -68,6 +71,49 @@ class GroundingVerdict(int):
         if self.presence is not None and not self.presence.passed:
             return self.presence.instruction()
         return ""
+
+
+def _law_context(trap_ids: Optional[list[str]],
+                 trap_checks: Optional[list[dict]]
+                 ) -> tuple[list, list[dict]]:
+    """법령 근거가 등재된 함정만 골라 (조문 목록, 판정 대상) 을 만든다.
+
+    법령 저장소가 비어 있거나(수집 전) 등재된 앵커가 없으면 빈 값을 돌려주고,
+    감사는 지금까지와 똑같이 결정론적 경로로만 돈다. 즉 이 계층은
+    **있으면 더 정확해지고 없으면 아무것도 망가뜨리지 않는다.**
+    """
+    if not trap_ids:
+        return [], []
+    try:
+        from app.law.anchors import anchors_for, law_backed
+        from app.law.store import get_store
+
+        store = get_store()
+        if store.is_empty:
+            return [], []
+
+        by_id = {c.get("id"): c for c in (trap_checks or [])}
+        articles, seen, candidates = [], set(), []
+        for tid in trap_ids:
+            if not law_backed(tid):
+                continue
+            arts = anchors_for(tid, store)
+            if not arts:
+                continue
+            candidates.append({
+                "id": tid,
+                "title": by_id.get(tid, {}).get("title", ""),
+                "verify_any": by_id.get(tid, {}).get("verify_any") or [],
+            })
+            for a in arts:
+                if a.ref not in seen:
+                    seen.add(a.ref)
+                    articles.append(a)
+        return (articles, candidates) if candidates else ([], [])
+    except Exception as e:                                   # noqa: BLE001
+        # 법령 계층이 없거나 깨져도 감사는 계속돼야 한다.
+        log.warning("법령 컨텍스트 구성 실패 — 결정론적 경로로 진행: %s", e)
+        return [], []
 
 
 def make_verify_grounding(question: str,
@@ -119,9 +165,15 @@ def make_verify_grounding(question: str,
         )
 
         if llm_call is not None and not skip_semantic:
+            # 감지된 함정 중 **법령 근거가 등재된 것**만 판정 대상으로 올린다.
+            # 근거 조문이 페이로드에 없으면 어차피 인용 검증을 통과할 수
+            # 없으므로, 등재되지 않은 규칙을 올려봐야 판정이 폐기될 뿐이다.
+            law_articles, candidates = _law_context(trap_ids, trap_checks)
             supervision = supervise_hybrid(
                 answer=answer, question=question, llm_call=llm_call,
-                evidence_texts=evidence_texts, **det_kwargs)
+                evidence_texts=evidence_texts,
+                law_articles=law_articles, candidate_traps=candidates,
+                **det_kwargs)
         else:
             supervision = supervise(answer, **det_kwargs)
             # 감사자가 응답을 못 준 것과 '문제없음'은 다르다 —

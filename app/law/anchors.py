@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-import unicodedata
 
+from app.law.schema import focus_snippets
 from app.law.store import LawStore, get_store
 
 log = logging.getLogger(__name__)
@@ -211,37 +211,6 @@ def anchors_for(trap_id: str, store: LawStore | None = None) -> list:
     return out
 
 
-def snippets(text: str, terms: list[str], width: int = 200,
-             limit: int = 3) -> list[str]:
-    """검색어 주변만 잘라낸다.
-
-    ━━ 왜 필요한가 ━━
-    조문은 각 호를 포함하면 수천 자가 된다. 머리말만 보여주면 정작 걸린
-    문구가 화면 밖으로 밀린다. 실제로 소득세법 제14조 제3항이 '연금소득 +
-    1천500만원'으로 걸렸는데, 연금 조항인 제9호가 잘려서 판정할 수 없었다.
-    앵커 등재는 원문을 눈으로 본 뒤에만 해야 하므로, 걸린 자리를 보여준다.
-    """
-    norm = unicodedata.normalize('NFKC', text or '')
-    spans: list[tuple[int, int]] = []
-    for t in terms:
-        tn = unicodedata.normalize('NFKC', t)
-        if (i := norm.find(tn)) >= 0:
-            spans.append((max(0, i - width // 2),
-                          min(len(norm), i + len(tn) + width // 2)))
-    if not spans:
-        return []
-    spans.sort()
-    merged: list[list[int]] = []
-    for s, e in spans:
-        if merged and s <= merged[-1][1] + 20:      # 가까우면 한 덩어리로
-            merged[-1][1] = max(merged[-1][1], e)
-        else:
-            merged.append([s, e])
-    return [("…" if s > 0 else "") + norm[s:e].strip()
-            + ("…" if e < len(norm) else "")
-            for s, e in merged[:limit]]
-
-
 def propose(store: LawStore | None = None,
             limit_per_rule: int = 5) -> dict[str, list[tuple[str, str]]]:
     """탐색어로 후보 조문을 뽑는다. 사람이 고를 재료일 뿐 확정이 아니다."""
@@ -330,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{art.ref}]  시행 {art.effective_date}")
             # 조문 머리말이 아니라 **걸린 자리**를 보여준다. 각 호까지 담은
             # 조문은 수천 자라, 머리말만 보면 정작 매칭된 문구를 못 본다.
-            for s in snippets(art.text, a.grep) or [art.text[:a.show]]:
+            for s in focus_snippets(art.text, a.grep) or [art.text[:a.show]]:
                 print(f"    {s}")
             print()
         if not hits:

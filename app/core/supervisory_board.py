@@ -29,10 +29,15 @@ BLOCK     차단, fallback 템플릿으로 대체
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
+
+from app.law.schema import focus_snippets
+
+log = logging.getLogger(__name__)
 
 
 class Verdict(str, Enum):
@@ -634,6 +639,11 @@ LLM 감사는 **심각도를 올릴 수만 있고 내릴 수 없다.**
 결정론적 계층이 여전히 1차 방어선이다.
 """
 
+# 법령 조문을 페이로드에 실을 때의 상한. 평가는 시간 예산이 있는 단일
+# GET이므로 무제한으로 넣을 수 없다.
+_MAX_LAW_ARTICLES = 10
+_MAX_LAW_CHARS = 1200
+
 LLM_AUDIT_SYSTEM_PROMPT = """당신은 연금 상담 답변을 심사하는 감사자입니다.
 답변을 작성하지 말고, 심사만 하십시오.
 
@@ -697,8 +707,21 @@ def build_llm_audit_payload(answer: str,
             "\n[법령 조문 원문 — 아래 조문만 근거로 쓸 수 있다]\n"
             "※ 인용은 반드시 아래 원문에서 **글자 그대로** 옮길 것. "
             "요약하거나 바꿔 쓰면 검증에서 폐기된다.")
-        for a in law_articles[:12]:
-            parts.append(f"\n<{a.ref}> (시행 {a.effective_date})\n{a.text[:800]}")
+        # ⚠️ 앞에서부터 자르면 안 된다. 각 호까지 담은 조문은 수천 자라,
+        #    정작 필요한 조항이 잘려 나간다 — 소득세법 제14조 제3항의
+        #    1,500만원 기준은 여덟 개 호를 지나 제9호 다목에 있다.
+        #    감사자가 인용할 문장을 못 보면 검증도 통과할 수 없으므로,
+        #    함정의 검증 용어 주변을 잘라 넣는다.
+        focus = [t for c in (candidate_traps or [])
+                 for t in (c.get("verify_any") or [])]
+        for a in law_articles[:_MAX_LAW_ARTICLES]:
+            body = a.text
+            if len(body) > _MAX_LAW_CHARS:
+                if snips := focus_snippets(body, focus, width=400, limit=3):
+                    body = "\n".join(snips)
+                else:
+                    body = body[:_MAX_LAW_CHARS]
+            parts.append(f"\n<{a.ref}> (시행 {a.effective_date})\n{body}")
 
     if candidate_traps:
         parts.append(
@@ -808,11 +831,73 @@ def merge_supervision(deterministic: SupervisionResult,
     )
 
 
+def _apply_law_judgements(raw: str,
+                          answer: str,
+                          det: SupervisionResult,
+                          deterministic_kwargs: dict
+                          ) -> tuple[SupervisionResult, list[str]]:
+    """감사 응답의 법령 판정을 검증해 반영한다. (갱신된 판정, 기록)
+
+    ━━ 왜 '재실행'인가 ━━
+    검증을 통과한 판정은 함정 목록(trap_ids)을 바꾼다. 그런데 그 목록은
+    **결정론적 감사의 입력**이다. 그래서 감사 결과를 나중에 손보는 대신,
+    바뀐 입력으로 결정론적 감사를 **다시 돌린다**. 재실행은 LLM을 쓰지
+    않으므로 호출 수는 그대로다.
+
+    이 구조라야 원칙이 깨지지 않는다:
+      · 최종 판정은 여전히 코드가 낸다 ("판단은 코드")
+      · merge_supervision의 단조성도 그대로다 — LLM의 의미 감사 verdict는
+        여전히 심각도를 올리기만 한다. 법령 판정이 바꾸는 것은 '무엇을
+        판단할 것인가'(사실)이지 '어떻게 판단할 것인가'(판정)가 아니다.
+      · 그 사실 변경조차 실재하는 조문 원문에 인용이 대조된 것만 통과한다
+    """
+    from app.law.citation_guard import apply_to_traps, verify_judgements
+    from app.law.store import get_store
+
+    trace: list[str] = []
+    try:
+        judgements = law_judgements_from_audit(raw)
+        if not judgements:
+            return det, trace
+
+        kept, verify_trace = verify_judgements(get_store(), judgements)
+        trace += verify_trace
+        if not kept:
+            return det, trace
+
+        before = list(deterministic_kwargs.get("trap_ids") or [])
+        after, apply_trace = apply_to_traps(before, kept)
+        trace += apply_trace
+        if set(after) == set(before):
+            return det, trace
+
+        # 함정이 빠졌으면 그 규칙의 검증 정보도 함께 빼야 한다.
+        # 남겨 두면 적합성 감사가 없는 함정의 미해소를 계속 지적한다.
+        checks = [c for c in (deterministic_kwargs.get("trap_checks") or [])
+                  if c.get("id") in set(after)]
+        redone = supervise(answer, **{**deterministic_kwargs,
+                                      "trap_ids": after, "trap_checks": checks})
+        redone.findings.append(Finding(
+            "법령근거", "TRAP_ADJUSTED", redone.verdict,
+            f"조문 근거로 함정 목록 조정: {before} → {after}", ""))
+        trace.append(f"조문 근거 반영 후 결정론적 감사 재실행: "
+                     f"{det.verdict.value} → {redone.verdict.value}")
+        return redone, trace
+    except Exception as e:                                   # noqa: BLE001
+        # 법령 계층의 사고가 감사 전체를 죽이면 안 된다. 원래 판정을
+        # 그대로 두되, 무슨 일이 있었는지는 반드시 남긴다.
+        log.warning("법령 근거 판정 실패 — 결정론적 판정 유지: %s", e)
+        trace.append(f"법령 근거 판정 실패(무시하고 진행): {e}")
+        return det, trace
+
+
 def supervise_hybrid(answer: str,
                      question: str,
                      llm_call,
                      evidence_texts: Optional[list[str]] = None,
                      skip_llm_on_block: bool = True,
+                     law_articles: Optional[list] = None,
+                     candidate_traps: Optional[list[dict]] = None,
                      **deterministic_kwargs) -> SupervisionResult:
     """결정론적 감사 + HyperCLOVA X 의미 감사를 함께 수행.
 
@@ -821,6 +906,10 @@ def supervise_hybrid(answer: str,
 
     skip_llm_on_block : 결정론적 감사가 이미 BLOCK이면 LLM 호출을 생략한다.
                         어차피 판정이 바뀌지 않으므로 비용과 지연을 아낀다.
+
+    law_articles / candidate_traps : 주어지면 함정 적용 여부 판정을 **이 같은
+        호출 안에서** 함께 받아, 인용 검증을 통과한 것만 반영한다.
+        LLM 호출은 여전히 1회다(L1·L5'와 합쳐 3개소 유지).
     """
     det = supervise(answer, **deterministic_kwargs)
 
@@ -836,6 +925,8 @@ def supervise_hybrid(answer: str,
         calc_results=deterministic_kwargs.get("calc_results") or [],
         question=question,
         ask_back_items=deterministic_kwargs.get("ask_back_items"),
+        law_articles=law_articles,
+        candidate_traps=candidate_traps,
     )
 
     try:
@@ -845,6 +936,15 @@ def supervise_hybrid(answer: str,
             "의미감사", "CALL_FAIL", det.verdict,
             f"의미 감사 호출 실패: {e} — 결정론적 판정만 적용", ""))
         return det
+
+    # 법령 판정을 **의미 감사 병합보다 먼저** 반영한다. 그래야 바뀐 함정
+    # 목록으로 결정론적 감사가 다시 돌고, 그 결과 위에 의미 감사가 얹힌다.
+    if law_articles and candidate_traps:
+        det, law_trace = _apply_law_judgements(raw, answer, det,
+                                               deterministic_kwargs)
+        for line in law_trace:
+            det.findings.append(Finding("법령근거", "TRACE", det.verdict,
+                                        line, ""))
 
     llm_verdict, llm_findings, llm_questions = parse_llm_audit(raw)
     return merge_supervision(det, llm_verdict, llm_findings, llm_questions,

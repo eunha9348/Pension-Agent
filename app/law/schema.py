@@ -42,6 +42,38 @@ def normalize_for_match(text: str) -> str:
     return _WS.sub(' ', unicodedata.normalize('NFKC', text or '')).strip()
 
 
+def focus_snippets(text: str, terms: list[str], width: int = 240,
+                   limit: int = 3) -> list[str]:
+    """주어진 용어 주변만 잘라낸다.
+
+    ━━ 왜 필요한가 ━━
+    각 호까지 담은 조문은 수천 자가 된다. 앞에서부터 잘라 쓰면 정작 필요한
+    조항이 밖으로 밀린다 — 소득세법 제14조 제3항이 그렇다. 1,500만원 기준은
+    여덟 개 호를 지나 제9호 다목에 있어서, 머리말만 넘기면 감사자가 인용할
+    문장을 볼 수 없다. 인용할 수 없으면 검증도 통과할 수 없으므로,
+    법령 근거 판정이 통째로 무력해진다.
+    """
+    norm = normalize_for_match(text)
+    spans: list[list[int]] = []
+    for t in terms:
+        tn = normalize_for_match(t)
+        if tn and (i := norm.find(tn)) >= 0:
+            spans.append([max(0, i - width // 2),
+                          min(len(norm), i + len(tn) + width // 2)])
+    if not spans:
+        return []
+    spans.sort()
+    merged: list[list[int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1] + 20:      # 가까우면 한 덩어리로
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return [("…" if s > 0 else "") + norm[s:e].strip()
+            + ("…" if e < len(norm) else "")
+            for s, e in merged[:limit]]
+
+
 @dataclass(frozen=True)
 class LawArticle:
     """법령의 조문 하나. text는 수집 원문 그대로다."""
