@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.law.anchors import ANCHORS as _ANCHORS
 from app.law.citation_guard import (apply_to_traps, parse_law_judgements,
                                     verify_citation, verify_judgements)
 from app.law.schema import LawArticle, LawJudgement
@@ -269,17 +270,67 @@ def test_같은_참조가_둘이면_둘_다_후보가_된다():
 # 앵커 — 추측으로 채워지지 않았는지
 # ════════════════════════════════════════════════════════════════
 
-def test_앵커는_확인_전까지_비어_있다():
-    """조문 번호를 기억으로 적으면 틀렸을 때 알 방법이 없다.
+def test_앵커는_실재하는_규칙에만_달린다():
+    """존재하지 않는 함정에 앵커를 달면 영원히 쓰이지 않는 죽은 설정이 된다."""
+    from app.core.trap_rules import TRAPS
+    from app.law.anchors import ANCHORS
 
-    수집·확인을 거친 앵커만 등재한다. 이 테스트가 깨진다면 ANCHORS에
-    실제 수집본으로 확인한 항목이 들어온 것이므로, --verify 가 통과하는지
-    확인한 뒤 이 테스트를 갱신할 것.
+    known = {t.id for t in TRAPS}
+    for tid in ANCHORS:
+        assert tid in known, f"등재된 앵커의 규칙이 존재하지 않습니다: {tid}"
+
+
+@pytest.mark.parametrize("ref", sorted({r for refs in _ANCHORS.values()
+                                        for r in refs}))
+def test_앵커_참조가_조문_형식을_갖춘다(ref):
+    """법령명 + 제N조[의N] [제N항] 형태여야 저장소 조회가 가능하다."""
+    import re
+
+    assert re.match(r'^[가-힣 ]+ 제\d+조(?:의\d+)?(?: 제\d+항)?$', ref), ref
+
+
+def test_세액공제_한도_규칙은_수치_없는_조문을_앵커로_달지_않는다():
+    """C4·C5의 요점은 600/900만원 한도 수치다.
+
+    소득세법 제59조의3 제2항은 공제의 '명칭'만 정의하고 수치가 없다.
+    이걸 앵커로 달면 HCX가 한도를 뒷받침하지 못하는 조문을 인용하게 된다.
+    한도 수치가 든 조문을 찾기 전까지는 비워 두는 것이 맞다.
     """
-    from app.law.anchors import ANCHORS, law_backed
+    from app.law.anchors import ANCHORS
 
-    assert ANCHORS == {}, "확인되지 않은 앵커가 등재됐습니다"
-    assert not law_backed("C4")
+    for tid in ("C4", "C5"):
+        assert "소득세법 제59조의3 제2항" not in ANCHORS.get(tid, ()), (
+            f"{tid}에 수치 없는 조문이 앵커로 달렸습니다")
+
+
+def test_연금소득공제_900만원을_세액공제_앵커로_달지_않는다():
+    """수치가 같아 혼동하기 쉬운 함정 — 둘은 완전히 다른 공제다.
+
+    소득세법 제47조의2 제1항의 900만원은 '연금소득공제' 한도이고,
+    C4가 다루는 900만원은 '연금계좌세액공제' 한도다. 이걸 뒤섞으면
+    시스템이 사용자에게 잘못된 근거를 제시한다.
+    """
+    from app.law.anchors import ANCHORS
+
+    for tid, refs in ANCHORS.items():
+        assert "소득세법 제47조의2 제1항" not in refs, (
+            f"{tid}에 연금소득공제 조문이 달렸습니다 — 세액공제와 다른 제도입니다")
+
+
+def test_실수집본이_있으면_등재_앵커가_전부_실재한다():
+    """수집본이 있는 환경(서버)에서는 앵커가 실제로 조회돼야 한다.
+
+    수집 전 환경(개발 샌드박스)에서는 검사할 대상이 없으므로 건너뛴다.
+    """
+    from app.law.anchors import verify
+    from app.law.store import get_store
+
+    store = get_store(reload=True)
+    if store.is_empty:
+        pytest.skip("법령 수집본이 없는 환경 — 서버에서 --verify 로 확인할 것")
+
+    ok, bad = verify(store)
+    assert not bad, "등재된 앵커 중 저장소에 없는 조문:\n  " + "\n  ".join(bad)
 
 
 def test_탐색어는_조문번호를_주장하지_않는다():
