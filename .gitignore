@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 data/index/
 data/models
+data/law/*.json
