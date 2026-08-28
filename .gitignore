@@ -3,6 +3,18 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# ── 산출물·데이터는 저장소에 넣지 않는다 ──────────────────────
+# 전부 서버에서 만들어지고 볼륨으로 마운트된다. Dockerfile도 data/ 를
+# 굽지 않으므로(app·sql·tests·scripts만 COPY) 이미지에도 안 들어간다.
+
+# ★ 제공 문서 — 대회에서 받은 자료다. 공개 저장소에 올리면 안 된다.
+#   서버의 ./data/corpus 에만 두고 읽기 전용으로 마운트한다.
+data/corpus/
+
 data/index/
 data/models
+# 법령 수집 산출물 (7천여 조문). 서버에서 crawler로 만든다.
 data/law/*.json
+# 300건 재현 실행 결과
+replay_result_*.json
