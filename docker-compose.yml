@@ -116,6 +116,12 @@ services:
   #   docker compose run --rm law --oc <OC> --dry-run
   # 확인되면 저장(볼륨에 남아 agent가 다음 기동부터 읽는다):
   #   docker compose run --rm law --oc <OC>
+  #
+  # ⚠️ entrypoint를 고정해 둔다. command로 두면 `docker compose run law
+  #    --oc X`의 "--oc X"가 command 전체를 덮어써 버려 파이썬 모듈 경로
+  #    자체가 사라진다("--oc"를 실행파일로 찾다가 No such file or directory).
+  #    entrypoint는 run으로 안 바뀌므로 뒤에 붙인 인자가 항상 그대로
+  #    app.law.crawler 의 인자로 간다.
   law:
     profiles: ["tools"]
     image: pension-agent:latest
@@ -126,8 +132,22 @@ services:
         WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
     volumes:
       - ./data/law:/app/data/law
-    entrypoint: []
-    command: ["python", "-m", "app.law.crawler"]
+    entrypoint: ["python", "-m", "app.law.crawler"]
+
+  # 함정 규칙의 근거 조문 후보 제안 / 등재 확인 —
+  #   docker compose run --rm law-anchors --propose
+  #   docker compose run --rm law-anchors --verify
+  law-anchors:
+    profiles: ["tools"]
+    image: pension-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        WITH_EMBEDDING: "${WITH_EMBEDDING:-false}"
+    volumes:
+      - ./data/law:/app/data/law:ro
+    entrypoint: ["python", "-m", "app.law.anchors"]
 
   # 청크 임베딩 생성. 인덱스를 만든 뒤 실행한다.
   # 기본(local 백엔드)은 배치 처리라 몇 분이면 끝난다. 다만 로컬 모델을 쓰려면
