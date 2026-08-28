@@ -1,0 +1,4 @@
+# 이 디렉터리는 비어 있어도 저장소에 남아야 한다.
+# docker-compose가 ./data/law 를 바인드 마운트하는데, git은 빈 디렉터리를
+# 추적하지 않으므로 이 파일이 없으면 clone한 서버에 폴더가 아예 없다.
+# 수집 결과(articles.json)는 .gitignore로 제외된다.
