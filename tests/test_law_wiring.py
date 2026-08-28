@@ -66,6 +66,58 @@ def _hybrid(raw: str, trap_ids=("A1",), **kw):
 
 
 # ════════════════════════════════════════════════════════════════
+# ★ 끝에서 끝까지 — 공개 API를 실제로 지나가는가
+# ════════════════════════════════════════════════════════════════
+# ⚠️ 아래 다른 테스트들은 _law_context와 supervise_hybrid를 **직접 이어
+#    붙여** 배선을 흉내낸다. 그래서 부품이 다 멀쩡하면 통과해 버린다.
+#    실제로 며칠간 배포됐던 결함이 정확히 그 형태였다 — 페이로드 빌더는
+#    law_articles를 받을 수 있었고 _law_context도 있었지만, 호출자가 그
+#    결과를 넘기지 않아 법령 계층이 통째로 죽어 있었다. 그런 상태에서도
+#    이 파일의 나머지 16건은 전부 통과했다(실측).
+#
+#    아래 두 건만이 make_verify_grounding이라는 **공개 진입점**으로 들어가
+#    감사 페이로드에 조문이 실제로 도달하는지를 본다. 배선을 검사하는
+#    테스트는 배선을 지나가야 한다.
+
+def _run_pipeline(llm_call, answer="중도인출에 대한 답변입니다.",
+                  trap_ids=("A1",)):
+    """make_verify_grounding — 파이프라인이 실제로 쓰는 진입점."""
+    from app.generation.grounding import make_verify_grounding
+
+    vg = make_verify_grounding(
+        question="중도인출 되나요?", slots=[], llm_call=llm_call,
+        trap_ids=list(trap_ids), trap_checks=_CHECKS)
+    return vg(answer, [])
+
+
+def test_공개진입점을_통해_조문이_감사_페이로드에_도달한다():
+    seen: dict = {}
+
+    def spy(system, payload):
+        seen["payload"] = payload
+        return _audit()
+
+    _run_pipeline(spy)
+    assert "payload" in seen, "감사 LLM이 호출되지 않았다"
+    assert _QUOTE in seen["payload"], (
+        "조문 원문이 감사 페이로드에 도달하지 않았다 — "
+        "make_verify_grounding이 법령 컨텍스트를 넘기지 않는다")
+    assert "law_judgements" in seen["payload"], "판정 지시가 누락됐다"
+
+
+def test_공개진입점을_통해_검증된_판정이_실제로_반영된다():
+    """부품이 아니라 흐름 전체가 동작하는지 — 판정이 최종 결과를 바꿔야 한다."""
+    verdict = _run_pipeline(
+        lambda s, u: _audit(judgements=[{
+            "trap_id": "A1", "applies": False,
+            "law_ref": "시험법 제10조 제1항", "quote": _QUOTE}]),
+        answer="무관한 답변입니다.")
+    codes = [f.code for f in verdict.supervision.findings]
+    assert "TRAP_ADJUSTED" in codes, (
+        "검증된 판정이 파이프라인 끝까지 반영되지 않았다")
+
+
+# ════════════════════════════════════════════════════════════════
 # 페이로드 — 조문이 감사자에게 실제로 전달되는가
 # ════════════════════════════════════════════════════════════════
 
