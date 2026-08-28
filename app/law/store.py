@@ -40,11 +40,15 @@ class LawStore:
 
     def __init__(self, articles: list[LawArticle]):
         self._articles = list(articles)
-        self._by_ref: dict[str, LawArticle] = {}
+        # ⚠️ 두 색인 모두 **목록**이다. 실수집본은 7천 건 규모라 같은 참조가
+        #    둘 이상 나오는 일이 실제로 있다(부칙·개정 이력·편장 중복 표기).
+        #    첫 건만 들고 있으면, 뒤쪽 조문에 실재하는 인용이 "원문에 없음"으로
+        #    억울하게 기각된다 — 정탐을 잃는 조용한 실패라 눈에 안 띈다.
+        self._by_ref: dict[str, list[LawArticle]] = {}
         # 조 단위 색인 — 항 표기 없이 조만 대면 그 조의 항 전체가 후보가 된다.
         self._by_article: dict[str, list[LawArticle]] = {}
         for a in self._articles:
-            self._by_ref.setdefault(canon_ref(a.ref), a)
+            self._by_ref.setdefault(canon_ref(a.ref), []).append(a)
             key = canon_ref(f"{a.law_name} {a.article_no}")
             self._by_article.setdefault(key, []).append(a)
 
@@ -69,17 +73,15 @@ class LawStore:
         반대로 조가 아예 없으면 후보도 없어 그대로 폐기된다.
         """
         key = canon_ref(ref)
-        if (a := self._by_ref.get(key)) is not None:
-            return [a]
-        if (group := self._by_article.get(key)):
-            return list(group)
+        for index in (self._by_ref, self._by_article):
+            if (group := index.get(key)):
+                return list(group)
         # 항까지 붙여 물었는데 저장본이 조 단위인 경우 — 항을 떼고 한 번 더.
         stripped = re.sub(r'\d+항$', '', key)
         if stripped != key:
-            if (a := self._by_ref.get(stripped)) is not None:
-                return [a]
-            if (group := self._by_article.get(stripped)):
-                return list(group)
+            for index in (self._by_ref, self._by_article):
+                if (group := index.get(stripped)):
+                    return list(group)
         return []
 
     def search(self, *terms: str) -> list[LawArticle]:
