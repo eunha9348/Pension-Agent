@@ -177,6 +177,40 @@ def test_root가_ui_경로를_안내한다():
     assert "/ui" in client.get("/").json()["endpoints"]
 
 
+# ── UI의 상태 배지가 실제 서버 문구와 어긋나지 않는가 ──────────
+#
+# app/web/chat.html의 judgeStatus()는 서버 응답 문자열을 보고 상태 배지를
+# 매긴다(JS라 pytest로 직접 실행할 수는 없다). 실제로 여기서 한 번
+# 어긋났다 — retrieved_context가 "근거 문서 없음"으로 시작하는 것을
+# 전부 "거절"로 판정했는데, L4-sub(불특정 서술 상담)는 근거가 없어도
+# **답변을 만들고** 이때도 같은 접두어가 찍힌다. 정상 답변이 "거절"로
+# 잘못 표시됐다.
+#
+# 이 테스트는 그 어긋남이 다시 생기지 않도록, judgeStatus()가 실제로
+# 기대는 리터럴 문구들이 파이프라인에 여전히 존재하는지 고정한다.
+def test_거절_답변은_다시_문의해주세요로_끝난다():
+    """UI가 거절 판정에 쓰는 유일한 근거 — answer의 꼬리 문구."""
+    from app.core.grounding_retrieval import build_refuse_response
+
+    resp = build_refuse_response("Q", "질문", "이유")
+    assert resp["answer"].rstrip().endswith("다시 문의해 주세요.")
+
+
+def test_근거없이_답한_경우는_거절_문구로_끝나지_않는다():
+    """L4-sub 답변은 근거가 없어도 거절이 아니다.
+
+    retrieved_context는 "근거 문서 없음"으로 시작하지만(정상 — CLAUDE.md
+    "retrieved_context가 비는 경우에도 근거 문서 없음을 명시할 것"),
+    answer는 실제 안내문이라 "다시 문의해 주세요."로 끝나지 않는다.
+    UI가 retrieved_context만 보고 판정하면 이 답변이 거절로 잘못 뜬다.
+    """
+    body = _get("연금 계획을 어떻게 세워야 할까요?", qid="UI-002")
+    if body["retrieved_context"].startswith("근거 문서 없음"):
+        assert not body["answer"].rstrip().endswith("다시 문의해 주세요."), (
+            "근거 없이도 답한 경우인데 거절 문구로 끝난다 — "
+            "UI의 judgeStatus()가 이 응답을 거절로 오판한다")
+
+
 # ── 법령 계층 상태 노출 ────────────────────────────────────────
 # 법령은 내부 검증 전용이라 답변에도 retrieved_context에도 안 나타난다.
 # 그래서 배포 후 "반영이 됐는가"를 눈으로 확인할 방법이 없었다.
