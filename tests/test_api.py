@@ -174,3 +174,53 @@ def test_ui를_추가해도_answer_계약은_그대로다():
 
 def test_root가_ui_경로를_안내한다():
     assert "/ui" in client.get("/").json()["endpoints"]
+
+
+# ── 법령 계층 상태 노출 ────────────────────────────────────────
+# 법령은 내부 검증 전용이라 답변에도 retrieved_context에도 안 나타난다.
+# 그래서 배포 후 "반영이 됐는가"를 눈으로 확인할 방법이 없었다.
+# 이 필드가 그 질문에 추측이 아니라 사실로 답한다.
+
+def test_root가_법령_계층_상태를_보고한다():
+    law = client.get("/").json()["law"]
+    assert {"articles", "laws", "anchored_traps", "anchor_refs",
+            "active"} <= set(law)
+    assert isinstance(law["articles"], int)
+    assert isinstance(law["active"], bool)
+
+
+def test_등재된_앵커가_상태에_그대로_드러난다():
+    """서버에서 이 값으로 배포 반영 여부를 판정한다."""
+    from app.law.anchors import ANCHORS
+
+    law = client.get("/").json()["law"]
+    assert law["anchored_traps"] == sorted(ANCHORS)
+    assert law["anchor_refs"] == sum(len(v) for v in ANCHORS.values())
+
+
+def test_수집본이_없으면_active가_거짓이다():
+    """수집 전에는 법령 판정이 꺼져 있어야 하고, 그 사실이 보여야 한다."""
+    law = client.get("/").json()["law"]
+    if law["articles"] == 0:
+        assert law["active"] is False
+    else:
+        assert law["active"] is True
+
+
+def test_법령_저장소가_터져도_상태조회는_살아남는다(monkeypatch):
+    """법령 쪽 사고가 서비스 소개 엔드포인트를 죽이면 안 된다.
+
+    손상된 저장소는 LawStore.load()가 RuntimeError를 던지도록 돼 있다
+    (조용히 빈 것으로 넘기면 기능 실종을 눈치채지 못하므로). 그 예외가
+    여기까지 올라와 / 를 500으로 만들면 안 된다.
+    """
+    import app.law.store as ls
+    import app.main as m
+
+    def boom(*a, **k):
+        raise RuntimeError("법령 저장소 손상")
+
+    monkeypatch.setattr(ls, "get_store", boom)
+    status = m._law_status()
+    assert status["active"] is False
+    assert "error" in status

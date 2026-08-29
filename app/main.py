@@ -151,6 +151,32 @@ def health() -> dict:
     return info
 
 
+def _law_status() -> dict:
+    """법령 접지 계층의 현재 상태.
+
+    ━━ 왜 노출하는가 ━━
+    법령은 **내부 검증 전용**이라 답변 본문에도 retrieved_context에도
+    나타나지 않는다. 그래서 배포한 뒤 "반영이 됐는지"를 눈으로 확인할
+    방법이 없었다. 실제로 그 질문을 받았고, 추측으로 답할 수밖에 없었다.
+    수집본이 붙었는지·앵커가 몇 개인지를 여기서 바로 보게 한다.
+    """
+    try:
+        from app.law.anchors import ANCHORS
+        from app.law.store import get_store as get_law_store
+
+        store = get_law_store()
+        return {
+            "articles": len(store),
+            "laws": store.law_names,
+            "anchored_traps": sorted(ANCHORS),
+            "anchor_refs": sum(len(v) for v in ANCHORS.values()),
+            "active": (not store.is_empty) and bool(ANCHORS),
+        }
+    except Exception as e:                                   # noqa: BLE001
+        log.warning("법령 상태 조회 실패: %s", e)
+        return {"active": False, "error": str(e)}
+
+
 @app.get("/")
 def root() -> dict:
     return {
@@ -158,5 +184,6 @@ def root() -> dict:
         "endpoints": ["/answer?question_id=&question=", "/health", "/ui"],
         "llm_mock": bool(getattr(get_client(), "is_mock", False)),
         "corpus_kind": get_store().corpus_kind,
+        "law": _law_status(),
         "note": "설정은 .env 참고. CLOVA_API_KEY 를 채우면 실연동으로 전환됩니다.",
     }
