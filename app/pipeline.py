@@ -41,6 +41,7 @@ from app.analysis.conditions import describe_conditions
 from app.analysis.products import extract_class_expenses
 from app.analysis.query_spec import make_extract_query_spec
 from app.analysis.refusal import check_refusal, check_safety_refusal
+from app.analysis.routing import classify_route
 from app.analysis.slot_matching import answer_covers_slot, make_slot_evidence_matcher
 from app.config import SETTINGS
 from app.core.citation_system import (attach_citations, build_citations,
@@ -61,6 +62,8 @@ from app.core.pension_calc_functions import (check_class_eligibility,
 from app.core.supervisory_board import (Verdict, build_remediation_prompt,
                                         supervise_plan)
 from app.core.trap_rules import build_trap_context, unaddressed_traps
+from app.generation.advisory import (make_generate_advisory,
+                                      render_advisory_fallback)
 from app.generation.answer_prompt import (make_generate_answer,
                                           render_template_answer,
                                           strip_forbidden)
@@ -345,6 +348,21 @@ def _answer_question_impl(question_id: str, question: str,
         trace.log("계획_감사", "실행 계획 승인 — 미등록 호출 없음")
 
     conditions = query_spec.get("user_conditions") or {}
+    extra_conditions = query_spec.get("extra_conditions") or {}
+    if extra_conditions:
+        # 정규 스키마에 자리가 없어 예전에는 통째로 버려지던 정보다.
+        # 계산에는 못 쓰지만 무엇을 안내하고 무엇을 되물을지는 이것이 정한다.
+        trace.log("자유_조건",
+                  ", ".join(f"{k}={v}" for k, v in extra_conditions.items()))
+
+    # ── 경로 분류 (결정론적) ──────────────────────────────────
+    #
+    # ⚠️ HCX 재량에 맡기지 않는다. 같은 질의가 실행마다 다른 계층을 타면
+    #    재현도 디버깅도 불가능해진다. L1의 HCX는 조건을 뽑고, 경로는
+    #    그 결과를 보고 코드가 정한다 ("판단은 코드, 문장은 LLM").
+    route = classify_route(question, conditions, query_spec.get("asked_for"))
+    trace.log("경로_분류", route.as_trace())
+
     # 계산이 틀렸을 때 "조건이 잘못 잡힌 것"과 "계산이 잘못된 것"을 가르는
     # 유일한 단서다. 특히 금액 단위 사고(만원↔억↔원)는 이 줄이 없으면
     # 답변만 보고는 원인을 좁힐 수 없다.
@@ -425,17 +443,34 @@ def _answer_question_impl(question_id: str, question: str,
     if decision == Answerability.REFUSE:
         return _refuse_response(question_id, question, refusal, evidence, trace)
 
-    # ── L5' · Supervisor ──────────────────────────────────────
-    generate_answer = make_generate_answer(
-        client=client, trap_context=trap_context, assumptions=assumptions,
-        ask_back_items=ask_back_items, trace_log=trace.log)
+    # ── 답변 생성 — 경로에 따라 L4-sub 또는 L5' ────────────────
+    #
+    # 두 생성기는 시그니처가 같다. 여기서만 갈리고 이후 검증·인용·감독은
+    # **한 벌로 공유한다** — 경로마다 다른 처리를 만들면 검증이 두 벌이
+    # 되고 반드시 어긋난다.
+    if route.is_advisory:
+        generate = make_generate_advisory(
+            client=client, extra_conditions=extra_conditions,
+            route_reason=route.reason, trace_log=trace.log)
+        stage, fallback_note = "L4sub", "확인 항목 안내"
+    else:
+        generate = make_generate_answer(
+            client=client, trap_context=trap_context, assumptions=assumptions,
+            ask_back_items=ask_back_items, trace_log=trace.log)
+        stage, fallback_note = "L5'", "결정론적 템플릿 답변"
 
     if deadline.allows(BUDGET_L5):
-        draft = generate_answer(query_spec, evidence, slots)
+        draft = generate(query_spec, evidence, slots)
+        trace.log(f"{stage}_답변생성",
+                  f"{'상담 위임' if route.is_advisory else '계산·근거 기반'} "
+                  f"경로로 초안 생성")
+    elif route.is_advisory:
+        draft = render_advisory_fallback(query_spec, evidence, extra_conditions)
+        trace.log("L4sub_예산초과", f"남은 예산 부족 → {fallback_note}로 진행")
     else:
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
-        trace.log("L5'_예산초과", "남은 예산 부족 → 결정론적 템플릿 답변으로 진행")
+        trace.log("L5'_예산초과", f"남은 예산 부족 → {fallback_note}로 진행")
 
     draft, forbidden = strip_forbidden(draft)
     if forbidden:
