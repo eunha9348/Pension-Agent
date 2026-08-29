@@ -3,129 +3,331 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>연금 Agent</title>
+<title>연금 Agent — 콘솔</title>
 <style>
   :root{
-    --bg:#f6f7f9; --panel:#ffffff; --line:#e2e5ea; --ink:#1c2128;
-    --muted:#6b7480; --accent:#1f6f4a; --accent-soft:#e8f2ec;
-    --warn-bg:#fff4e5; --warn-line:#f0c48a; --warn-ink:#8a5300;
-    --code:#f2f4f7;
+    --bg:#f4f5f7; --panel:#ffffff; --sunk:#eceef1; --line:#dee2e7; --ink:#1b1f24;
+    --muted:#6b7480; --faint:#98a1ac; --accent:#1f6f4a; --accent-soft:#e8f2ec;
+    --accent-ink:#0e4a2e;
+    --warn:#a15b00; --warn-bg:#fff4e5; --warn-line:#f0c48a;
+    --bad:#a0302f; --bad-bg:#fdeceb; --bad-line:#f0b8b4;
+    --info:#2f5fa1; --info-bg:#eaf1fb; --info-line:#b9d0ef;
+    --code:#f2f4f7; --shadow:0 1px 2px rgba(20,24,30,.05);
+    --mono:ui-monospace,SFMono-Regular,"IBM Plex Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif;
   }
   @media (prefers-color-scheme: dark){
-    :root{
-      --bg:#12151a; --panel:#181c22; --line:#2a3038; --ink:#e6e9ee;
-      --muted:#98a2b0; --accent:#5fbf8f; --accent-soft:#172b22;
-      --warn-bg:#2e2313; --warn-line:#6b4f22; --warn-ink:#e8b866;
-      --code:#1f242b;
+    :root:not([data-theme="light"]){
+      --bg:#0f1115; --panel:#171a20; --sunk:#1d2128; --line:#2a2f38; --ink:#e7eaee;
+      --muted:#9aa4b1; --faint:#6b7480; --accent:#57bf8c; --accent-soft:#173226;
+      --accent-ink:#8fdcb3;
+      --warn:#e8b866; --warn-bg:#2e2313; --warn-line:#6b4f22;
+      --bad:#ec8b87; --bad-bg:#31201f; --bad-line:#6e3a38;
+      --info:#8db3ea; --info-bg:#1a2532; --info-line:#33455e;
+      --code:#1c2027; --shadow:none;
     }
   }
+  :root[data-theme="dark"]{
+      --bg:#0f1115; --panel:#171a20; --sunk:#1d2128; --line:#2a2f38; --ink:#e7eaee;
+      --muted:#9aa4b1; --faint:#6b7480; --accent:#57bf8c; --accent-soft:#173226;
+      --accent-ink:#8fdcb3;
+      --warn:#e8b866; --warn-bg:#2e2313; --warn-line:#6b4f22;
+      --bad:#ec8b87; --bad-bg:#31201f; --bad-line:#6e3a38;
+      --info:#8db3ea; --info-bg:#1a2532; --info-line:#33455e;
+      --code:#1c2027; --shadow:none;
+  }
   *{box-sizing:border-box}
+  html,body{height:100%}
   body{
-    margin:0; background:var(--bg); color:var(--ink);
-    font:15px/1.65 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",
-         "Malgun Gothic","Noto Sans KR",sans-serif;
+    margin:0; background:var(--bg); color:var(--ink); font:14px/1.6 var(--sans);
+    overflow:hidden;
   }
-  header{
-    position:sticky; top:0; z-index:5; background:var(--panel);
-    border-bottom:1px solid var(--line); padding:12px 20px;
-    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  button,textarea,input{font-family:inherit}
+  ::selection{background:var(--accent-soft)}
+
+  .shell{display:grid; grid-template-columns:328px 1fr; height:100vh}
+
+  /* ── 사이드바 ─────────────────────────────────────────── */
+  .sidebar{
+    background:var(--panel); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; min-width:0;
   }
-  header h1{font-size:16px; margin:0; font-weight:650; letter-spacing:-.01em}
-  header .sub{color:var(--muted); font-size:12.5px}
-  .spacer{flex:1}
+  .brand{
+    padding:16px 16px 12px; border-bottom:1px solid var(--line);
+    display:flex; flex-direction:column; gap:9px;
+  }
+  .brand h1{font-size:15px; margin:0; font-weight:700; letter-spacing:-.01em}
+  .brand .sub{color:var(--faint); font-size:11px}
+  .pills{display:flex; gap:6px; flex-wrap:wrap}
   .pill{
-    font-size:12px; padding:3px 9px; border-radius:999px;
+    font-size:11px; padding:3px 8px; border-radius:999px;
     border:1px solid var(--line); color:var(--muted); white-space:nowrap;
   }
-  .pill.ok{color:var(--accent); border-color:var(--accent); background:var(--accent-soft)}
-  main{max-width:900px; margin:0 auto; padding:20px 16px 190px}
-  .banner{
-    background:var(--warn-bg); border:1px solid var(--warn-line);
-    color:var(--warn-ink); padding:11px 14px; border-radius:10px;
-    font-size:13.5px; margin-bottom:18px;
+  .pill.ok{color:var(--accent-ink); border-color:var(--accent); background:var(--accent-soft)}
+  .pill.bad{color:var(--bad); border-color:var(--bad-line); background:var(--bad-bg)}
+
+  .search-row{padding:10px 12px; border-bottom:1px solid var(--line); display:flex; gap:6px}
+  .search-row input{
+    flex:1; border:1px solid var(--line); border-radius:7px; background:var(--sunk);
+    color:var(--ink); padding:7px 10px; font-size:12.5px; min-width:0;
   }
-  .examples{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:20px}
+  .search-row input:focus{outline:2px solid var(--accent); outline-offset:-1px}
+  .icon-btn{
+    border:1px solid var(--line); background:var(--sunk); color:var(--muted);
+    border-radius:7px; padding:0 10px; cursor:pointer; font-size:12px;
+  }
+  .icon-btn:hover{color:var(--ink); border-color:var(--faint)}
+
+  .filter-row{display:flex; gap:5px; padding:0 12px 10px; flex-wrap:wrap; border-bottom:1px solid var(--line)}
+  .filter-chip{
+    font-size:11px; padding:4px 9px; border-radius:999px; cursor:pointer;
+    border:1px solid var(--line); color:var(--muted); background:transparent;
+  }
+  .filter-chip.active{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+
+  .history{flex:1; overflow-y:auto; padding:6px}
+  .history-empty{color:var(--faint); font-size:12.5px; padding:24px 14px; text-align:center}
+  .h-item{
+    padding:9px 10px; border-radius:8px; cursor:pointer; margin-bottom:2px;
+    border:1px solid transparent; position:relative;
+  }
+  .h-item:hover{background:var(--sunk)}
+  .h-item.active{background:var(--accent-soft); border-color:var(--accent)}
+  .h-item .q{
+    font-size:12.8px; font-weight:600; color:var(--ink);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    line-height:1.45;
+  }
+  .h-item .row2{display:flex; align-items:center; gap:6px; margin-top:6px}
+  .h-status{
+    font-size:9.5px; font-weight:700; letter-spacing:.03em; padding:1.5px 6px;
+    border-radius:4px; text-transform:uppercase;
+  }
+  .h-status.done{color:var(--accent-ink); background:var(--accent-soft)}
+  .h-status.check{color:var(--warn); background:var(--warn-bg)}
+  .h-status.revise{color:var(--bad); background:var(--bad-bg)}
+  .h-status.refuse{color:var(--muted); background:var(--sunk)}
+  .h-status.run{color:var(--info); background:var(--info-bg)}
+  .h-time{font-size:10.5px; color:var(--faint); font-family:var(--mono)}
+  .h-del{
+    position:absolute; right:6px; top:6px; opacity:0; border:0; background:none;
+    color:var(--faint); cursor:pointer; font-size:13px; padding:2px 5px; border-radius:4px;
+  }
+  .h-item:hover .h-del{opacity:1}
+  .h-del:hover{color:var(--bad); background:var(--bad-bg)}
+
+  .sidebar-foot{
+    padding:9px 12px; border-top:1px solid var(--line); display:flex;
+    justify-content:space-between; align-items:center;
+  }
+  .sidebar-foot span{font-size:11px; color:var(--faint)}
+  .link-btn{
+    background:none; border:0; color:var(--muted); font-size:11px;
+    cursor:pointer; text-decoration:underline; padding:0;
+  }
+  .link-btn:hover{color:var(--bad)}
+
+  /* ── 메인 ─────────────────────────────────────────────── */
+  .main{display:flex; flex-direction:column; min-width:0; height:100vh}
+
+  .composer-zone{
+    background:var(--panel); border-bottom:1px solid var(--line);
+    padding:12px 20px;
+  }
+  .mode-tabs{display:flex; gap:4px; margin-bottom:9px}
+  .mode-tab{
+    font-size:11.5px; padding:5px 11px; border-radius:7px; cursor:pointer;
+    border:1px solid transparent; background:none; color:var(--muted); font-weight:600;
+  }
+  .mode-tab.active{background:var(--sunk); color:var(--ink); border-color:var(--line)}
+
+  .single-row{display:flex; gap:10px; align-items:flex-end}
+  textarea#input{
+    flex:1; resize:none; border:1px solid var(--line); border-radius:9px;
+    padding:10px 12px; font:13.5px/1.5 inherit; background:var(--sunk); color:var(--ink);
+    min-height:42px; max-height:130px;
+  }
+  textarea#input:focus{outline:2px solid var(--accent); outline-offset:-1px}
+  button.primary{
+    background:var(--accent); color:#fff; border:0; border-radius:9px;
+    padding:0 18px; height:42px; font-weight:700; font-size:13px; cursor:pointer;
+    white-space:nowrap;
+  }
+  button.primary:disabled{opacity:.45; cursor:not-allowed}
+  .hint{font-size:11px; color:var(--faint); margin-top:7px}
+
+  .batch-zone{display:none}
+  .batch-zone.show{display:block}
+  textarea#batchInput{
+    width:100%; resize:vertical; border:1px solid var(--line); border-radius:9px;
+    padding:10px 12px; font:12.5px/1.6 var(--mono); background:var(--sunk); color:var(--ink);
+    min-height:88px;
+  }
+  .batch-controls{display:flex; align-items:center; gap:10px; margin-top:8px}
+  .batch-progress{flex:1; height:5px; background:var(--line); border-radius:3px; overflow:hidden}
+  .batch-progress i{display:block; height:100%; width:0; background:var(--accent); transition:width .25s}
+  .batch-status{font-size:11px; color:var(--muted); font-family:var(--mono); white-space:nowrap}
+  #single-row .single-row{display:flex}
+
+  .examples{display:flex; gap:7px; flex-wrap:wrap; padding:10px 20px 0}
   .chip{
-    background:var(--panel); border:1px solid var(--line); color:var(--ink);
-    border-radius:999px; padding:7px 13px; font-size:13px; cursor:pointer;
-    font-family:inherit;
+    background:var(--panel); border:1px solid var(--line); color:var(--muted);
+    border-radius:999px; padding:6px 12px; font-size:12px; cursor:pointer; font-family:inherit;
   }
-  .chip:hover{border-color:var(--accent); color:var(--accent)}
-  .turn{margin-bottom:26px}
-  .q{
-    background:var(--accent-soft); border:1px solid var(--line);
-    border-radius:12px; padding:11px 15px; font-weight:600;
-    display:inline-block; max-width:100%;
+  .chip:hover{border-color:var(--accent); color:var(--accent-ink)}
+
+  .detail{flex:1; overflow-y:auto; padding:20px}
+  .empty-state{
+    height:100%; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:8px; color:var(--faint); text-align:center;
   }
-  .card{
-    background:var(--panel); border:1px solid var(--line);
-    border-radius:12px; margin-top:12px; overflow:hidden;
+  .empty-state .big{font-size:28px}
+  .empty-state p{margin:0; font-size:13px; max-width:340px}
+
+  .d-head{display:flex; justify-content:space-between; align-items:flex-start; gap:14px; margin-bottom:14px}
+  .d-q{font-size:17px; font-weight:700; line-height:1.45; letter-spacing:-.01em; max-width:64ch}
+  .d-meta{display:flex; gap:8px; flex-shrink:0; align-items:center; flex-wrap:wrap; justify-content:flex-end}
+  .d-id{font-family:var(--mono); font-size:11px; color:var(--faint)}
+  .rerun-btn{
+    border:1px solid var(--line); background:var(--panel); color:var(--muted);
+    border-radius:7px; padding:5px 11px; font-size:11.5px; cursor:pointer; font-weight:600;
   }
-  .card .body{padding:16px 18px; white-space:pre-wrap; word-break:break-word}
-  .meta{
-    padding:8px 18px; border-top:1px solid var(--line);
-    font-size:12.5px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap;
+  .rerun-btn:hover{border-color:var(--accent); color:var(--accent-ink)}
+
+  .status-banner{
+    display:flex; align-items:center; gap:8px; padding:8px 13px; border-radius:9px;
+    font-size:12.5px; margin-bottom:16px; border:1px solid;
   }
-  details{border-top:1px solid var(--line)}
-  summary{
-    padding:10px 18px; cursor:pointer; font-size:13.5px; color:var(--muted);
-    user-select:none;
+  .status-banner.done{background:var(--accent-soft); border-color:var(--accent); color:var(--accent-ink)}
+  .status-banner.check{background:var(--warn-bg); border-color:var(--warn-line); color:var(--warn)}
+  .status-banner.revise{background:var(--bad-bg); border-color:var(--bad-line); color:var(--bad)}
+  .status-banner.refuse{background:var(--sunk); border-color:var(--line); color:var(--muted)}
+
+  .tabs{display:flex; gap:2px; border-bottom:1px solid var(--line); margin-bottom:16px}
+  .tab{
+    padding:8px 13px; font-size:12.5px; font-weight:600; color:var(--muted);
+    cursor:pointer; border:0; background:none; border-bottom:2px solid transparent; margin-bottom:-1px;
   }
-  summary:hover{color:var(--ink)}
-  details pre{
-    margin:0; padding:14px 18px; background:var(--code); overflow-x:auto;
-    font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    white-space:pre-wrap; word-break:break-word; max-height:460px;
+  .tab:hover{color:var(--ink)}
+  .tab.active{color:var(--accent-ink); border-bottom-color:var(--accent)}
+  .tab .n{
+    font-family:var(--mono); font-size:10px; color:var(--faint); margin-left:4px;
   }
-  .waiting{color:var(--muted); font-size:14px; padding:16px 18px}
-  .bar{height:3px; background:var(--line); border-radius:3px; overflow:hidden; margin-top:10px}
-  .bar i{display:block; height:100%; background:var(--accent); width:0; transition:width .4s linear}
-  footer{
-    position:fixed; left:0; right:0; bottom:0; background:var(--panel);
-    border-top:1px solid var(--line); padding:12px 16px;
+
+  .panel{display:none}
+  .panel.active{display:block}
+  .panel-toolbar{display:flex; justify-content:flex-end; margin-bottom:8px}
+  .copy-btn{
+    border:1px solid var(--line); background:var(--panel); color:var(--muted);
+    border-radius:6px; padding:4px 10px; font-size:11px; cursor:pointer;
   }
-  .composer{max-width:900px; margin:0 auto; display:flex; gap:10px; align-items:flex-end}
-  textarea{
-    flex:1; resize:none; border:1px solid var(--line); border-radius:10px;
-    padding:11px 13px; font:inherit; background:var(--bg); color:var(--ink);
-    min-height:46px; max-height:150px;
+  .copy-btn:hover{color:var(--ink); border-color:var(--faint)}
+  .copy-btn.copied{color:var(--accent-ink); border-color:var(--accent)}
+
+  .answer-body{
+    background:var(--panel); border:1px solid var(--line); border-radius:11px;
+    padding:18px 20px; white-space:pre-wrap; word-break:break-word; font-size:14.5px;
+    line-height:1.75; box-shadow:var(--shadow);
   }
-  textarea:focus{outline:2px solid var(--accent); outline-offset:-1px}
-  button.send{
-    background:var(--accent); color:#fff; border:0; border-radius:10px;
-    padding:0 20px; height:46px; font:inherit; font-weight:600; cursor:pointer;
+  .answer-body strong{color:var(--accent-ink)}
+  pre.raw{
+    margin:0; padding:16px 18px; background:var(--code); border:1px solid var(--line);
+    border-radius:11px; overflow-x:auto; font:12.5px/1.65 var(--mono);
+    white-space:pre-wrap; word-break:break-word; color:var(--ink);
   }
-  button.send:disabled{opacity:.5; cursor:not-allowed}
-  .hint{max-width:900px; margin:8px auto 0; font-size:12px; color:var(--muted)}
-  .err{color:#c0392b}
-  @media (prefers-color-scheme: dark){ .err{color:#ff8a7a} }
+  .empty-panel{color:var(--faint); font-size:12.5px; padding:20px; text-align:center}
+
+  .waiting-box{
+    display:flex; align-items:center; gap:12px; padding:16px 20px;
+    background:var(--panel); border:1px solid var(--line); border-radius:11px; color:var(--muted);
+    font-size:13.5px;
+  }
+  .spin{
+    width:15px; height:15px; border-radius:50%; border:2px solid var(--line);
+    border-top-color:var(--accent); animation:spin .8s linear infinite; flex-shrink:0;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .err-box{
+    padding:16px 20px; background:var(--bad-bg); border:1px solid var(--bad-line);
+    border-radius:11px; color:var(--bad); font-size:13.5px;
+  }
+  @media (prefers-reduced-motion: reduce){ .spin{animation:none} }
+
+  @media (max-width:840px){
+    .shell{grid-template-columns:1fr}
+    .sidebar{display:none}
+  }
 </style>
 </head>
 <body>
 
-<header>
-  <h1>연금 Agent</h1>
-  <span class="sub">제10회 미래에셋증권 AI Festival</span>
-  <span class="spacer"></span>
-  <span class="pill" id="pill-corpus">코퍼스 확인 중</span>
-  <span class="pill" id="pill-llm">LLM 확인 중</span>
-</header>
+<div class="shell">
 
-<main>
-  <div id="banner-slot"></div>
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>연금 Agent 콘솔</h1>
+      <span class="sub">제10회 미래에셋증권 AI Festival</span>
+      <div class="pills">
+        <span class="pill" id="pill-corpus">코퍼스 확인 중</span>
+        <span class="pill" id="pill-llm">LLM 확인 중</span>
+      </div>
+    </div>
 
-  <div class="examples" id="examples"></div>
+    <div class="search-row">
+      <input id="search" type="text" placeholder="기록 검색…">
+      <button class="icon-btn" id="clearSearch" title="검색 지우기">×</button>
+    </div>
+    <div class="filter-row" id="filters">
+      <button class="filter-chip active" data-f="all">전체</button>
+      <button class="filter-chip" data-f="check">확인필요</button>
+      <button class="filter-chip" data-f="revise">재검증</button>
+      <button class="filter-chip" data-f="refuse">거절</button>
+    </div>
 
-  <div id="feed"></div>
-</main>
+    <div class="history" id="history"></div>
 
-<footer>
-  <div class="composer">
-    <textarea id="input" rows="1" placeholder="연금 관련 질문을 입력하세요 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
-    <button class="send" id="send">질문</button>
-  </div>
-  <div class="hint">한 번의 질의마다 독립적으로 처리됩니다(평가 규격과 동일한 단일 요청). 보통 20~30초 걸립니다.</div>
-</footer>
+    <div class="sidebar-foot">
+      <span id="histCount">0건</span>
+      <button class="link-btn" id="clearAll">전체 지우기</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="composer-zone">
+      <div class="mode-tabs">
+        <button class="mode-tab active" data-mode="single">단일 질의</button>
+        <button class="mode-tab" data-mode="batch">일괄 실행</button>
+      </div>
+
+      <div id="single-row">
+        <div class="single-row">
+          <textarea id="input" rows="1" placeholder="연금 관련 질문을 입력하세요 (Enter 전송 · Shift+Enter 줄바꿈)"></textarea>
+          <button class="primary" id="send">질문</button>
+        </div>
+        <div class="hint">한 번의 질의마다 독립적으로 처리됩니다(평가 규격과 동일한 단일 요청). 보통 20~30초 걸립니다.</div>
+      </div>
+
+      <div class="batch-zone" id="batchZone">
+        <textarea id="batchInput" placeholder="한 줄에 질문 하나씩 붙여넣으세요. 순서대로 하나씩 실행됩니다 — 평가와 동일하게 한 번에 한 요청만 보냅니다."></textarea>
+        <div class="batch-controls">
+          <button class="primary" id="batchRun">일괄 실행</button>
+          <div class="batch-progress"><i id="batchBar"></i></div>
+          <span class="batch-status" id="batchStatus"></span>
+        </div>
+      </div>
+
+      <div class="examples" id="examples"></div>
+    </div>
+
+    <div class="detail" id="detail">
+      <div class="empty-state" id="emptyState">
+        <div class="big">🏛️</div>
+        <p>왼쪽 예시를 클릭하거나 질문을 입력하세요.<br>실행 기록은 왼쪽 목록에 쌓이고 새로고침해도 남습니다.</p>
+      </div>
+    </div>
+  </main>
+
+</div>
 
 <script>
 const EXAMPLES = [
@@ -135,158 +337,356 @@ const EXAMPLES = [
   "집 사려고 IRP에서 중도인출하면 세금이 어떻게 되나요?",
   "연금을 연 2000만원 받으면 1500만원 넘는 500만원에만 세금 붙나요?",
 ];
+const STORE_KEY = "pension-agent-console-v1";
+const MAX_HISTORY = 200;
 
-const $ = (s) => document.querySelector(s);
-const feed = $("#feed"), input = $("#input"), sendBtn = $("#send");
-let busy = false, seq = 0;
+const $ = (s, el) => (el || document).querySelector(s);
+const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
+
+let history = [];          // [{id, question, data, secs, status, ts, error}]
+let activeId = null;
+let filterKey = "all";
+let searchTerm = "";
+let busy = false;
+let batchRunning = false;
+
+// ── 저장소 ───────────────────────────────────────────────────
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    history = raw ? JSON.parse(raw) : [];
+  } catch { history = []; }
+}
+function save() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
+  } catch {}
+}
+
+// ── 서버 실제 문구로만 상태를 판정한다 (추측 금지) ─────────────
+// app/pipeline.py가 실제로 내보내는 리터럴 문자열과 대조한다.
+function judgeStatus(data) {
+  if (!data) return "run";
+  const ctx = data.retrieved_context || "";
+  const ans = data.answer || "";
+  if (ctx.startsWith("근거 문서 없음")) return "refuse";
+  if (ans.includes("내부 검증을 완전히 통과하지 못했습니다")) return "revise";
+  if (ans.includes("확인해 주시면 더 정확히 안내드릴 수 있습니다")) return "check";
+  return "done";
+}
+const STATUS_LABEL = { done: "완료", check: "확인필요", revise: "재검증", refuse: "거절", run: "진행중" };
+const STATUS_BANNER = {
+  done: "감독 검증을 통과했습니다.",
+  check: "정보가 부족해 확인이 필요한 항목이 함께 제시됐습니다.",
+  revise: "내부 검증을 완전히 통과하지 못했습니다 — 표시된 항목을 직접 확인하십시오.",
+  refuse: "제공 자료 범위에서 근거를 찾지 못해 답변하지 않았습니다.",
+};
+
+// ── 서버 상태 배너 ───────────────────────────────────────────
+fetch("/").then(r => r.json()).then((s) => {
+  const real = s.corpus_kind !== "mock";
+  const pc = $("#pill-corpus");
+  pc.textContent = real ? "실물 코퍼스" : "mock 코퍼스";
+  pc.className = "pill" + (real ? " ok" : " bad");
+
+  const llmReal = !s.llm_mock;
+  const pl = $("#pill-llm");
+  pl.textContent = llmReal ? "HyperCLOVA X 연동" : "mock LLM";
+  pl.className = "pill" + (llmReal ? " ok" : " bad");
+}).catch(() => {});
 
 // ── 예시 질문 ────────────────────────────────────────────────
 EXAMPLES.forEach((q) => {
   const b = document.createElement("button");
   b.className = "chip"; b.type = "button"; b.textContent = q;
-  b.onclick = () => { input.value = q; input.focus(); };
+  b.onclick = () => { $("#input").value = q; $("#input").focus(); autoResize($("#input")); };
   $("#examples").appendChild(b);
 });
 
-// ── 서버 상태 ────────────────────────────────────────────────
-// mock 코퍼스·mock LLM으로 돌고 있는 걸 모르고 쓰는 사고를 막는다.
-fetch("/").then(r => r.json()).then((s) => {
-  const real = s.corpus_kind !== "mock";
-  const pc = $("#pill-corpus");
-  pc.textContent = real ? "실물 코퍼스" : "mock 코퍼스";
-  pc.className = "pill" + (real ? " ok" : "");
+// ── 모드 전환 ────────────────────────────────────────────────
+$$(".mode-tab").forEach((t) => t.onclick = () => {
+  $$(".mode-tab").forEach((x) => x.classList.remove("active"));
+  t.classList.add("active");
+  const mode = t.dataset.mode;
+  $("#single-row").style.display = mode === "single" ? "" : "none";
+  $("#batchZone").classList.toggle("show", mode === "batch");
+});
 
-  const llmReal = !s.llm_mock;
-  const pl = $("#pill-llm");
-  pl.textContent = llmReal ? "HyperCLOVA X 연동" : "mock LLM";
-  pl.className = "pill" + (llmReal ? " ok" : "");
+// ── 사이드바 렌더 ────────────────────────────────────────────
+function esc(s) { return (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 
-  const warn = [];
-  if (!real) warn.push("mock 코퍼스로 동작 중입니다 — 실제 제공 문서가 아닙니다.");
-  if (!llmReal) warn.push("CLOVA 실연동 없이 mock LLM으로 동작 중입니다.");
-  if (warn.length) {
-    const d = document.createElement("div");
-    d.className = "banner";
-    d.textContent = "⚠ " + warn.join(" / ");
-    $("#banner-slot").appendChild(d);
+function renderHistory() {
+  const list = $("#history");
+  const q = searchTerm.trim().toLowerCase();
+  const rows = history.filter((h) => {
+    if (filterKey !== "all" && h.status !== filterKey) return false;
+    if (q && !h.question.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  $("#histCount").textContent = history.length + "건";
+
+  if (!rows.length) {
+    list.innerHTML = '<div class="history-empty">' +
+      (history.length ? "조건에 맞는 기록이 없습니다." : "아직 실행한 질문이 없습니다.") + '</div>';
+    return;
   }
-}).catch(() => {});
 
-// ── 답변 렌더링 ──────────────────────────────────────────────
-// 답변 본문에는 **굵게** 와 "─── 근거 문서 ───" 블록이 섞여 온다.
+  list.innerHTML = "";
+  rows.forEach((h) => {
+    const el = document.createElement("div");
+    el.className = "h-item" + (h.id === activeId ? " active" : "");
+    const time = new Date(h.ts).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+    el.innerHTML =
+      '<div class="q">' + esc(h.question) + '</div>' +
+      '<div class="row2">' +
+        '<span class="h-status ' + h.status + '">' + STATUS_LABEL[h.status] + '</span>' +
+        '<span class="h-time">' + (h.secs ? h.secs.toFixed(1) + "초 · " : "") + time + '</span>' +
+      '</div>' +
+      '<button class="h-del" title="삭제">×</button>';
+    el.onclick = (e) => { if (e.target.classList.contains("h-del")) return; selectTurn(h.id); };
+    el.querySelector(".h-del").onclick = (e) => { e.stopPropagation(); removeTurn(h.id); };
+    list.appendChild(el);
+  });
+}
+
+function removeTurn(id) {
+  history = history.filter((h) => h.id !== id);
+  save();
+  if (activeId === id) { activeId = null; showEmpty(); }
+  renderHistory();
+}
+
+$("#clearAll").onclick = () => {
+  if (!history.length) return;
+  if (!confirm(history.length + "건의 기록을 모두 지울까요? (서버 데이터는 영향받지 않습니다)")) return;
+  history = []; activeId = null; save(); renderHistory(); showEmpty();
+};
+
+$("#search").addEventListener("input", (e) => { searchTerm = e.target.value; renderHistory(); });
+$("#clearSearch").onclick = () => { $("#search").value = ""; searchTerm = ""; renderHistory(); };
+
+$$(".filter-chip").forEach((c) => c.onclick = () => {
+  $$(".filter-chip").forEach((x) => x.classList.remove("active"));
+  c.classList.add("active");
+  filterKey = c.dataset.f;
+  renderHistory();
+});
+
+// ── 상세 패널 ────────────────────────────────────────────────
+function showEmpty() {
+  $("#detail").innerHTML =
+    '<div class="empty-state" id="emptyState"><div class="big">🏛️</div>' +
+    '<p>왼쪽 예시를 클릭하거나 질문을 입력하세요.<br>실행 기록은 왼쪽 목록에 쌓이고 새로고침해도 남습니다.</p></div>';
+}
+
 function splitAnswer(text) {
   const i = text.indexOf("─── 근거 문서");
   return i === -1 ? [text, ""] : [text.slice(0, i).trimEnd(), text.slice(i)];
 }
-function esc(s) {
-  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-}
-function fmt(s) {
-  return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-}
+function fmt(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>"); }
 
-function addTurn(question) {
-  const wrap = document.createElement("div");
-  wrap.className = "turn";
-  const q = document.createElement("div");
-  q.className = "q"; q.textContent = question;
-  wrap.appendChild(q);
-
-  const card = document.createElement("div");
-  card.className = "card";
-  card.innerHTML = '<div class="waiting">답변을 만들고 있습니다… '
-    + '<span class="t">0.0초</span><div class="bar"><i></i></div></div>';
-  wrap.appendChild(card);
-
-  feed.appendChild(wrap);
-  wrap.scrollIntoView({ behavior: "smooth", block: "start" });
-  return card;
+function selectTurn(id) {
+  activeId = id;
+  renderHistory();
+  const h = history.find((x) => x.id === id);
+  if (!h) return showEmpty();
+  renderDetail(h);
 }
 
-function fillCard(card, data, secs) {
+function renderDetail(h) {
+  const detail = $("#detail");
+
+  if (h.status === "run") {
+    detail.innerHTML =
+      '<div class="d-head"><div class="d-q">' + esc(h.question) + '</div>' +
+      '<div class="d-meta"><span class="d-id">' + esc(h.id) + '</span></div></div>' +
+      '<div class="waiting-box"><span class="spin"></span>답변을 만들고 있습니다… (보통 20~30초)</div>';
+    return;
+  }
+  if (h.error) {
+    detail.innerHTML =
+      '<div class="d-head"><div class="d-q">' + esc(h.question) + '</div>' +
+      '<div class="d-meta"><span class="d-id">' + esc(h.id) + '</span>' +
+      '<button class="rerun-btn" id="rerunBtn">다시 실행</button></div></div>' +
+      '<div class="err-box">요청에 실패했습니다 — ' + esc(h.error) + '</div>';
+    $("#rerunBtn").onclick = () => runSingle(h.question, h.id);
+    return;
+  }
+
+  const data = h.data;
   const [body, sources] = splitAnswer(data.answer || "");
-  card.innerHTML = "";
+  const contextText = data.retrieved_context || "";
+  const traceText = data.think_trace || "";
+  const rawText = JSON.stringify(data, null, 2);
 
-  const b = document.createElement("div");
-  b.className = "body"; b.innerHTML = fmt(body);
-  card.appendChild(b);
+  detail.innerHTML =
+    '<div class="d-head">' +
+      '<div class="d-q">' + esc(h.question) + '</div>' +
+      '<div class="d-meta">' +
+        '<span class="d-id">' + esc(h.id) + ' · ' + h.secs.toFixed(1) + '초</span>' +
+        '<button class="rerun-btn" id="rerunBtn">다시 실행</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="status-banner ' + h.status + '">' + STATUS_BANNER[h.status] + '</div>' +
+    '<div class="tabs">' +
+      '<button class="tab active" data-tab="answer">답변</button>' +
+      '<button class="tab" data-tab="context">근거 문서<span class="n">' + contextText.length.toLocaleString() + '자</span></button>' +
+      '<button class="tab" data-tab="trace">사고 과정<span class="n">' + traceText.length.toLocaleString() + '자</span></button>' +
+      '<button class="tab" data-tab="raw">원본 JSON</button>' +
+    '</div>' +
+    '<div class="panel active" data-panel="answer">' +
+      (sources ? '<div class="panel-toolbar"><button class="copy-btn" data-copy="answer-full">전체 복사</button></div>' : '') +
+      '<div class="answer-body">' + fmt(body) + '</div>' +
+      (sources ? '<div style="margin-top:12px"><pre class="raw">' + esc(sources.trim()) + '</pre></div>' : '') +
+    '</div>' +
+    '<div class="panel" data-panel="context">' +
+      (contextText
+        ? '<div class="panel-toolbar"><button class="copy-btn" data-copy="context">복사</button></div><pre class="raw">' + esc(contextText) + '</pre>'
+        : '<div class="empty-panel">근거 문서 없음</div>') +
+    '</div>' +
+    '<div class="panel" data-panel="trace">' +
+      (traceText
+        ? '<div class="panel-toolbar"><button class="copy-btn" data-copy="trace">복사</button></div><pre class="raw">' + esc(traceText) + '</pre>'
+        : '<div class="empty-panel">기록된 추론 과정 없음</div>') +
+    '</div>' +
+    '<div class="panel" data-panel="raw">' +
+      '<div class="panel-toolbar"><button class="copy-btn" data-copy="raw">복사</button></div>' +
+      '<pre class="raw">' + esc(rawText) + '</pre>' +
+    '</div>';
 
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  meta.textContent = `${secs.toFixed(1)}초 · 근거 ${(data.retrieved_context || "").length.toLocaleString()}자`;
-  card.appendChild(meta);
+  const copySources = { answer: body, "answer-full": data.answer || "", context: contextText, trace: traceText, raw: rawText };
 
-  const panes = [];
-  if (sources) panes.push(["답변에 인용된 근거 문서", sources.trim()]);
-  if (data.retrieved_context) panes.push(["검색된 근거 원문 (retrieved_context)", data.retrieved_context]);
-  if (data.think_trace) panes.push(["사고·추론 과정 (think_trace)", data.think_trace]);
-
-  panes.forEach(([label, content]) => {
-    const d = document.createElement("details");
-    const s = document.createElement("summary");
-    s.textContent = label;
-    const p = document.createElement("pre");
-    p.textContent = content;
-    d.append(s, p);
-    card.appendChild(d);
+  $$(".tab", detail).forEach((t) => t.onclick = () => {
+    $$(".tab", detail).forEach((x) => x.classList.remove("active"));
+    $$(".panel", detail).forEach((x) => x.classList.remove("active"));
+    t.classList.add("active");
+    detail.querySelector('.panel[data-panel="' + t.dataset.tab + '"]').classList.add("active");
   });
+
+  $$(".copy-btn", detail).forEach((b) => b.onclick = () => {
+    const text = copySources[b.dataset.copy] || "";
+    navigator.clipboard.writeText(text).then(() => {
+      b.textContent = "복사됨"; b.classList.add("copied");
+      setTimeout(() => { b.textContent = b.dataset.copy === "answer-full" ? "전체 복사" : "복사"; b.classList.remove("copied"); }, 1400);
+    });
+  });
+
+  $("#rerunBtn").onclick = () => runSingle(h.question, h.id);
 }
 
-function fillError(card, msg) {
-  card.innerHTML = "";
-  const b = document.createElement("div");
-  b.className = "body err";
-  b.textContent = "요청에 실패했습니다 — " + msg;
-  card.appendChild(b);
+// ── 요청 실행 ────────────────────────────────────────────────
+let seq = Number(localStorage.getItem("pension-agent-seq") || "0");
+function nextId() {
+  seq += 1;
+  localStorage.setItem("pension-agent-seq", String(seq));
+  return "UI-" + String(seq).padStart(3, "0");
 }
 
-// ── 전송 ─────────────────────────────────────────────────────
-async function ask() {
-  const q = input.value.trim();
-  if (!q || busy) return;
-  busy = true; sendBtn.disabled = true;
-  input.value = ""; input.style.height = "auto";
-
-  const card = addTurn(q);
+async function callApi(question, id) {
+  const url = "/answer?question_id=" + encodeURIComponent(id) + "&question=" + encodeURIComponent(question);
+  const ctl = new AbortController();
+  const to = setTimeout(() => ctl.abort(), 120000);
   const t0 = performance.now();
-  const timer = setInterval(() => {
-    const s = (performance.now() - t0) / 1000;
-    const el = card.querySelector(".t");
-    if (el) el.textContent = s.toFixed(1) + "초";
-    const bar = card.querySelector(".bar i");
-    // 45초 예산 기준으로 눈금만 채운다 (실제 진행률이 아니라 경과 표시)
-    if (bar) bar.style.width = Math.min(96, (s / 45) * 100) + "%";
-  }, 100);
-
-  const id = "UI-" + String(++seq).padStart(3, "0");
-  const url = "/answer?question_id=" + encodeURIComponent(id)
-            + "&question=" + encodeURIComponent(q);
-
   try {
-    const ctl = new AbortController();
-    const to = setTimeout(() => ctl.abort(), 120000);
     const res = await fetch(url, { signal: ctl.signal });
     clearTimeout(to);
     const secs = (performance.now() - t0) / 1000;
     if (!res.ok) throw new Error("HTTP " + res.status);
-    fillCard(card, await res.json(), secs);
+    const data = await res.json();
+    return { data, secs };
   } catch (e) {
-    fillError(card, e.name === "AbortError" ? "응답이 120초를 넘었습니다" : String(e.message || e));
-  } finally {
-    clearInterval(timer);
-    busy = false; sendBtn.disabled = false; input.focus();
+    clearTimeout(to);
+    throw new Error(e.name === "AbortError" ? "응답이 120초를 넘었습니다" : String(e.message || e));
   }
 }
 
-sendBtn.onclick = ask;
-input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
+function upsertTurn(entry) {
+  const i = history.findIndex((h) => h.id === entry.id);
+  if (i === -1) history.unshift(entry); else history[i] = entry;
+  save();
+}
+
+async function runSingle(question, reuseId) {
+  if (!question || busy) return;
+  busy = true; $("#send").disabled = true;
+
+  const id = reuseId || nextId();
+  const placeholder = { id, question, status: "run", ts: Date.now(), secs: 0 };
+  upsertTurn(placeholder);
+  activeId = id;
+  renderHistory();
+  renderDetail(placeholder);
+
+  try {
+    const { data, secs } = await callApi(question, id);
+    const status = judgeStatus(data);
+    upsertTurn({ id, question, data, secs, status, ts: Date.now() });
+  } catch (e) {
+    upsertTurn({ id, question, status: "refuse", error: e.message, ts: Date.now() });
+  } finally {
+    busy = false; $("#send").disabled = false; $("#input").focus();
+    renderHistory();
+    if (activeId === id) selectTurn(id);
+  }
+}
+
+// ── 단일 질의 입력 ───────────────────────────────────────────
+function autoResize(el) { el.style.height = "auto"; el.style.height = Math.min(130, el.scrollHeight) + "px"; }
+
+$("#send").onclick = () => {
+  const q = $("#input").value.trim();
+  if (!q) return;
+  $("#input").value = ""; autoResize($("#input"));
+  runSingle(q);
+};
+$("#input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#send").click(); }
 });
-input.addEventListener("input", () => {
-  input.style.height = "auto";
-  input.style.height = Math.min(150, input.scrollHeight) + "px";
-});
-input.focus();
+$("#input").addEventListener("input", () => autoResize($("#input")));
+
+// ── 일괄 실행 (평가와 동일하게 한 번에 하나씩 순차 처리) ───────
+$("#batchRun").onclick = async () => {
+  if (batchRunning) return;
+  const lines = $("#batchInput").value.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return;
+
+  batchRunning = true; busy = true;
+  $("#batchRun").disabled = true; $("#send").disabled = true;
+  const bar = $("#batchBar"), status = $("#batchStatus");
+
+  for (let i = 0; i < lines.length; i++) {
+    status.textContent = (i + 1) + " / " + lines.length + " 실행 중";
+    bar.style.width = Math.round((i / lines.length) * 100) + "%";
+
+    const id = nextId();
+    const placeholder = { id, question: lines[i], status: "run", ts: Date.now(), secs: 0 };
+    upsertTurn(placeholder);
+    activeId = id;
+    renderHistory();
+    renderDetail(placeholder);
+
+    try {
+      const { data, secs } = await callApi(lines[i], id);
+      upsertTurn({ id, question: lines[i], data, secs, status: judgeStatus(data), ts: Date.now() });
+    } catch (e) {
+      upsertTurn({ id, question: lines[i], status: "refuse", error: e.message, ts: Date.now() });
+    }
+    renderHistory();
+    if (activeId === id) selectTurn(id);
+  }
+
+  bar.style.width = "100%";
+  status.textContent = lines.length + "건 완료";
+  batchRunning = false; busy = false;
+  $("#batchRun").disabled = false; $("#send").disabled = false;
+  setTimeout(() => { bar.style.width = "0%"; status.textContent = ""; }, 3000);
+};
+
+// ── 초기화 ───────────────────────────────────────────────────
+load();
+renderHistory();
+$("#input").focus();
 </script>
 </body>
 </html>

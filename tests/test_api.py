@@ -143,10 +143,11 @@ def test_예상치_못한_예외도_5필드로_축퇴한다(monkeypatch):
 #      CDN이 막혀 있으면 화면이 통째로 깨진다
 
 def test_ui가_HTML을_반환한다():
+    """2026-08-29 — 콘솔 UI로 개편하며 제목을 바꿨다. '연금 Agent'로 시작하는지만 본다."""
     r = client.get("/ui")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "<title>연금 Agent</title>" in r.text
+    assert "<title>연금 Agent" in r.text
 
 
 def test_ui는_외부_리소스를_불러오지_않는다():
