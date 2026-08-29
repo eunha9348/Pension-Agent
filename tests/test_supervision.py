@@ -145,39 +145,95 @@ def test_정상_계획은_승인된다():
 # 대부분 짧아서("총보수 낮은 클래스 뭐예요") 이 침묵 경로가 오히려 정상 경로였다.
 
 def test_조건이_다_있으면_가입자격을_판정한다():
-    from app.core.coverage_pipeline import TraceLogger
-    from app.pipeline import _eligibility
+    from app.pipeline import _eligibility_verdict
 
-    w, missing = _eligibility({"fund_class": "C-Re", "account_type": "연금저축"},
-                              "C-Re 클래스로 가입할 수 있나요?", TraceLogger())
-    assert missing == []
+    v = _eligibility_verdict({"fund_class": "C-Re", "account_type": "연금저축"},
+                             "C-Re 클래스로 가입할 수 있나요?")
+    assert v.known
+    assert v.eligible is not None
+    assert v.missing == []
 
 
-def test_조건이_없으면_되묻는다():
-    """단정하지 않되 침묵하지도 않는다."""
-    from app.core.coverage_pipeline import TraceLogger
-    from app.pipeline import _eligibility
+def test_조건이_없으면_되묻되_막지는_않는다():
+    """단정하지 않고, 침묵하지도 않고, **막지도 않는다.**
 
-    w, missing = _eligibility({}, "총보수 가장 낮은 클래스로 가입하고 싶은데요",
-                              TraceLogger())
-    assert missing, "무엇이 필요한지 알려야 한다"
-    assert w and "확정할 수 없" in w[0]
+    2026-08-29 개편 — 예전에는 여기서 "확정할 수 없습니다" 경고를 붙여
+    추천을 사실상 보류시켰다. 지금은 확인 항목만 올리고 추천은 살린다.
+    """
+    from app.pipeline import _eligibility_verdict
+
+    v = _eligibility_verdict({}, "총보수 가장 낮은 클래스로 가입하고 싶은데요")
+    assert v.missing, "무엇이 필요한지 알려야 한다"
+    assert not v.known
+    assert not v.blocks, "모른다는 이유로 추천을 막으면 안 된다"
 
 
 def test_가입자격을_묻지_않은_질의는_되묻지_않는다():
     """확인 항목은 최대 2건이라 무관한 되묻기가 자리를 차지하면 안 된다."""
-    from app.core.coverage_pipeline import TraceLogger
-    from app.pipeline import _eligibility
+    from app.pipeline import _eligibility_verdict
 
-    w, missing = _eligibility({}, "연금수령한도가 얼마인가요?", TraceLogger())
-    assert (w, missing) == ([], [])
+    v = _eligibility_verdict({}, "연금수령한도가 얼마인가요?")
+    assert v.missing == []
+    assert not v.blocks
 
 
-def test_가입자격은_계산_이후에_판정된다():
-    """조건이 가장 많이 모인 시점에 봐야 정확하다."""
+def test_가입자격은_검색과_병렬로_판정된다():
+    """2026-08-29 구조 변경 — 자격 판정은 L3 결과에 의존하지 않는다.
+
+    예전에는 계산(L5) 뒤에 있었고, 그래서 '자격을 모른다'가 추천을 막는
+    방향으로 작동했다. 지금은 검색과 동시에 판정하고, 합류 barrier가
+    **확정적으로 불가한 것만** 걷어낸다.
+    """
     import inspect
 
     import app.pipeline as p
 
     src = inspect.getsource(p._answer_question_impl)
-    assert src.index("run_calculations") < src.index("_eligibility(")
+    # 자격 판정이 병렬 블록 안에서, 계산보다 먼저 일어난다
+    assert src.index("_eligibility_verdict") < src.index("run_calculations")
+    assert "ThreadPoolExecutor" in src
+    # 합류 barrier가 근거 필터 뒤에 온다
+    assert src.index("_exploit(") < src.index("_eligibility_barrier(")
+
+
+def test_자격을_모르면_추천을_막지_않는다():
+    """'모른다'와 '안 된다'는 다르다 — 이 구분이 이번 개편의 핵심이다."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.pipeline import _eligibility_barrier, _eligibility_verdict
+
+    v = _eligibility_verdict({}, "총보수가 가장 낮은 클래스가 뭔가요?")
+    assert not v.known
+    assert not v.blocks, "모른다는 이유로 막으면 안 된다"
+
+    cands = [{"fund_class": "C-Pe", "expense": 0.5},
+             {"fund_class": "C-Re", "expense": 0.7}]
+    kept, warn = _eligibility_barrier(cands, v, TraceLogger())
+    assert len(kept) == 2, "자격 미상인데 후보가 걸러졌다"
+    assert warn == []
+
+
+def test_자격이_확정적으로_불가하면_barrier가_제외한다():
+    """조건이 충분한데 실제로 자격이 안 되면 추천에서 빠져야 한다."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.pipeline import _eligibility_barrier, _eligibility_verdict
+
+    v = _eligibility_verdict({"account_type": "연금저축"},
+                             "어떤 클래스로 가입할까요?")
+    cands = [{"fund_class": "C-Pe"}, {"fund_class": "C-Re"}]
+    kept, warn = _eligibility_barrier(cands, v, TraceLogger())
+    # 계좌유형을 알면 클래스별로 판정되고, 맞지 않는 것은 빠진다
+    assert all(c.get("eligible") is True for c in kept)
+    if len(kept) < len(cands):
+        assert warn and "제외" in warn[0]
+
+
+def test_barrier가_판정_결과를_후보에_기록한다():
+    """L6 적합성 감사가 eligible 플래그를 본다 — 비어 있으면 감사가 무력해진다."""
+    from app.core.coverage_pipeline import TraceLogger
+    from app.pipeline import _eligibility_barrier, _eligibility_verdict
+
+    v = _eligibility_verdict({"account_type": "IRP"}, "클래스 추천")
+    cands = [{"fund_class": "C-Pe"}]
+    kept, _ = _eligibility_barrier(cands, v, TraceLogger())
+    for c in kept:
+        assert "eligible" in c

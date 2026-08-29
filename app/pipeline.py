@@ -1,18 +1,27 @@
 """6계층 파이프라인 통합.
 
-    L0  사전 검색      grounding_retrieval + coarse_search      LLM 없음
-    L1  질의 분석      query_spec (HyperCLOVA X + 규칙 폴백)
-    1.5 계획 감사      supervise_plan                            LLM 없음
-    L2  함정 감지      trap_rules (26종)                         LLM 없음
-    L3  Exploration    retrieve_hybrid                           LLM 없음
-    L4  Exploitation   구법탐지 → 엔티티충돌 → 가입자격 → 하드제약  LLM 없음
-    L5  Prediction     CALC_REGISTRY 15종                        LLM 없음
-    L5' Supervisor     answer_prompt (HyperCLOVA X)
-    L6  감독 이사회    supervise_hybrid (결정론 + HyperCLOVA X)
+    L0   분류          grounding_retrieval (categorization만)    LLM 없음
+    안전  게이트        check_safety_refusal                      LLM 없음
+    L1   질의 분석      query_spec (HyperCLOVA X + 규칙 폴백)
+    경로  분류          routing.classify_route                    LLM 없음
+    1.5  계획 감사      supervise_plan                            LLM 없음
+    L2   함정 감지      trap_rules (26종)                         LLM 없음
+    L3 ∥ L4            retrieve_hybrid ∥ 가입자격 판정            LLM 없음
+    합류  barrier       _eligibility_barrier                      LLM 없음
+    L5   Prediction     CALC_REGISTRY 15종                        LLM 없음
+    L4-sub / L5'       advisory ∥ answer_prompt (HyperCLOVA X)
+    L6   감독 이사회    supervise_hybrid (결정론 + HyperCLOVA X)
 
-━━ Exploration → Exploitation은 순차 ━━
-병렬로 만들지 말 것. 자격 검증 없이 수치를 비교하면
-"총보수 최저인데 가입 불가능한 상품"을 추천하게 된다.
+━━ L3와 L4는 병렬이다 (2026-08-29 변경) ━━
+L4의 두 일은 의존성이 다르다:
+  · 근거 필터(구법·엔티티충돌) — L3 결과가 있어야 한다. 병렬 불가.
+  · 가입자격 판정            — 사용자 조건만 보면 된다. 병렬 가능.
+
+예전에는 자격 판정이 L4에 묶여 검색이 끝나야 시작됐고, 심지어 계산(L5)
+뒤로 밀려 있었다. 그래서 "자격을 모른다"가 추천을 막는 방향으로 작동했다.
+지금은 검색과 동시에 판정하고, 합류 지점의 barrier가 **확정적으로 불가한
+것만** 걷어낸다. "총보수 최저인데 가입 불가능한 상품"을 막는 목적은
+그대로 지키되, **모른다는 이유로는 막지 않는다.**
 
 ━━ 타임아웃에 대하여 ━━
 coverage_pipeline.run_with_timeout()은 ThreadPoolExecutor 기반이라
@@ -31,6 +40,7 @@ coverage_pipeline.run_with_timeout()은 ThreadPoolExecutor 기반이라
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import logging
 from typing import Any, Optional
@@ -179,36 +189,108 @@ _ELIGIBILITY_SIGNALS = ("클래스", "가입", "class", "총보수", "수수료"
                         "어떤 상품", "상품 추천", "펀드")
 
 
-def _eligibility(conditions: dict, question: str,
-                 trace: TraceLogger) -> tuple[list[str], list[str]]:
-    """판매 클래스 가입자격 판정. 반환: (경고, 확인 요청 항목)
+@dataclass
+class EligibilityVerdict:
+    """가입자격 판정 — L3와 **병렬로** 산출된다.
 
-    조건이 모자라면 **침묵하지 않고 무엇이 필요한지 되묻는다.**
-    짧은 질의가 대부분이므로 이 경로가 오히려 정상 경로에 가깝다.
+    ━━ '모른다'와 '안 된다'를 구분한다 ━━
+    이 구분이 이번 개편의 핵심이다. 예전에는 자격을 모르면 추천 자체를
+    보류하거나 등급을 강등했다. 그런데 사용자 입장에서는
+
+        "추천했는데 자격이 안 되면 의미가 없다"  (예전)
+        "자격을 모르니 일단 추천하고, 자격을 알려주시면 더 자세히" (지금)
+
+    후자가 옳다. 모르면 통과시키고 확인을 요청하며, **안 되는 것이
+    확정됐을 때만** barrier가 제외한다.
+    """
+
+    known: bool = False               # 판정에 필요한 조건이 다 있는가
+    eligible: Optional[bool] = None   # None = 미상 (모름 ≠ 불가)
+    reason: str = ""
+    missing: list[str] = field(default_factory=list)
+    account_type: str = ""
+
+    @property
+    def blocks(self) -> bool:
+        """추천을 막아야 하는가. **확정적으로 불가할 때만 참.**"""
+        return self.known and self.eligible is False
+
+
+def _eligibility_verdict(conditions: dict, question: str) -> EligibilityVerdict:
+    """사용자 조건만으로 가입자격을 판정한다 (근거 문서 불필요).
+
+    ⚠️ 이 함수는 L3 검색 결과에 의존하지 않는다 — 그래서 병렬 실행이
+       가능하다. 예전에는 L4 안에 묶여 있어 검색이 끝나야 시작됐다.
     """
     fund_class = conditions.get("fund_class")
-    account_type = conditions.get("account_type")
+    account_type = conditions.get("account_type") or ""
 
     if fund_class and account_type:
-        verdict = check_class_eligibility(fund_class, account_type)
-        trace.log("L4_가입자격",
-                  f"{fund_class} × {account_type} → "
-                  f"{'가입 가능' if verdict['eligible'] else '가입 불가'}: {verdict['reason']}")
-        return ([] if verdict["eligible"] else [verdict["reason"]]), []
+        v = check_class_eligibility(fund_class, account_type)
+        return EligibilityVerdict(
+            known=True, eligible=bool(v["eligible"]),
+            reason=v["reason"], account_type=account_type)
 
     if not any(s in (question or "") for s in _ELIGIBILITY_SIGNALS):
-        return [], []       # 가입자격을 묻지 않은 질의 — 되물을 이유가 없다
+        # 가입자격을 묻지 않은 질의 — 되물을 이유가 없다
+        return EligibilityVerdict(known=False, account_type=account_type)
 
     missing = []
     if not fund_class:
         missing.append("가입하려는 판매 클래스(예: C-Pe, C-Re)")
     if not account_type:
         missing.append("연금계좌 유형(연금저축 / IRP / DC)")
-    trace.log("L4_가입자격_보류",
-              f"가입자격 판정에 필요한 조건 미확인 {missing} → "
-              f"단정하지 않고 확인을 요청")
-    return ([f"현재 주신 정보로는 가입 가능 여부를 확정할 수 없습니다 "
-             f"({', '.join(missing)} 미확인)"], missing)
+    return EligibilityVerdict(known=False, missing=missing,
+                              account_type=account_type)
+
+
+def _eligibility_barrier(candidates: list[dict],
+                         verdict: EligibilityVerdict,
+                         trace: TraceLogger) -> tuple[list[dict], list[str]]:
+    """L3∥L4 **합류 지점의 barrier.** 자격 미달 상품만 제외한다.
+
+    반환: (추천 가능한 후보, 경고 문구)
+
+    ━━ 통과 규칙 ━━
+    · 자격이 확정적으로 불가 → 제외하고 그 사실을 밝힌다
+    · 자격을 모름               → **통과.** 추천하되 확인을 요청한다
+    · 계좌유형만 아는 경우      → 그 유형에 맞지 않는 클래스만 제외
+
+    "총보수 최저인데 가입 불가능한 상품"을 추천하는 사고를 막는 것이
+    이 barrier의 목적이다. 다만 **모른다는 이유로 막지는 않는다.**
+    """
+    if not candidates:
+        return [], []
+
+    warnings: list[str] = []
+
+    # 계좌유형을 알면 클래스별로 개별 판정한다 — 모르면 전부 통과시킨다.
+    if verdict.account_type:
+        kept, dropped = [], []
+        for c in candidates:
+            name = c.get("fund_class") or c.get("name") or ""
+            v = check_class_eligibility(name, verdict.account_type)
+            c["eligible"] = bool(v["eligible"])
+            c["eligibility_reason"] = v["reason"]
+            (kept if v["eligible"] else dropped).append(c)
+        if dropped:
+            names = ", ".join(d.get("fund_class") or d.get("name", "?")
+                              for d in dropped)
+            trace.log("합류_barrier",
+                      f"{verdict.account_type} 기준 가입 불가 클래스 "
+                      f"{len(dropped)}건을 추천에서 제외: {names}")
+            warnings.append(
+                f"{verdict.account_type} 계좌로는 가입할 수 없는 클래스"
+                f"({names})는 비교에서 제외했습니다")
+        return kept, warnings
+
+    # 계좌유형 미상 — 전부 통과시키고 확인을 요청한다
+    for c in candidates:
+        c.setdefault("eligible", None)
+    trace.log("합류_barrier",
+              f"계좌유형 미확인 → 후보 {len(candidates)}건을 그대로 두고 "
+              f"확인을 요청 (모른다는 이유로 추천을 막지 않는다)")
+    return candidates, []
 
 
 def _hard_constraints(conditions: dict, trace: TraceLogger) -> list[str]:
@@ -378,8 +460,23 @@ def _answer_question_impl(question_id: str, question: str,
     # "이 질의는 doc55를 봐야 한다"를 검색 시작 전에 알 수 있다.
     query_spec["retrieval_steer"] = trap_context.get("retrieval_steer") or []
 
+    # ── L3 ∥ L4 · 병렬 수행 ───────────────────────────────────
+    #
+    # ━━ 무엇이 진짜로 병렬 가능한가 ━━
+    # L4의 두 일은 의존성이 다르다:
+    #   · 근거 필터(구법·엔티티충돌) — L3 결과가 있어야 한다. 병렬 불가.
+    #   · 가입자격 판정            — **사용자 조건만** 보면 된다. 병렬 가능.
+    #
+    # 예전에는 자격 판정이 L4 안에 묶여 검색이 끝나야 시작됐고, 게다가
+    # 계산(L5) 뒤로 밀려 있었다. 그래서 "자격을 모른다"가 추천을 막는
+    # 방향으로 작동했다. 지금은 검색과 동시에 판정하고, 합류 지점의
+    # barrier가 **확정적으로 불가한 것만** 걷어낸다.
     retrieve_hybrid = make_retrieve_hybrid(store)
-    raw_evidence = retrieve_hybrid(query_spec)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_retrieve = pool.submit(retrieve_hybrid, query_spec)
+        f_elig = pool.submit(_eligibility_verdict, conditions, question)
+        raw_evidence = f_retrieve.result()
+        elig = f_elig.result()
 
     backend = ("BM25 + 임베딩 RRF 융합" if embedding_enabled()
                else "BM25 단독 (임베딩 미사용)")
@@ -390,17 +487,28 @@ def _answer_question_impl(question_id: str, question: str,
         detail += f" · 함정 유도로 {', '.join(steered_docs)} 예약 확보"
     if rr := query_spec.get("_rerank_trace"):
         detail += f" · 재순위: {rr}"
-    trace.log("L3_정밀검색", detail)
+    trace.log("L3_정밀검색", detail + " (L4 자격판정과 병렬 수행)")
 
-    # ── L4 · Exploitation (순차) ──────────────────────────────
+    if elig.known:
+        trace.log("L4_가입자격",
+                  f"{'가입 가능' if elig.eligible else '가입 불가'}: {elig.reason}")
+    elif elig.missing:
+        trace.log("L4_가입자격_미상",
+                  f"판정 조건 미확인 {elig.missing} — 추천을 막지 않고 확인을 요청")
+
+    # ── 근거 필터 (L3 결과 의존) ──────────────────────────────
     evidence, constraint_warnings = _exploit(raw_evidence, query_spec, conditions, trace)
 
-    # 문서에서 상품 후보를 뽑아 계산 인자로 공급 (총보수_비교용)
+    # ── 합류 barrier — 자격 미달 상품만 제외 ──────────────────
     candidates = extract_class_expenses(evidence)
+    candidates, barrier_warnings = _eligibility_barrier(candidates, elig, trace)
+    constraint_warnings.extend(barrier_warnings)
+    if elig.blocks and elig.reason:
+        constraint_warnings.append(elig.reason)
     if candidates:
         conditions["product_candidates"] = candidates
-        trace.log("L4_상품후보", f"근거 문서에서 판매 클래스 {len(candidates)}건 추출 "
-                              f"(총보수 비교는 가입 가능한 클래스끼리만 수행)")
+        trace.log("L4_상품후보", f"근거 문서에서 판매 클래스 {len(candidates)}건 확보 "
+                              f"(barrier 통과분)")
 
     # ── 슬롯 매핑 ─────────────────────────────────────────────
     slots = extract_required_slots(query_spec)
@@ -419,12 +527,11 @@ def _answer_question_impl(question_id: str, question: str,
             if len(ask_back_items) < 2 and item not in ask_back_items:
                 ask_back_items.append(item)
 
-    # ── 가입자격 — 조건이 가장 많이 모인 지금 판정한다 ────────
-    # L4 안에 있을 때는 L1 조건만 봤는데, 계산 단계에서 조건이 더 확정되므로
-    # 여기서 보는 편이 정확하다. 조건이 없으면 확인 요청으로 넘어간다.
-    elig_warnings, elig_missing = _eligibility(conditions, question, trace)
-    constraint_warnings.extend(elig_warnings)
-    for item in elig_missing:
+    # ── 자격 미확인 항목을 되물을 목록에 올린다 ────────────────
+    # 판정 자체는 L3와 병렬로 이미 끝났다(elig). 여기서는 '무엇을 더
+    # 알려주시면 좁힐 수 있는지'만 확인 항목으로 옮긴다 — 추천을 막지는
+    # 않는다. barrier가 확정적 불가만 걷어냈고, 나머지는 통과시켰다.
+    for item in elig.missing:
         if len(ask_back_items) < 2 and item not in ask_back_items:
             ask_back_items.append(item)
 
