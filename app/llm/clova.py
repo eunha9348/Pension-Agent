@@ -412,7 +412,9 @@ def get_client(force_reload: bool = False):
     return _CLIENT
 
 
-def llm_call_adapter(client=None, audit_context: str = ""):
+def llm_call_adapter(client=None, audit_context: str = "",
+                     purpose: str = "l6_semantic_audit",
+                     max_tokens: int = 800):
     """supervise_hybrid(llm_call=...)가 기대하는 (system, user) -> str 어댑터.
 
     audit_context : 감사자에게 함께 줄 도메인 유의사항(감지된 함정 사실 등).
@@ -427,6 +429,12 @@ def llm_call_adapter(client=None, audit_context: str = ""):
 
     감사자에게 주는 것은 **판정 기준**이지 근거 문서가 아니므로,
     근거(evidence_texts)와 섞지 않고 별도 블록으로 붙인다.
+
+    ━━ purpose · max_tokens ━━
+    기본값은 L6 의미 감사(짧은 JSON 판정)에 맞춰져 있다. Sub-Agent 구제
+    재생성처럼 **답변 본문을 쓰는** 용도로 쓸 때는 반드시 함께 올릴 것 —
+    800토큰으로는 답변이 중간에 잘리고, purpose를 두면 USAGE 집계에서
+    감사 호출과 생성 호출이 섞이지 않는다.
     """
     c = client or get_client()
 
@@ -434,6 +442,6 @@ def llm_call_adapter(client=None, audit_context: str = ""):
         payload = user
         if audit_context:
             payload = f"{user}\n\n[도메인 유의사항 — 이 관점에서도 점검할 것]\n{audit_context}"
-        return c.call(system, payload, purpose="l6_semantic_audit", max_tokens=800)
+        return c.call(system, payload, purpose=purpose, max_tokens=max_tokens)
 
     return _call

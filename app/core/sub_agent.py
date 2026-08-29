@@ -132,7 +132,12 @@ def detect_anomalies(trace_entries: list[str],
         found.append(Anomaly(SEVERITY_LOOP, "REGEN_REPEAT",
                              f"재생성이 {regeneration_count}회 반복됨 "
                              f"(1회로 제한돼 있어야 한다)"))
-    if "재생성_기각" in joined and "재생성_반영" not in joined:
+    # ⚠️ 구제 재생성이 해소한 경우는 진전이 **있는** 것이다.
+    #    L5' 재생성이 기각돼도 Sub-Agent 구제가 채택됐으면 루프가 아니다.
+    #    이 조건을 빼면 구제가 성공한 정상 흐름마다 이상으로 잡혀,
+    #    쓸데없는 진단 LLM 호출이 한 번씩 더 붙는다(실측으로 확인).
+    progressed = ("재생성_반영" in joined) or ("구제_반영" in joined)
+    if "재생성_기각" in joined and not progressed:
         found.append(Anomaly(SEVERITY_LOOP, "REGEN_NO_PROGRESS",
                              "재생성 결과가 검증을 통과하지 못해 진전이 없다"))
 
@@ -256,3 +261,132 @@ def supervise_logic(trace_entries: list[str],
     result.diagnosis = diagnosis
     result.directive = directive
     return result
+
+
+# ════════════════════════════════════════════════════════════════
+# 구제 재생성 — Sub-Agent가 직접 답변을 쓴다 (HyperCLOVA X)
+# ════════════════════════════════════════════════════════════════
+"""
+━━ 왜 이 역할이 따로 있는가 ━━
+L6가 REVISE를 내면 L5'가 1회 재생성한다. 그런데 그 재생성마저 검증에
+걸리면 예전에는 **원본을 그대로 내보내고 고지문만 붙였다.** 감독이 두 번
+반려한 문장이 그대로 나가는 셈이라, 고지를 붙여도 답변 자체는 나아지지
+않았다.
+
+그래서 마지막 한 번을 Sub-Agent에게 준다. L5'와 같은 자리에서 같은
+프롬프트로 또 시도하면 같은 실패를 반복하기 쉬우므로, **지적사항을
+정면으로 놓고 다시 쓰는** 다른 역할로 접근한다.
+
+━━ 진단 역할과 반드시 분리한다 ━━
+SUB_AGENT_SYSTEM_PROMPT는 "답변을 작성하지 마십시오"가 핵심 규칙이다.
+거기에 생성 권한을 섞으면 진단 역할이 통째로 망가진다 — 정상 흐름에서
+진단만 해야 할 계층이 답변을 쓰기 시작한다. 그래서 프롬프트도 함수도
+따로 둔다.
+
+━━ 감사를 우회하지 않는다 (핵심) ━━
+이 답변도 **반드시 다시 검증을 거친다.** 통과하지 못하면 채택하지 않는다.
+여기서 검증을 건너뛰면 Sub-Agent가 감사를 빠져나가는 뒷문이 되고,
+"LLM 감사는 심각도를 올릴 수만 있다"는 단조성이 무너진다.
+"""
+
+SUB_AGENT_REWRITE_PROMPT = """당신은 연금 상담 답변을 **마지막으로 다시 쓰는** 작성자입니다.
+
+앞서 작성된 답변이 내부 감사에서 반려됐고, 한 번의 수정 시도도 실패했습니다.
+지적사항을 정면으로 반영해 답변을 처음부터 다시 쓰십시오.
+
+━━ 반드시 지킬 것 ━━
+1. **수치를 만들지 마십시오.** [계산 결과]에 주어진 값만 그대로 쓸 수 있습니다.
+   주어지지 않은 금액·비율·연차를 새로 쓰면 그 답변은 폐기됩니다.
+2. **근거 문서에 없는 사실을 쓰지 마십시오.** 사용자가 말하지 않은 조건을
+   말한 것처럼 옮기지 마십시오.
+3. **지적사항을 회피하지 말고 해소하십시오.** 문제가 된 문장을 지우기만 하면
+   같은 지적이 다시 나옵니다.
+4. **단정하지 마십시오.** 조건이 갈리면 "~인 경우에는 ~입니다" 형태로 나눠
+   서술하고, 확인이 필요한 전제를 함께 밝히십시오.
+5. 특정 상품을 추천하거나 "가장 유리하다"고 쓰지 마십시오.
+6. 확인을 요청할 항목은 **최대 2건**입니다.
+
+━━ 어떻게 쓰는가 ━━
+· 사람에게 말하듯 자연스럽게 이어지는 문장으로 쓰십시오.
+  대괄호 구획이나 번호 매긴 목차를 만들지 마십시오.
+· 이해한 조건 → 결론 → 한계 순으로 자연스럽게 흐르게 하십시오.
+· 정보가 모자라면 되돌려보내지 말고, 무엇까지 말할 수 있는지 밝힌 뒤
+  무엇을 확인하면 되는지 정리해 주십시오.
+
+답변 본문만 출력하십시오. 설명이나 머리말을 덧붙이지 마십시오."""
+
+
+def build_rewrite_payload(question: str,
+                          rejected_draft: str,
+                          supervision=None,
+                          calc_results: Optional[list[dict]] = None,
+                          evidence_texts: Optional[list[str]] = None,
+                          diagnosis: str = "") -> str:
+    """구제 재생성 입력.
+
+    진단 역할(build_sub_agent_payload)과 달리 **근거 문서와 계산 결과를 준다.**
+    답변을 써야 하므로 재료가 필요하다. 다만 계산 결과는 '이 값만 쓸 수
+    있다'는 화이트리스트로 제시한다 — 숫자를 만들지 못하게 하는 장치다.
+    """
+    parts = [f"[질문]\n{question}"]
+
+    findings = list(getattr(supervision, "findings", []) or [])
+    if findings:
+        parts.append("\n[감사가 지적한 것 — 이것을 해소해야 합니다]")
+        for f in findings:
+            detail = (getattr(f, "directive", "") or
+                      getattr(f, "detail", "") or "").strip()
+            if detail:
+                parts.append(f"· {detail}")
+
+    if diagnosis:
+        parts.append(f"\n[실행 로직 진단]\n{diagnosis}")
+
+    if calc_results:
+        parts.append("\n[계산 결과 — 이 값만 그대로 쓸 수 있습니다]")
+        for r in calc_results:
+            if not isinstance(r, dict):
+                continue
+            for k, v in r.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    parts.append(f"· {k} = {v}")
+    else:
+        parts.append("\n[계산 결과]\n없습니다. 어떤 수치도 새로 쓰지 마십시오.")
+
+    if evidence_texts:
+        parts.append("\n[근거 문서 — 이 내용만 사실로 인용 가능]")
+        for t in evidence_texts[:6]:
+            parts.append(f"---\n{t[:700]}")
+    else:
+        parts.append("\n[근거 문서]\n확보된 근거가 없습니다. "
+                     "제도 수치를 단정하지 말고, 무엇을 확인해야 답변드릴 수 "
+                     "있는지 정리해 주십시오.")
+
+    parts += ["\n[반려된 답변 — 참고만 하고 그대로 쓰지 마십시오]", rejected_draft]
+    return "\n".join(parts)
+
+
+def rescue_answer(question: str,
+                  rejected_draft: str,
+                  supervision=None,
+                  calc_results: Optional[list[dict]] = None,
+                  evidence_texts: Optional[list[str]] = None,
+                  diagnosis: str = "",
+                  llm_call: Optional[Callable[[str, str], str]] = None,
+                  ) -> str:
+    """Sub-Agent가 직접 다시 쓴 답변. 실패하면 빈 문자열.
+
+    ⚠️ 호출자는 이 결과를 **반드시 다시 검증**해야 한다. 검증 없이 채택하면
+       감사를 우회하는 경로가 생긴다.
+    """
+    if llm_call is None or not (rejected_draft or "").strip():
+        return ""
+
+    payload = build_rewrite_payload(question, rejected_draft, supervision,
+                                    calc_results, evidence_texts, diagnosis)
+    try:
+        raw = llm_call(SUB_AGENT_REWRITE_PROMPT, payload)
+    except Exception as e:                                    # noqa: BLE001
+        log.warning("Sub-Agent 구제 재생성 실패: %s", e)
+        return ""
+    return (raw or "").strip()

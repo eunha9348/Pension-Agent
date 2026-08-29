@@ -106,6 +106,9 @@ BUDGET_REGEN = 10.0
 # Sub-Agent는 보조 장치다. 남은 시간이 이만큼 없으면 감지만 하고 호출하지
 # 않는다 — 보조 장치가 본체를 지연시키면 그 자체가 결함이다.
 BUDGET_SUBAGENT = 3.0
+# Sub-Agent 구제 재생성 — 답변 생성 + 재검증까지 필요하므로 진단보다 크다.
+# L6가 REVISE를 내고 L5' 재생성마저 기각된 드문 경우에만 쓰인다.
+BUDGET_SUBAGENT_REWRITE = 12.0
 
 # 세제 관련 질의에서 구법 문서를 근거로 쓰지 않기 위한 신호
 _TAX_INTENTS = {"세액공제", "과세방식", "원천징수", "퇴직소득세", "퇴직소득세_감면"}
@@ -723,6 +726,59 @@ def _answer_question_impl(question_id: str, question: str,
                       "재생성 예산이 없거나 mock 모드 — 검증 미통과 사실을 고지하고 "
                       "등급을 낮춘 채로 진행")
 
+    # ── 구제 재생성 — Sub-Agent가 직접 다시 쓴다 ──────────────
+    #
+    # ⚠️ 여기까지 왔다는 것은 감독이 REVISE를 냈고 L5' 재생성마저 해소하지
+    #    못했다는 뜻이다. 예전에는 이 지점에서 **원본을 그대로 내보내고
+    #    고지문만 붙였다** — 감독이 두 번 반려한 문장이 그대로 나갔다.
+    #    고지는 정직하지만, 답변 자체가 나아지지는 않는다.
+    #
+    #    그래서 마지막 한 번을 Sub-Agent에게 준다. L5'와 같은 프롬프트로
+    #    또 시도하면 같은 실패를 반복하기 쉬우므로, 지적사항을 정면에 놓고
+    #    다시 쓰는 **다른 역할**로 접근한다(SUB_AGENT_REWRITE_PROMPT).
+    #
+    # ⚠️ 이 답변도 반드시 verify_grounding을 다시 통과해야 채택된다.
+    #    검증을 건너뛰면 Sub-Agent가 감사를 빠져나가는 뒷문이 되고,
+    #    "LLM 감사는 심각도를 올릴 수만 있다"는 단조성이 무너진다.
+    #    통과하지 못하면 예전과 똑같이 원본 + 고지 + 강등으로 간다.
+    if (unresolved and supervision is not None
+            and supervision.verdict == Verdict.REVISE
+            and deadline.allows(BUDGET_SUBAGENT_REWRITE)
+            and not getattr(client, "is_mock", False)):
+        from app.core.sub_agent import rescue_answer
+
+        trace.log("SubAgent_구제재생성",
+                  "L5' 재생성이 지적을 해소하지 못함 → Sub-Agent가 직접 "
+                  "답변을 다시 쓴다 (결과는 다시 검증한다)")
+        rescued = rescue_answer(
+            question=question,
+            rejected_draft=draft,
+            supervision=supervision,
+            calc_results=calc_results,
+            evidence_texts=[c.text for c in evidence],
+            llm_call=llm_call_adapter(client,
+                                      purpose="subagent_rewrite",
+                                      max_tokens=1500))
+
+        if rescued:
+            rescued, _ = strip_forbidden(rescued)
+            recheck = verify_grounding(rescued, evidence)
+            if recheck:
+                draft = rescued.strip()
+                verdict = recheck
+                supervision = recheck.supervision
+                unresolved = False
+                trace.log("SubAgent_구제_반영",
+                          "Sub-Agent가 다시 쓴 답변이 검증을 통과해 채택 "
+                          "(판정도 갱신)")
+            else:
+                trace.log("SubAgent_구제_기각",
+                          "Sub-Agent 답변도 검증에 실패 → 원본을 유지하고 "
+                          "검증 미통과 사실을 고지한다")
+        else:
+            trace.log("SubAgent_구제_실패",
+                      "Sub-Agent 재생성 호출이 답변을 만들지 못함 → 원본 유지")
+
     # ── BLOCK → 축퇴 ─────────────────────────────────────────
     if supervision is not None and supervision.verdict == Verdict.BLOCK:
         trace.log("L6_차단", "감독 심사 BLOCK — 생성 답변을 폐기하고 "
@@ -817,7 +873,7 @@ def _answer_question_impl(question_id: str, question: str,
         supervision=supervision,
         regeneration_count=regen_count,
         answerability=decision.value,
-        llm_call=(llm_call_adapter(client)
+        llm_call=(llm_call_adapter(client, purpose="subagent_diagnosis")
                   if deadline.allows(BUDGET_SUBAGENT) else None))
     if not health.healthy:
         trace.log("SubAgent_건전성", health.as_trace())
