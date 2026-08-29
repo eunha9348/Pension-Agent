@@ -232,7 +232,18 @@ def _evidence_snippet(evidence: list[EvidenceChunk], doc_ids: list[str],
        내용(세율표, 한도 수치)이 잘려 나가, 근거를 인용하고도 답이 비는
        상황이 생긴다. 슬롯 핵심어가 처음 등장하는 지점을 중심으로 자른다.
     """
+    from app.analysis.vocab import domain_hits, key_terms
+
     kws = set(keywords or ())
+
+    def _hits(c: EvidenceChunk) -> set[str]:
+        """청크에 실제로 등장하는 슬롯 핵심어.
+
+        ⚠️ 부분문자열(`kw in text`)로 세면 안 된다. 이 모듈 바깥의 매칭 계층
+        (slot_matching)은 처음부터 토큰 경계 기준인데, 여기만 부분문자열을
+        쓰면 **매칭이 거부한 근거가 인용문으로 새어 나간다.**
+        """
+        return kws & key_terms(c.text)
 
     def _relevance(c: EvidenceChunk) -> int:
         """슬롯 핵심어가 몇 개나 실제로 등장하는가.
@@ -240,20 +251,33 @@ def _evidence_snippet(evidence: list[EvidenceChunk], doc_ids: list[str],
         검색 순위 1위 청크가 그 슬롯의 최적 근거인 것은 아니다. BM25는 짧은
         청크를 선호하므로, 인용 문장은 핵심어가 실제로 많이 등장하는 쪽을 고른다.
         """
-        return sum(1 for kw in kws if kw in c.text)
+        return len(_hits(c))
+
+    candidates = [c for c in evidence if c.doc_id in doc_ids]
+
+    # ⚠️ 인용 기준은 **매칭 기준과 같아야 한다.**
+    #    이 인용문은 답변 본문에 그대로 들어간다. 검색이 빗나갔을 때 무관한
+    #    원문이 답변이 되어 나가는 경로가 여기다 — 실측 감사에서 ESG 회사
+    #    연혁이 '국민연금 제도'의 근거로, 펀드 클래스 표가 '주택연금
+    #    가입연령'의 근거로 실렸다.
+    #
+    #    예전에는 "핵심어가 하나라도 부분문자열로 있으면" 통과였다. 그런데
+    #    slot_matching._overlap_ok는 **도메인 핵심어가 겹쳐야** 통과다.
+    #    기준이 어긋난 탓에, 매칭이 거부한 청크가 인용문으로 나갔다:
+    #    "연간 2천만원 수령 시 부과되는 세금 범위" 슬롯에 금융소득종합과세
+    #    (이자·배당 2천만원) 조항이 붙었다 — '연간'·'천만원'만 겹쳤을 뿐
+    #    연금과 무관한 문단이다(2026-08-29 실측, 사용자 직접 지적).
+    #
+    #    ⚠️ 상위 1건만 보고 판단하면 안 된다. 한 문서 안에 여러 청크가 있고
+    #    그중 엉뚱한 것이 앞설 수 있다 — 그때 전체를 포기하면 **맞는 근거까지
+    #    버린다.** 도메인 핵심어가 겹치는 청크만 남기고 그 안에서 고른다.
+    #    남는 게 없으면 인용하지 않는다 — 근거를 못 찾았다고 밝히는 편이
+    #    엉뚱한 원문을 내미는 것보다 낫다.
+    if kws:
+        candidates = [c for c in candidates if domain_hits(_hits(c))]
 
     # 순위(안정 정렬)를 유지하면서 관련도가 높은 청크를 앞으로
-    ordered = sorted((c for c in evidence if c.doc_id in doc_ids),
-                     key=_relevance, reverse=True)
-
-    # ⚠️ 슬롯 핵심어가 **하나도** 없는 청크는 인용하지 않는다.
-    #    이 인용문은 [조건별 결론] 자리에 그대로 들어간다. 검색이 빗나갔을 때
-    #    무관한 원문이 답변 본문이 되어 나가는 경로가 여기다 — 실측 감사에서
-    #    ESG 회사 연혁이 '국민연금 제도'의 근거로, 펀드 클래스 표가
-    #    '주택연금 가입연령'의 근거로 실렸다.
-    #    근거를 못 찾았다고 밝히는 편이 엉뚱한 원문을 내미는 것보다 낫다.
-    if kws and ordered and _relevance(ordered[0]) == 0:
-        return ""
+    ordered = sorted(candidates, key=_relevance, reverse=True)
 
     for c in ordered:
         text = " ".join(c.text.split())
