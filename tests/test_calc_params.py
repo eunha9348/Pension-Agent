@@ -395,3 +395,81 @@ def test_규칙이_못_읽은_금액은_L1_값을_쓴다():
     c = derive_conditions("연금 세금이 궁금해요",
                           llm_conditions={"severance_manwon": 20000})
     assert c["severance_manwon"] == 20000.0
+
+
+# ════════════════════════════════════════════════════════════════
+# 단위 통일 — 만원 단일 (2026-08-29 R6)
+# ════════════════════════════════════════════════════════════════
+# 계산함수 15종은 전부 만원 단위다. 원 단위 값이 인자로 새어 들어가면
+# **1만배 오차**가 난다 — 600만원을 원으로 쓴 6,000,000이 통과하면
+# 60조원으로 계산된다. 상한이 그 차단선이다.
+
+@pytest.mark.parametrize("name,value", [
+    ("account_value", 100_000_000),       # 1억원을 원으로
+    ("severance_pay", 200_000_000),       # 2억원을 원으로
+    ("X_pension_saving", 6_000_000),      # 600만원을 원으로
+    ("Y_irp_personal", 9_000_000),        # 900만원을 원으로
+    ("P_private_monthly", 1_000_000),     # 100만원을 원으로
+    ("P_np_annual", 12_000_000),          # 1200만원을 원으로
+])
+def test_원_단위_유입은_경계에서_차단된다(name, value):
+    from app.analysis.calc_params import validate_param
+
+    assert validate_param(name, value) is not None, \
+        f"{name}={value:,} 가 통과했다 — 1만배 오차가 난다"
+
+
+@pytest.mark.parametrize("name,value", [
+    ("account_value", 10_000),        # 1억
+    ("account_value", 1_000_000),     # 100억 — 상한 경계
+    ("severance_pay", 20_000),        # 2억
+    ("X_pension_saving", 600),
+    ("X_pension_saving", 1_800),      # 연간 총 납입한도 = 상한 경계
+    ("Y_irp_personal", 900),
+    ("P_private_monthly", 100),
+    ("P_private_pension_annual", 1_200),
+])
+def test_정상_만원_값은_통과한다(name, value):
+    from app.analysis.calc_params import validate_param
+
+    assert validate_param(name, value) is None, \
+        f"{name}={value:,} 가 차단됐다 — 정상 범위인데 되묻게 된다"
+
+
+def test_모든_금액_인자에_상한이_있다():
+    """상한이 None이면 원 단위 유입을 못 막는다."""
+    from app.analysis.calc_params import _VALID
+
+    amount_params = ("account_value", "severance_pay", "X_pension_saving",
+                     "Y_irp_personal", "P_private_monthly",
+                     "P_private_pension_annual", "P_np_annual",
+                     "I_monthly", "I_final_monthly")
+    for name in amount_params:
+        low, high, _ask = _VALID[name]
+        assert high is not None, f"{name}에 상한이 없다 — 원 단위가 새어 든다"
+
+
+def test_차단되면_되묻는다_계산을_강행하지_않는다():
+    """틀린 숫자를 내는 것보다 물어보는 편이 낫다."""
+    from app.analysis.calc_params import make_calc_params_builder
+
+    builder = make_calc_params_builder({"account_value_manwon": 100_000_000,
+                                        "pension_year": 1})
+    with pytest.raises(MissingCalcParams):
+        builder(_slot("연금수령한도_계산"))
+
+
+def test_입력_경계가_항상_만원으로_변환한다():
+    """사용자는 원·만원·억을 섞어 쓴다. 함수에 닿을 때는 만원이어야 한다."""
+    cases = [
+        ("연금저축에 600만원 넣으면", "pension_saving_manwon", 600),
+        ("연금저축에 6000000원 넣으면", "pension_saving_manwon", 600),
+        ("계좌에 1억원 있고", "account_value_manwon", 10000),
+        ("계좌에 1억 2천만원 있고", "account_value_manwon", 12000),
+        ("계좌에 100000000원 있고", "account_value_manwon", 10000),
+        ("퇴직금 2억원 받았고", "severance_manwon", 20000),
+        ("총급여 5500만원", "total_income_manwon", 5500),
+        ("총급여 55000000원", "total_income_manwon", 5500),
+    ]
+    for q, key, expected in cases:
+        assert derive_conditions(q).get(key) == expected, q
