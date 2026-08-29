@@ -237,3 +237,84 @@ def test_barrier가_판정_결과를_후보에_기록한다():
     kept, _ = _eligibility_barrier(cands, v, TraceLogger())
     for c in kept:
         assert "eligible" in c
+
+
+# ════════════════════════════════════════════════════════════════
+# L6 정합성 감사 (2026-08-29 신설) — 감독을 '로직 정합성 점검 위주'로 재조정
+# ════════════════════════════════════════════════════════════════
+#
+# ⚠️ 이 감사의 설계 제약: 오탐은 미탐보다 **엄격히 나쁘다.**
+#    권한 계층상 LLM 감사는 심각도를 올릴 수만 있고 결정론적 판정을
+#    완화하지 못하므로, 결정론적 오탐은 되돌릴 수 없는 강제 강등이 된다.
+#    아래 테스트가 지키는 것이 정확히 그 경계다.
+
+def test_한_문장_안의_모순을_잡는다():
+    from app.core.supervisory_board import audit_coherence
+
+    codes = [f.code for f in audit_coherence("중도인출은 가능합니다만 불가능합니다.")]
+    assert "SELF_CONTRADICTION" in codes
+
+
+def test_부정문만_있으면_모순이_아니다():
+    """'불가능합니다'는 '가능합니다'를 부분문자열로 포함한다.
+
+    단순 `in` 검사를 쓰면 부정문 하나만으로 스스로 발화한다. 실제로 그
+    형태의 오탐이 실측에서 나왔다(E14 '명예퇴직금도 퇴직소득으로 보나요?').
+    경계를 준 정규식이 아니면 이 테스트가 깨진다.
+    """
+    from app.core.supervisory_board import audit_coherence
+
+    assert audit_coherence("IRP로 넣으면 일부만 꺼내는 것은 불가능합니다.") == []
+
+
+def test_조건별_결론은_모순이_아니다():
+    """조건에 따라 결론이 갈리는 것은 결함이 아니라 **설계 요구사항**이다.
+
+    CLAUDE.md — 단정적 추천 금지, 확인조건 제시 후 상황별 결론.
+    이걸 모순으로 잡으면 정상 동작을 깎는다.
+    """
+    from app.core.supervisory_board import audit_coherence
+
+    answer = ("DC 계좌로 지급되는 경우에는 과세이연이 가능합니다. "
+              "급여계좌로 지급되는 경우에는 계좌 내 이연이 불가능합니다.")
+    assert audit_coherence(answer) == []
+
+
+def test_정합성_감사는_문체를_판정하지_않는다():
+    """L5'는 사람처럼 이어지는 문장으로 쓰도록 설계됐다(R7).
+
+    구획 표시가 없다는 이유로 감사가 지적하면 그 설계를 되돌리게 된다.
+    """
+    from app.core.supervisory_board import audit_coherence
+
+    flowing = ("말씀하신 조건이라면 연금수령한도는 1,200만원입니다. "
+               "그렇게 판단한 근거는 평가액과 연금수령연차이고, "
+               "연금실제수령연차가 확인되면 더 정확히 안내드릴 수 있습니다.")
+    assert audit_coherence(flowing) == []
+
+
+def test_전제결론_정합은_결정론_계층에_두지_않는다():
+    """'모른다고 해 놓고 단정한다'는 의미 감사(LLM) 소관이다.
+
+    결정론적으로 시도했다가 298건 중 26건(8.7%) 오탐이 났다 — 실질적으로
+    경우를 나눈 문장('…에 따라 달라집니다')이 표지 목록에 없어서 걸렸다.
+    표현의 가짓수가 유한하지 않으므로 목록 확장으로는 닫히지 않는다.
+    되살리려면 이 테스트를 먼저 읽을 것.
+    """
+    import inspect
+
+    from app.core import supervisory_board as sb
+
+    assert not hasattr(sb, "_UNKNOWN_MARKERS")
+    assert "UNKNOWN_THEN_ASSERT" not in inspect.getsource(sb.audit_coherence)
+    # 대신 의미 감사 프롬프트가 전제–결론 정합을 본다
+    assert "전제" in sb.LLM_AUDIT_SYSTEM_PROMPT
+
+
+def test_supervise가_정합성_감사를_실제로_호출한다():
+    """배선 검사 — 함수만 있고 호출되지 않는 결함이 과거에 있었다."""
+    from app.core.supervisory_board import Verdict, supervise
+
+    res = supervise("중도인출은 가능합니다만 불가능합니다.")
+    assert "SELF_CONTRADICTION" in [f.code for f in res.findings]
+    assert res.verdict != Verdict.APPROVE
