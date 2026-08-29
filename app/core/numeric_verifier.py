@@ -128,6 +128,21 @@ def _flatten_numbers(obj: Any) -> set[float]:
             if (k in _UNIT_MANWON and isinstance(v, (int, float))
                     and not isinstance(v, bool)):
                 found.add(float(v) * 10_000)      # 만원 → 원
+                # ⚠️ **표시 반올림도 허용해야 한다.** format_manwon은 만원
+                #    단위에서 정수로 반올림한다(76.56 → "77만원"). 그런데
+                #    대조 집합에는 원본 76.56만 있어서, 시스템이 스스로
+                #    표시한 값을 '근거 없는 수치'로 판정했다.
+                #    상대오차 0.5%로는 못 흡수한다 — 77 vs 76.56은 0.575%로
+                #    간발의 차로 걸린다(2026-08-29 실측).
+                #
+                #    이건 오차 허용을 늘리는 것과 다르다. render_calc_result가
+                #    표시한 값은 **계산함수 출력에서 결정론적으로 파생된 것**
+                #    이므로 정의상 근거가 있다. LLM이 지어낸 수가 아니다.
+                #    (허용 오차를 키우면 진짜 날조까지 통과하므로 그 길로
+                #     가면 안 된다.)
+                rounded = float(round(float(v)))
+                found.add(rounded)
+                found.add(rounded * 10_000)
     elif isinstance(obj, (list, tuple, set)):
         for v in obj:
             found |= _flatten_numbers(v)
