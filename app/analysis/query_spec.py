@@ -174,6 +174,20 @@ class TopicRule:
     #
     # 사실 슬롯은 그대로 남으므로 검색·함정 유도는 영향받지 않는다.
     calc_needs: tuple[str, ...] = ()
+    # 키워드가 없어도 이 조건이 성립하면 규칙을 발동시킨다.
+    # (조건키, 하한) — conditions[키] > 하한 이면 매칭으로 본다.
+    #
+    # ━━ 왜 필요한가 ━━
+    # 과세방식 규칙의 키워드는 "분리과세·종합과세·1500"뿐이었다. 그런데
+    # **1,500만원 기준선을 모르는 사용자는 그 말을 쓰지 않는다** — 모르니까
+    # 묻는 것이다. "연 2,000만원 받는데 세금 어떻게 되나요?"가 주제 미매칭으로
+    # 떨어져 계산이 통째로 안 돌았다(2026-08-29 실측).
+    #
+    # 조건으로 거는 것이 안전한 이유: private_pension_annual_manwon은
+    # "연/연간 ○○ 받|수령|나오" 패턴에서만 나온다. 즉 사용자가 **연간
+    # 수령액임을 명시**한 경우뿐이고, 납입액·평가액과 섞이지 않는다.
+    # 1,500만원이라는 문턱 자체도 제공문서에 있는 확정 수치다.
+    trigger_when_over: tuple[str, float] | None = None
 
 
 # 순서가 중요하다 — 앞의 규칙이 더 구체적인 주제다.
@@ -202,7 +216,8 @@ TOPIC_RULES: list[TopicRule] = [
                           "combined_contribution_manwon")),
     TopicRule("과세방식", ("분리과세", "종합과세", "1500", "1,500", "천오백"),
               "gwase_bangsik", "1,500만원 초과 시 과세방식 선택",
-              "과세방식_비교_계산", "연금소득 과세방식 선택 기준"),
+              "과세방식_비교_계산", "연금소득 과세방식 선택 기준",
+              trigger_when_over=("private_pension_annual_manwon", 1500)),
     TopicRule("원천징수", ("원천징수", "몇 퍼센트", "몇 %", "세율", "세금 얼마",
                         "얼마나 떼", "떼나요"),
               "wonchen", "연금소득 원천징수세율",
@@ -231,10 +246,24 @@ TOPIC_RULES: list[TopicRule] = [
 _FALLBACK_SLOT = ("ilban", "질의 주제에 대한 제공 자료 근거")
 
 
-def _match_topics(question: str) -> list[TopicRule]:
-    hits = [r for r in TOPIC_RULES
-            if any(k in question for k in r.keywords)
-            and not any(x in question for x in r.exclude)]
+def _match_topics(question: str,
+                  conditions: Optional[dict] = None) -> list[TopicRule]:
+    conditions = conditions or {}
+
+    def _matched(r: TopicRule) -> bool:
+        if any(x in question for x in r.exclude):
+            return False
+        if any(k in question for k in r.keywords):
+            return True
+        # 키워드가 없어도 조건이 문턱을 넘으면 발동한다 (위 주석 참조)
+        if r.trigger_when_over:
+            key, floor = r.trigger_when_over
+            v = conditions.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > floor:
+                return True
+        return False
+
+    hits = [r for r in TOPIC_RULES if _matched(r)]
     # 같은 계산함수를 두 번 넣지 않는다
     seen: set[str] = set()
     out: list[TopicRule] = []
@@ -268,7 +297,7 @@ def _wants_calc(rule: TopicRule, question: str, conditions: dict) -> bool:
 def rule_based_spec(question: str) -> dict:
     """LLM 없이 질의 스펙을 만든다."""
     conditions = derive_conditions(question)
-    topics = _match_topics(question)
+    topics = _match_topics(question, conditions)
 
     asked_for: list[dict] = []
     planned: list[dict] = []

@@ -289,6 +289,16 @@ def derive_conditions(question: str,
     if (m := re.search(r'(?:연간|1년에|해마다|매년|연)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q)):
         if (v := parse_amount_to_manwon(m.group(1))) is not None:
             c["private_pension_annual_manwon"] = v
+    # ⚠️ 위 정규식은 시간 표지 **바로 다음 토큰**만 금액으로 본다. 그래서
+    #    "연간 연금수령액 2,000만원 받는데"처럼 사이에 명사가 끼면 '연금'을
+    #    캡처하고 실패한다(2026-08-29 실측 — 계산이 통째로 안 돌았다).
+    #    _find_amount_near는 키워드와 금액이 떨어져 있는 경우를 다루라고
+    #    이미 있는 도구이므로 그대로 재사용한다. 위에서 못 잡았을 때만
+    #    보조로 돌려, 기존에 맞던 케이스의 해석은 건드리지 않는다.
+    if "private_pension_annual_manwon" not in c:
+        if (v := _find_amount_near(q, ("연간 연금수령액", "연간 수령액",
+                                       "연 연금수령액"))) is not None:
+            c["private_pension_annual_manwon"] = v
 
     # 문맥 없는 단일 금액은 보조 후보로만 둔다 (용도를 단정하지 않는다)
     if (generic := parse_amount_to_manwon(q)) is not None:
