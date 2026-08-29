@@ -250,7 +250,9 @@ def test_템플릿_한계고지가_완결을_선언하지_않는다():
 
     out = render_template_answer({"user_conditions": {}}, [], [])
     assert "추가 확인이 필요한 사항은 없습니다" not in out
-    assert "[한계 고지]" in out
+    # 구획 표시 대신 한계 고지 '내용'이 실제로 있는지를 본다
+    assert ("달라질 수 있습니다" in out or "확인해 주시면" in out
+            or "확정하기 어렵습니다" in out), out
 
 
 # ════════════════════════════════════════════════════════════════

@@ -92,14 +92,24 @@ def _calc_slot():
     return s
 
 
-def test_템플릿_답변은_세_블록_형식을_지킨다():
+def test_템플릿_답변이_세_항목을_모두_담는다():
+    """2026-08-29 — 대괄호 구획은 없앴지만 **항목은 그대로**다.
+
+    검사 대상이 형식이 아니라 내용으로 바뀌었다. 사람처럼 이어지는
+    문장으로 쓰되, 조건 이해·결론·한계 셋이 빠지면 안 된다.
+    """
     spec = {"query": "1억이고 1년차면 얼마까지?",
             "user_conditions": {"account_value_manwon": 10000, "pension_year": 1}}
     out = render_template_answer(spec, [], [_calc_slot()])
-    assert "[확인된 조건]" in out
-    assert "[조건별 결론]" in out
-    assert "[한계 고지]" in out
-    assert "1,200만원" in out         # 계산 결과 수치가 실제로 들어간다
+
+    assert "조건으로 이해했습니다" in out           # ① 조건 이해
+    assert "1,200만원" in out                      # ② 결론 (계산 수치)
+    assert ("확인해 주시면" in out or "달라질 수 있습니다" in out
+            or "확정하기 어렵습니다" in out)          # ③ 한계 고지
+
+    # 딱딱한 구획은 쓰지 않는다 — L5'와 같은 어조여야 한다
+    for bracket in ("[확인된 조건]", "[조건별 결론]", "[한계 고지]"):
+        assert bracket not in out, f"구획 표시가 남아 있다: {bracket}"
 
 
 def test_템플릿_답변에_금지표현이_없다():
