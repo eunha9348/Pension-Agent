@@ -102,7 +102,19 @@ def extract_numbers(text: str, include_trivial: bool = False) -> set[float]:
 
 
 def _flatten_numbers(obj: Any) -> set[float]:
-    """계산 결과 dict/list에서 모든 수치를 재귀 추출."""
+    """계산 결과 dict/list에서 모든 수치를 재귀 추출.
+
+    ━━ 만원 단위 값은 원 단위 표기도 함께 허용한다 ━━
+    계산함수는 전부 만원 단위인데(CLAUDE.md), 답변은 사람이 읽는 글이라
+    "66만원"을 "660,000원"으로 쓰는 일이 흔하다. 그러면 대조 집합에 66만
+    있고 660000은 없어서, **맞는 값을 날조로 판정한다.** 실측(L10)에서
+    660000이 '근거 없는 수치'로 잡혀 답변이 축퇴됐다.
+
+    ⚠️ 단위를 아는 키에서만 환산한다. 모든 수에 ×10000을 적용하면
+       연차·나이 같은 값까지 거대한 후보를 만들어 날조를 통과시킨다.
+    """
+    from app.generation.render import _UNIT_MANWON
+
     found: set[float] = set()
     if isinstance(obj, bool):
         return found
@@ -111,8 +123,11 @@ def _flatten_numbers(obj: Any) -> set[float]:
     elif isinstance(obj, str):
         found |= extract_numbers(obj, include_trivial=True)
     elif isinstance(obj, dict):
-        for v in obj.values():
+        for k, v in obj.items():
             found |= _flatten_numbers(v)
+            if (k in _UNIT_MANWON and isinstance(v, (int, float))
+                    and not isinstance(v, bool)):
+                found.add(float(v) * 10_000)      # 만원 → 원
     elif isinstance(obj, (list, tuple, set)):
         for v in obj:
             found |= _flatten_numbers(v)
@@ -208,6 +223,23 @@ _PRESENCE_SKIP = {"source", "rate_source", "DEPRECATED", "note", "기준", "acti
                   "choice_required"}
 
 
+# 제도가 정한 **상수 한도**. 계산값이 아니라 맥락이다.
+#
+# ⚠️ 이 값들을 언제나 요구하면 안 된다. calc_private_contribution_limit은
+#    납입액을 몰라도 한도를 내보내도록 고쳐졌는데(E-01), 그 결과 납입액을
+#    아는 질의에서도 세 한도가 전부 '답변에 실려야 할 값'으로 잡혔다.
+#    실측: "연금저축에 1200만원을 넣으면 전부 세액공제 되나요?"(A08)에
+#    답변이 600만원·99만원·79만원을 정확히 제시했는데도, 묻지도 않은
+#    900만원·1,800만원이 없다는 이유로 CALC_NOT_SHOWN → REVISE → 재생성
+#    실패 → PARTIAL 강등까지 갔다. 맞는 답이 규칙 때문에 깎인 것이다.
+_LIMIT_CONSTANTS = {"연금저축_단독_한도", "연금저축_IRP_합산_한도",
+                    "연간_총납입한도"}
+
+# 이것이 있으면 '계산이 이뤄진 질의'다 — 그때 한도는 맥락이 된다.
+_COMPUTED_KEYS = {"A_tax_credit", "T_withholding", "limit", "difference",
+                  "산출세액", "합계"}
+
+
 def _presence_targets(result: Any, prefix: str = "") -> list[tuple[str, float, str]]:
     """계산 결과에서 (라벨, 값, 표기) 목록을 뽑는다. variants 구조도 훑는다."""
     from app.generation.render import _UNIT_MANWON, _UNIT_RATE, format_value, label_of
@@ -222,7 +254,13 @@ def _presence_targets(result: Any, prefix: str = "") -> list[tuple[str, float, s
             out.extend(_presence_targets(v.get("result"), f"{tag} "))
         return out
 
+    # 계산값이 나온 질의에서는 상수 한도를 요구하지 않는다.
+    # 계산값이 없으면(= 한도만 안내하는 질의) 한도가 곧 답이므로 요구한다.
+    computed = any(k in result for k in _COMPUTED_KEYS)
+
     for key, value in result.items():
+        if computed and key in _LIMIT_CONSTANTS:
+            continue
         if key in _PRESENCE_SKIP or not isinstance(value, (int, float)):
             continue
         if isinstance(value, bool):
@@ -275,11 +313,20 @@ def verify_calc_presence(answer: str,
 
 def verify_numeric_grounding(answer: str,
                               calc_results: Iterable[Any] = (),
-                              evidence_texts: Iterable[str] = ()) -> VerificationResult:
-    """답변의 모든 수치가 계산 결과 또는 근거문서에 실재하는지 검증.
+                              evidence_texts: Iterable[str] = (),
+                              question: str = "") -> VerificationResult:
+    """답변의 모든 수치가 계산 결과·근거문서·질의에 실재하는지 검증.
 
     calc_results   : Prediction Agent가 반환한 dict들의 목록
     evidence_texts : retrieved_context에 포함된 근거문서 원문들
+    question       : 사용자 질의 원문
+
+    ━━ 질의를 허용 근거에 넣는 이유 ━━
+    사용자가 말한 숫자를 답변이 되짚는 것은 날조가 아니다. 그런데 예전에는
+    질의가 대조 집합에 없어서, "만 65세가 연 1200만원 받으면"이라는 질문에
+    "만 65세", "1,200만원"이라고 답하면 그 두 수가 **근거 없는 수치**로
+    잡혔다(실측 L10 — 65.0과 12000000.0이 날조로 분류돼 답변이 축퇴됨).
+    확인된 조건을 다시 언급하는 것은 상담 답변의 기본 형식이므로 허용한다.
 
     반환 passed=False 이면 호출 측에서 ① 재생성 1회 시도 후
     ② 그래도 실패하면 fallback 템플릿으로 축퇴시킬 것.
@@ -289,6 +336,13 @@ def verify_numeric_grounding(answer: str,
         allowed |= _flatten_numbers(r)
     for t in evidence_texts:
         allowed |= extract_numbers(t, include_trivial=True)
+    if question:
+        allowed |= extract_numbers(question, include_trivial=True)
+        # 질의는 원 단위로 쓰이는 일이 많다("1200만원" → 12,000,000원).
+        # 만원 단위 계산 체계와 맞물리도록 양방향을 함께 허용한다.
+        from app.analysis.units import parse_amount_expressions
+        for _s, _e, v in parse_amount_expressions(question):
+            allowed |= {v, v * 10_000}
 
     answer_nums = extract_numbers(answer)
     ungrounded = [n for n in answer_nums if not _matches(n, allowed)]

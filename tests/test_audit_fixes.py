@@ -359,3 +359,69 @@ def test_규칙_계산슬롯_dedup이_사실_슬롯까지_지우지_않는다():
     out = reconcile_spec(llm, fb, question)
     ids = [s["id"] for s in out["asked_for"]]
     assert "seaek_gongje_fact" in ids
+
+
+# ════════════════════════════════════════════════════════════════
+# 검증기가 맞는 답을 깎아내던 결함 2건 (2026-08-29 실서버 실측)
+# ════════════════════════════════════════════════════════════════
+# 두 건 모두 "계산은 맞는데 검증이 답을 반려"시켜, 재생성 실패 → 등급
+# 강등까지 갔다. 300건 재현에서 점수가 전혀 안 오른 원인이기도 하다.
+
+def test_사용자가_말한_숫자를_되짚어도_날조가_아니다():
+    """L10 실측 — 질의의 나이·금액이 '근거 없는 수치'로 잡혀 축퇴됐다."""
+    from app.core.numeric_verifier import verify_numeric_grounding
+
+    q = "만 65세가 연금으로 연 1200만원 받으면 세금은 얼마인가요?"
+    calc = [{"r_withholding": 0.055, "T_withholding": 66.0}]
+    ans = "만 65세이시고 연 1,200만원을 수령하시면 세율은 5.5%입니다."
+
+    r = verify_numeric_grounding(ans, calc, [], question=q)
+    assert r.passed, f"질의의 수치가 날조로 잡혔다: {r.ungrounded}"
+
+
+def test_만원단위_계산값을_원단위로_써도_날조가_아니다():
+    """계산함수는 만원 단위인데 답변은 원 단위로 쓰는 일이 흔하다."""
+    from app.core.numeric_verifier import verify_numeric_grounding
+
+    calc = [{"T_withholding": 66.0}]
+    r = verify_numeric_grounding("원천징수세액은 660,000원입니다.", calc, [])
+    assert r.passed, f"만원→원 표기가 날조로 잡혔다: {r.ungrounded}"
+
+
+def test_단위환산은_금액키에만_적용된다():
+    """모든 수에 ×10000을 적용하면 날조를 통과시킨다."""
+    from app.core.numeric_verifier import _flatten_numbers
+
+    nums = _flatten_numbers({"pension_year": 5, "T_withholding": 66.0})
+    assert 660000.0 in nums, "금액 키는 원 단위도 허용해야 한다"
+    assert 50000.0 not in nums, "연차 같은 비금액 키까지 환산하면 안 된다"
+
+
+def test_계산값이_나온_질의는_상수_한도를_요구하지_않는다():
+    """A08 실측 — 묻지도 않은 900·1,800만원이 없다고 REVISE→강등됐다."""
+    from app.core.numeric_verifier import verify_calc_presence
+
+    calc = [{"variants": [
+        {"label": "총급여 5,500만원 이하",
+         "result": {"연금저축_단독_한도": 600, "연금저축_IRP_합산_한도": 900,
+                    "연간_총납입한도": 1800, "A_tax_credit": 99.0}},
+        {"label": "총급여 5,500만원 초과",
+         "result": {"연금저축_단독_한도": 600, "연금저축_IRP_합산_한도": 900,
+                    "연간_총납입한도": 1800, "A_tax_credit": 79.2}},
+    ]}]
+    ans = "연금저축 단독 한도 600만원이므로 99만원 또는 79.2만원을 공제받습니다."
+
+    p = verify_calc_presence(ans, calc)
+    assert p.passed, f"묻지 않은 한도까지 요구했다: {[m[0] for m in p.missing]}"
+
+
+def test_한도만_안내하는_질의는_여전히_한도를_요구한다():
+    """E-01 회귀 — 계산값이 없으면 한도가 곧 답이므로 반드시 실려야 한다."""
+    from app.core.numeric_verifier import verify_calc_presence
+
+    calc = [{"연금저축_단독_한도": 600, "연금저축_IRP_합산_한도": 900,
+             "연간_총납입한도": 1800, "note": "납입액 미확인"}]
+
+    p = verify_calc_presence("한도가 정해져 있습니다.", calc)
+    assert not p.passed, "한도 질의인데 한도 누락을 놓쳤다"
+    assert len(p.missing) == 3

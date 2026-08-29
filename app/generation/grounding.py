@@ -140,7 +140,8 @@ def make_verify_grounding(question: str,
         #   grounding : 답변의 수치 → 근거   (없는 숫자를 지어내는 것을 막음)
         #   presence  : 계산 결과 → 답변     (계산해 놓고 안 쓰는 것을 막음)
         # 후자가 없으면 "계산은 함수, 설명은 LLM" 원칙이 절반만 지켜진다.
-        numeric = verify_numeric_grounding(answer, calc_results, evidence_texts)
+        numeric = verify_numeric_grounding(answer, calc_results, evidence_texts,
+                                           question=question)
         presence = verify_calc_presence(answer, calc_results)
         disclosure = verify_source_disclosure(answer, calc_results)
 
