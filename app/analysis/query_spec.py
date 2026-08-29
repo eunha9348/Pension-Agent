@@ -55,7 +55,7 @@ from app.core.coverage_pipeline import CALC_REGISTRY
 # sanitize_spec() 과 supervise_plan() 이 결과를 어차피 전수 검증한다.
 
 QUERY_SPEC_KEYS = ("intent", "asked_for", "user_conditions",
-                   "entities", "search_terms", "plan")
+                   "extra_conditions", "entities", "search_terms", "plan")
 
 L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기입니다.
 답변을 작성하지 마십시오. 질문이 요구한 것이 무엇인지만 구조화하십시오.
@@ -89,6 +89,7 @@ L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기�
     "pension_saving_manwon": 0, "irp_manwon": 0, "severance_manwon": 0,
     "account_value_manwon": 0, "total_income_manwon": 0,
     "private_pension_annual_manwon": 0, "fund_class": ""},
+  "extra_conditions": {"사용자가 밝힌 그 밖의 사정": "값"},
   "entities": {"product_name": "", "product_code": "",
                "fund_class": "", "plan_type": ""},
   "search_terms": ["문서 용어로 옮긴 검색어"],
@@ -96,7 +97,21 @@ L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기�
 }
 
 확인되지 않은 항목은 키를 아예 빼십시오(0이나 빈 문자열로 채우지 마십시오).
-calc_function 에 쓸 수 있는 값: {calc_functions}"""
+calc_function 에 쓸 수 있는 값: {calc_functions}
+
+━━ extra_conditions — 위 목록에 없는 사정도 빠짐없이 담으십시오 ━━
+user_conditions는 계산함수가 쓰는 고정 항목이라 목록이 정해져 있습니다.
+그런데 사람은 그 목록에 맞춰 말하지 않습니다. 목록에 없는 사정이 나오면
+**버리지 말고** extra_conditions에 자유로운 키로 담으십시오. 예:
+
+  "24살이고 부동산은 없고 현금 3,500만원이 있어요. 주택청약은 400만원이고요."
+    → user_conditions: {"age": 24}
+      extra_conditions: {"보유현금_만원": 3500, "부동산": "없음",
+                         "주택청약_만원": 400}
+
+이 정보는 계산에 직접 쓰이지는 않더라도, 무엇을 더 물어야 하는지와
+어떤 안내가 이 사람에게 맞는지를 정하는 근거가 됩니다.
+**질문에 없는 것을 지어내지는 마십시오.** 사용자가 말한 것만 담습니다."""
 
 
 def parse_spec_json(raw: str) -> Optional[dict]:
@@ -359,10 +374,52 @@ def sanitize_spec(spec: dict, question: str) -> dict:
     out["planned_calls"] = planned
 
     out["user_conditions"] = derive_conditions(question, out.get("user_conditions"))
+    out["extra_conditions"] = sanitize_extra_conditions(
+        out.get("extra_conditions"), out["user_conditions"])
     out["entities"] = {k: v for k, v in (out.get("entities") or {}).items() if v}
     out["plan"] = [str(p) for p in (out.get("plan") or [])][:6]
     out["search_terms"] = sanitize_search_terms(
         out.get("search_terms"), question)
+    return out
+
+
+# 자유 조건은 보조 정보다 — 무한정 받으면 프롬프트를 잠식한다
+MAX_EXTRA_CONDITIONS = 12
+_EXTRA_KEY_MAX = 40
+_EXTRA_VAL_MAX = 120
+
+
+def sanitize_extra_conditions(extra, user_conditions: dict) -> dict:
+    """21종 밖 조건을 안전한 형태로 정리한다.
+
+    ━━ 왜 받는가 ━━
+    user_conditions는 계산함수가 쓰는 고정 스키마라 목록이 정해져 있다.
+    그런데 사람은 그 목록에 맞춰 말하지 않는다 — "부동산은 없고 현금
+    3,500만원, 주택청약 400만원"은 어느 키에도 안 들어간다. 예전에는
+    그대로 버려져서, 사용자가 분명히 말한 사정이 답변에 반영되지 않았다.
+
+    ━━ 무엇을 하지 않는가 ━━
+    이 값은 **계산함수 인자로 쓰이지 않는다.** 정규 스키마를 우회해
+    계산에 들어가면 단위·타입 검증을 통째로 건너뛰게 된다.
+    쓰임은 두 가지뿐이다: 답변 생성 시 맥락, 되물을 항목 선정.
+    """
+    if not isinstance(extra, dict):
+        return {}
+    known = set(user_conditions or {})
+    out: dict[str, str] = {}
+    for k, v in extra.items():
+        key = str(k).strip()[:_EXTRA_KEY_MAX]
+        # 정규 스키마와 겹치는 키는 버린다 — 검증을 거친 쪽이 우선이다
+        if not key or key in known:
+            continue
+        if v is None or isinstance(v, (dict, list, tuple, set)):
+            continue
+        val = str(v).strip()[:_EXTRA_VAL_MAX]
+        if not val:
+            continue
+        out[key] = val
+        if len(out) >= MAX_EXTRA_CONDITIONS:
+            break
     return out
 
 
