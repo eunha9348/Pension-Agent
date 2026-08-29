@@ -103,10 +103,15 @@ class TraceLogger:
     def as_text(self) -> str:
         """API 응답의 think_trace 필드(string)로 직렬화.
         사람이 순서대로 읽었을 때 판단 흐름이 그대로 이해되도록 문장형으로."""
-        lines = []
-        for s in self._steps:
-            lines.append(f"[{s.elapsed_ms}ms] {s.step} — {s.reason}")
-        return "\n".join(lines)
+        return "\n".join(self.entries())
+
+    def entries(self) -> list[str]:
+        """줄 단위 실행 기록. Sub-Agent가 이상 감지에 쓴다.
+
+        as_text()가 이걸 이어 붙이므로 둘의 내용은 항상 같다 — 두 벌로
+        만들면 감지 대상과 사용자에게 보이는 기록이 어긋난다.
+        """
+        return [f"[{s.elapsed_ms}ms] {s.step} — {s.reason}" for s in self._steps]
 
 
 # ════════════════════════════════════════════════════════════════

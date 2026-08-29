@@ -69,6 +69,7 @@ from app.core.numeric_verifier import verify_calc_presence
 from app.core.grounding_retrieval import build_refuse_response, ground_query
 from app.core.pension_calc_functions import (check_class_eligibility,
                                              detect_legacy_tax_content)
+from app.core.sub_agent import supervise_logic
 from app.core.supervisory_board import (Verdict, build_remediation_prompt,
                                         supervise_plan)
 from app.core.trap_rules import build_trap_context, unaddressed_traps
@@ -102,6 +103,9 @@ BUDGET_L1 = 7.0
 BUDGET_L5 = 10.0
 BUDGET_L6 = 3.0
 BUDGET_REGEN = 10.0
+# Sub-Agent는 보조 장치다. 남은 시간이 이만큼 없으면 감지만 하고 호출하지
+# 않는다 — 보조 장치가 본체를 지연시키면 그 자체가 결함이다.
+BUDGET_SUBAGENT = 3.0
 
 # 세제 관련 질의에서 구법 문서를 근거로 쓰지 않기 위한 신호
 _TAX_INTENTS = {"세액공제", "과세방식", "원천징수", "퇴직소득세", "퇴직소득세_감면"}
@@ -651,11 +655,14 @@ def _answer_question_impl(question_id: str, question: str,
     # ⚠️ 이 값이 True인 채로 그냥 답변을 내보내면 안 된다 —
     #    "틀릴 수 있다는 걸 알면서 확신 있게 답하는" 상태가 되기 때문이다.
     unresolved = False
+    # Sub-Agent의 루프 감지가 읽는다 — 재생성이 진전 없이 반복되는지
+    regen_count = 0
 
     # ── REVISE → 재생성 1회 ───────────────────────────────────
     if supervision is not None and supervision.verdict == Verdict.REVISE:
         if deadline.allows(BUDGET_REGEN) and not getattr(client, "is_mock", False):
             remediation = build_remediation_prompt(supervision, draft)
+            regen_count += 1
             trace.log("L6_재생성", "REVISE 판정 — 시정 지시와 함께 L5'로 1회 되돌림 "
                                 "(재생성은 1회로 제한)")
             try:
@@ -769,6 +776,29 @@ def _answer_question_impl(question_id: str, question: str,
         draft, citations, slots_used=[s.description for s in slots
                                       if s.status != SlotStatus.MISSING])
     trace.log("인용_무결성", integrity["trace"])
+
+    # ── Sub-Agent · 전 구간 로직 건전성 ───────────────────────
+    #
+    # ⚠️ **기본 로직이 우선이다.** 이상이 감지되지 않으면 호출조차 하지
+    #    않는다. 잘 도는 것을 굳이 들여다보면 결정론적 계층이 확보한
+    #    재현성을 LLM 재량이 갉아먹는다.
+    #    개입 판정은 결정론적 코드(detect_anomalies)가 한다 — LLM이 스스로
+    #    "이상한 것 같다"고 나서는 경로는 없다.
+    #    예산이 없으면 감지만 하고 넘어간다. 보조 장치가 본체를 지연시키면
+    #    그 자체가 결함이다.
+    health = supervise_logic(
+        trace_entries=trace.entries(),
+        answer=draft,
+        question=question,
+        supervision=supervision,
+        regeneration_count=regen_count,
+        answerability=decision.value,
+        llm_call=(llm_call_adapter(client)
+                  if deadline.allows(BUDGET_SUBAGENT) else None))
+    if not health.healthy:
+        trace.log("SubAgent_건전성", health.as_trace())
+    else:
+        trace.log("SubAgent_건전성", "로직 건전성 정상 — 개입 없음")
 
     answer = attach_citations(draft, citations)
     retrieved = citations_to_retrieved_context(citations, used_evidence)
