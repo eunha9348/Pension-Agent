@@ -61,26 +61,43 @@ OUT_OF_SCOPE_SIGNALS = [
 
 @dataclass
 class GroundingResult:
-    """L0 산출물. 답변 근거가 아니라 '분석용 지도'다."""
+    """L0 산출물 — **분류 결과일 뿐 판정이 아니다.**
+
+    ⚠️ 2026-08-29 개편: 이 자료구조는 더 이상 답변가능성을 판단하지 않는다.
+       예전에는 coverage_score와 early_refuse를 함께 들고 다니며 L1 이전에
+       질의를 잘라냈는데, 그 판정이 과최적화돼 정상 질의까지 거절했다.
+       지금은 '어떤 영역의 질의인가'와 '문서가 쓰는 용어는 무엇인가'만 담는다.
+
+       early_refuse / refuse_reason / coverage_score 필드는 **호환을 위해
+       남겨 두되 항상 기본값**이다. 새 코드에서 참조하지 말 것.
+    """
     domain_covered: bool
     domain_areas: list[str] = field(default_factory=list)
     vocabulary: list[str] = field(default_factory=list)      # 문서에서 실제 쓰이는 용어
     candidate_doc_ids: list[str] = field(default_factory=list)
     legacy_docs_present: list[str] = field(default_factory=list)
+    # ── 아래 셋은 폐기 예정. L0는 판정하지 않는다 ──
     coverage_score: float = 0.0
     early_refuse: bool = False
     refuse_reason: str = ""
     trace: str = ""
 
     def as_analysis_hint(self) -> str:
-        """L1 프롬프트에 주입할 접지 정보.
+        """L1 프롬프트에 주입할 분류 정보.
 
         원문 전체가 아니라 '어떤 영역의 어떤 용어를 다루는 질의인지'만 전달한다.
         원문을 통째로 넣으면 L1이 이를 근거로 착각해 답변을 만들어낼 위험이 있다.
+
+        ⚠️ 영역을 못 찾아도 "찾지 못했다"로 끝내지 않는다. 그 문장이 L1에게
+           '이 질의는 답할 수 없다'는 신호로 읽혀, 개인 서술형 질의를 되돌려
+           보내는 원인이 됐다. 분류가 비었다는 사실만 중립적으로 전한다.
         """
-        if not self.domain_covered:
-            return "제공 자료에서 관련 영역을 찾지 못했습니다."
-        lines = [f"관련 영역: {', '.join(self.domain_areas)}"]
+        lines: list[str] = []
+        if self.domain_areas:
+            lines.append(f"관련 영역: {', '.join(self.domain_areas)}")
+        else:
+            lines.append("관련 영역: 사전 분류에서 특정되지 않음 "
+                         "(분류 실패일 뿐 답변 불가를 뜻하지 않음)")
         if self.vocabulary:
             lines.append(f"문서에서 사용하는 용어: {', '.join(self.vocabulary[:10])}")
         if self.legacy_docs_present:
@@ -113,18 +130,16 @@ def ground_query(query: str,
                     BM25/tsvector 등 LLM 없는 검색 함수를 주입한다.
     legacy_checker: detect_legacy_tax_content. 구법 문서 사전 경고용.
 
-    반환값은 L1 프롬프트 접지와 조기 거절 판단에만 쓴다.
+    ⚠️ **이 함수는 거절하지 않는다.** 분류와 용어 수집만 한다.
+       도메인 밖 신호가 보이면 `out_of_scope_signals`로 기록만 하고,
+       무엇을 할지는 L1이 조건을 다 본 뒤에 정한다 — 짧은 신호 하나로
+       질의를 잘라내던 것이 오탐의 주된 원인이었다
+       (예: "부동산은 없고 현금 3500만원" → '부동산 매매' 신호로 오인).
     """
-    # ── 명백한 도메인 밖 신호 ──
-    for signal in OUT_OF_SCOPE_SIGNALS:
-        if signal in query:
-            return GroundingResult(
-                domain_covered=False, early_refuse=True,
-                refuse_reason=f"'{signal}'은(는) 제공 자료가 다루는 연금 영역 밖입니다.",
-                trace=f"L0 조기 거절 — 도메인 밖 신호 '{signal}' 감지",
-            )
+    # ── 도메인 밖 신호는 '기록'만 한다 (거절하지 않는다) ──
+    off_signals = [s for s in OUT_OF_SCOPE_SIGNALS if s in query]
 
-    # ── 도메인 영역 판정 ──
+    # ── 도메인 영역 분류 ──
     areas = [a for a, kws in DOMAIN_AREAS.items() if any(k in query for k in kws)]
 
     # ── 개략 검색 ──
@@ -160,8 +175,9 @@ def ground_query(query: str,
             if verdict.get("is_legacy_suspect"):
                 legacy.append(h.get("doc_id", ""))
 
+    # domain_covered는 '분류가 됐는가'일 뿐 '답할 수 있는가'가 아니다.
+    # early_refuse는 항상 False — L0는 판정하지 않는다.
     covered = bool(areas) or coverage >= min_coverage
-    early_refuse = (not covered) and not hits
 
     return GroundingResult(
         domain_covered=covered,
@@ -170,12 +186,12 @@ def ground_query(query: str,
         candidate_doc_ids=doc_ids,
         legacy_docs_present=legacy,
         coverage_score=round(coverage, 4),
-        early_refuse=early_refuse,
-        refuse_reason=("제공 자료에서 관련 내용을 찾지 못했습니다."
-                       if early_refuse else ""),
-        trace=(f"L0 접지 — 영역 {areas or '미분류'} · 후보 {len(doc_ids)}건 · "
-               f"커버리지 {coverage:.2f}"
-               + (f" · 구법 의심 {len(legacy)}건" if legacy else "")),
+        early_refuse=False,
+        refuse_reason="",
+        trace=(f"L0 분류 — 영역 {areas or '미분류'} · 후보 {len(doc_ids)}건"
+               + (f" · 구법 의심 {len(legacy)}건" if legacy else "")
+               + (f" · 자료범위 밖 신호 {off_signals}(기록만, 판정은 L1)"
+                  if off_signals else "")),
     )
 
 
@@ -184,13 +200,22 @@ def ground_query(query: str,
 # ════════════════════════════════════════════════════════════════
 
 def should_refuse_early(grounding: GroundingResult) -> tuple[bool, str]:
-    """L1·L5 호출 전에 거절 여부를 판정.
+    """⚠️ 폐기됨 — 항상 (False, "")를 돌려준다.
 
-    도메인 밖 질의에 LLM 호출을 소모할 이유가 없다.
-    비용 절감이자, '정보한계 대응' 지표에 대한 가장 확실한 대응이다.
+    ━━ 왜 없앴는가 ━━
+    L1 이전에 거절을 판정하는 구조 자체가 문제였다. 이 시점에는 사용자
+    조건이 하나도 파악되지 않은 상태라, 판단 근거가 '질의에 어떤 낱말이
+    있는가'뿐이다. 그 결과 과최적화가 일어나 정상 질의까지 잘려 나갔다:
+
+        "부동산은 없고 현금 3,500만원이 있는데 노후 대비를 어떻게…"
+          → '부동산 매매' 신호로 오인 → 조기 거절
+
+    사람은 정확한 정보를 처음부터 주지 않는다. 불특정한 서술을 받아
+    "이만큼은 답할 수 있고, 이런 정보를 주시면 더 정확히 답할 수 있다"고
+    돌려주는 것이 옳지, 입구에서 잘라내는 것은 옳지 않다.
+
+    시그니처는 호출부 호환을 위해 남긴다. 판정은 L1이 조건을 다 본 뒤에 한다.
     """
-    if grounding.early_refuse:
-        return True, grounding.refuse_reason
     return False, ""
 
 

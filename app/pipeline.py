@@ -40,7 +40,7 @@ from app.analysis.calc_params import make_calc_params_builder
 from app.analysis.conditions import describe_conditions
 from app.analysis.products import extract_class_expenses
 from app.analysis.query_spec import make_extract_query_spec
-from app.analysis.refusal import check_refusal
+from app.analysis.refusal import check_refusal, check_safety_refusal
 from app.analysis.slot_matching import answer_covers_slot, make_slot_evidence_matcher
 from app.config import SETTINGS
 from app.core.citation_system import (attach_citations, build_citations,
@@ -55,8 +55,7 @@ from app.core.coverage_pipeline import (CALC_REGISTRY, Answerability,
                                         map_evidence_to_slots, run_calculations,
                                         verify_requirement_coverage)
 from app.core.numeric_verifier import verify_calc_presence
-from app.core.grounding_retrieval import (build_refuse_response, ground_query,
-                                          should_refuse_early)
+from app.core.grounding_retrieval import build_refuse_response, ground_query
 from app.core.pension_calc_functions import (check_class_eligibility,
                                              detect_legacy_tax_content)
 from app.core.supervisory_board import (Verdict, build_remediation_prompt,
@@ -285,17 +284,25 @@ def _answer_question_impl(question_id: str, question: str,
     coarse_search = make_coarse_search(store)
     grounding = ground_query(question, coarse_search,
                              legacy_checker=detect_legacy_tax_content)
-    trace.log("L0_사전검색", grounding.trace,
-              areas=grounding.domain_areas, coverage=grounding.coverage_score)
+    trace.log("L0_분류", grounding.trace, areas=grounding.domain_areas)
 
-    early_refuse, reason = should_refuse_early(grounding)
-    pre_refusal = check_refusal(question, grounding)
+    # ── 안전 게이트 (L1 진입 직전) ────────────────────────────
+    #
+    # ⚠️ 여기 남은 것은 **조건을 더 안다고 판단이 뒤집히지 않는** 셋뿐이다:
+    #    빈 질의 · 개인정보 조회 요구 · 프롬프트 인젝션.
+    #    예전의 조기 거절(도메인 커버리지·근거 0건)은 전부 제거했다 —
+    #    사용자 조건을 하나도 모르는 시점의 판정이라 과최적화됐고,
+    #    "부동산은 없고 현금 3,500만원" 같은 정상 질의를 잘라냈다.
+    safety = check_safety_refusal(question)
+    if safety.refuse:
+        trace.log("안전_거절", f"{safety.detail} — LLM 호출 없이 종결 (호출 0회)")
+        resp = build_refuse_response(question_id, question, safety.reason)
+        resp["think_trace"] = trace.as_text() + "\n" + resp["think_trace"]
+        return resp
 
     # ── 거절 대신 연결 ────────────────────────────────────────
-    # ⚠️ REFUSE 분기 **밖**에서 판단한다. 예전에는 분기 안에 있었는데,
-    #    "오늘 코스피 지수"처럼 거절 판정이 나지 않는 질의에서는
-    #    실행조차 되지 않아 죽은 코드였다(평가 E-38·E-40 연속 실패).
-    #    자료 밖 주제 + 자료 안에 이어 줄 근거가 실재할 때만 채워져 온다.
+    # 자료 밖 주제인데 자료 안에 이어 줄 근거가 실재할 때만 채워져 온다.
+    pre_refusal = check_refusal(question, grounding)
     if (bridge := find_bridge(question, pre_refusal, store)) is not None:
         trace.log("거절_대신_연결", bridge.as_trace(), code=pre_refusal.code)
         return {
@@ -307,12 +314,9 @@ def _answer_question_impl(question_id: str, question: str,
             "answer": bridge.as_answer(),
         }
 
-    if early_refuse or pre_refusal.refuse:
-        detail = pre_refusal.detail if pre_refusal.refuse else grounding.trace
-        why = pre_refusal.reason if pre_refusal.refuse else reason
-        trace.log("조기_거절",
-                  f"{detail} — LLM 호출 없이 종결 (호출 0회)")
-        resp = build_refuse_response(question_id, question, why)
+    if pre_refusal.refuse:
+        trace.log("자료범위_밖", f"{pre_refusal.detail} — 연결할 근거도 없어 종결")
+        resp = build_refuse_response(question_id, question, pre_refusal.reason)
         resp["think_trace"] = trace.as_text() + "\n" + resp["think_trace"]
         return resp
 

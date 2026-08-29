@@ -65,7 +65,7 @@ def test_think_trace에_실행계획과_판단과정이_들어간다():
     body = _get("1억이고 연금수령 1년차인데 얼마까지 인출할 수 있나요?")
     assert "[실행 계획]" in body["think_trace"]
     assert "[판단 과정]" in body["think_trace"]
-    assert "L0_사전검색" in body["think_trace"]
+    assert "L0_분류" in body["think_trace"]
 
 
 def test_계산결과가_답변에_실제로_반영된다():

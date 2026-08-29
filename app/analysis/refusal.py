@@ -83,13 +83,23 @@ _SOFT_DOMAIN = {"연금", "퇴직", "노후", "수령", "납입", "적립", "세
                 "IRP", "irp", "계좌", "가입", "인출", "공제"}
 
 
-def check_refusal(question: str,
-                  grounding=None,
-                  evidence_count: Optional[int] = None) -> RefusalCheck:
-    """질의를 거절해야 하는지 판정.
+def check_safety_refusal(question: str) -> RefusalCheck:
+    """**안전 거절만** 판정한다 — 질의 문자열만 보면 확정되는 것들.
 
-    grounding : GroundingResult (L0 산출물). 있으면 도메인 커버리지를 함께 본다.
-    evidence_count : L3 검색 결과 건수. 0이면 근거 없음 경로.
+    ━━ 왜 분리했는가 (2026-08-29 개편) ━━
+    예전에는 안전 거절과 '답할 수 있는가' 판정이 한 함수에 섞여 있었고,
+    그 전체가 L0(사용자 조건을 하나도 모르는 시점)에서 돌았다. 그래서
+    도메인 어휘가 없다는 이유만으로 개인 서술형 질의가 잘려 나갔다.
+
+    이 함수에 남긴 셋은 **조건을 더 안다고 판단이 뒤집히지 않는다**:
+      · 빈 질의        — 더 볼 것이 없다
+      · 개인정보 조회  — 사용자가 '자기 사정을 밝히는 것'과는 다른 범주다.
+                         여기서 막는 것은 "내 계좌 잔고를 조회해 달라"이지
+                         "나는 현금 3,500만원이 있다"가 아니다.
+      · 프롬프트 인젝션 — 지시 무시·시스템 프롬프트 노출 요구
+
+    나머지(도메인 밖·근거 없음)는 판정하지 않는다. 근거가 없으면 거절이
+    아니라 **한계를 밝히고 필요한 정보를 정리해 답하는 것**이 옳다.
     """
     q = question or ""
 
@@ -98,7 +108,6 @@ def check_refusal(question: str,
                             "질문 내용이 비어 있어 답변드릴 수 없습니다.",
                             "질의 문자열이 비어 있음")
 
-    # ── 개인정보 ──
     for pat in _PII_REQUEST:
         if pat.search(q):
             return RefusalCheck(
@@ -107,7 +116,6 @@ def check_refusal(question: str,
                 "제도·세제·상품 자료에 근거한 일반 안내만 제공합니다.",
                 f"개인정보/계좌조회 요구 패턴 감지: {pat.pattern}")
 
-    # ── 프롬프트 인젝션 ──
     for pat in _INJECTION:
         if pat.search(q):
             return RefusalCheck(
@@ -116,7 +124,31 @@ def check_refusal(question: str,
                 "연금 제도·세제·상품에 대해 문의해 주세요.",
                 f"지시 무시/시스템 프롬프트 노출 요구 감지: {pat.pattern}")
 
+    return OK
+
+
+def check_refusal(question: str,
+                  grounding=None,
+                  evidence_count: Optional[int] = None) -> RefusalCheck:
+    """질의를 거절해야 하는지 판정.
+
+    ⚠️ 2026-08-29 개편으로 **범위가 크게 좁아졌다.**
+       안전 거절 3종은 check_safety_refusal()이 L1에서 처리하고,
+       여기서는 '자료 밖 주제인가'만 남긴다. 근거 0건은 더 이상 거절
+       사유가 아니다 — 한계를 밝히고 필요한 정보를 안내하는 쪽으로 간다.
+
+    grounding : GroundingResult (L0 산출물). 현재는 참조하지 않는다.
+    evidence_count : L3 검색 결과 건수.
+    """
+    q = question or ""
+
+    safety = check_safety_refusal(q)
+    if safety.refuse:
+        return safety
+
     # ── 명시적 도메인 밖 신호 ──
+    # 여기서만 남긴다. 다만 이제 '연결(bridge)'이 먼저 시도되므로,
+    # 이어 줄 근거가 자료에 있으면 거절까지 가지 않는다.
     for signal in OUT_OF_SCOPE_SIGNALS:
         if signal in q:
             return RefusalCheck(
@@ -124,26 +156,8 @@ def check_refusal(question: str,
                 f"'{signal}'은(는) 제공 자료가 다루는 연금 영역 밖입니다.",
                 f"도메인 밖 신호 '{signal}' 감지")
 
-    # ── L0 접지 결과 ──
-    if grounding is not None and getattr(grounding, "early_refuse", False):
-        return RefusalCheck(True, "L0_EARLY_REFUSE",
-                            grounding.refuse_reason or
-                            "제공 자료에서 관련 내용을 찾지 못했습니다.",
-                            grounding.trace)
-
-    # ── 도메인 어휘가 전혀 없다 ──
-    has_domain = any(k in q for k in _DOMAIN_KEYWORDS) or any(k in q for k in _SOFT_DOMAIN)
-    if not has_domain and evidence_count == 0:
-        return RefusalCheck(
-            True, "NO_DOMAIN_NO_EVIDENCE",
-            "제공된 연금 자료 범위에서는 답변드리기 어려운 질문입니다.",
-            "도메인 어휘 없음 + 검색 근거 0건")
-
-    # ── 근거가 하나도 없다 ──
-    if evidence_count == 0:
-        return RefusalCheck(
-            True, "NO_EVIDENCE",
-            "제공된 자료에서 이 질문을 뒷받침할 근거를 찾지 못했습니다.",
-            "L3 정밀 검색 결과 0건 — 근거 없이 답변하지 않음")
-
+    # ⚠️ NO_EVIDENCE / NO_DOMAIN_NO_EVIDENCE 는 제거했다.
+    #    근거를 못 찾았다는 것은 '답하지 말라'가 아니라 '무엇이 부족한지
+    #    밝히고 필요한 정보를 요청하라'는 신호다. 그 처리는 L4-sub와
+    #    답변가능성 판정(PARTIAL/ASK_BACK)이 맡는다.
     return OK
