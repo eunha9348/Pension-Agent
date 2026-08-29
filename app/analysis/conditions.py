@@ -125,6 +125,22 @@ def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[floa
 _NUMERIC_CONDITION_KEYS = {"age", "pension_year", "actual_receipt_year",
                           "service_years", "years_elapsed"}
 
+# 이 키들이 벗어나면 안 되는 범위. calc_params.py의 _VALID와 같은 수치를
+# 쓴다 — 계산 인자에 쓰일 때만 걸러지고, 이 조건이 그대로 사람에게
+# 보여주는 문장("조건으로 이해했습니다")이나 L4-sub 페이로드에 실릴 때는
+# 아무 검증도 없었다. 실제로 "연간 연금수령액 2,000만원"을 HCX가
+# pension_year=2000으로 잘못 채운 값이 계산에는 안 들어갔지만(이 답변은
+# pension_year를 쓰지 않는 계산이었다) 사용자에게 그대로 노출됐다
+# (2026-08-29 실측 — "연금수령연차 2000.0"). _unit_confusion은 `_manwon`
+# 접미사가 있는 금액 필드만 보므로 이 키들에는 전혀 적용되지 않는다.
+_NUMERIC_CONDITION_BOUNDS: dict[str, tuple[float, float]] = {
+    "age": (1, 120),
+    "pension_year": (1, 60),
+    "actual_receipt_year": (1, 60),
+    "service_years": (1, 60),
+    "years_elapsed": (0, 60),
+}
+
 
 # 단위 혼동으로 볼 배수. 만원↔억, 만원↔원은 전부 10,000배 차이다.
 # 100배를 문턱으로 두면 그 사고는 잡히고, 같은 자릿수 안의 정당한 이견
@@ -355,6 +371,16 @@ def derive_conditions(question: str,
                 val = float(v)
             except (TypeError, ValueError):
                 continue    # 숫자가 아니면 조용히 버린다 — 지어낼 수 없다
+            bounds = _NUMERIC_CONDITION_BOUNDS.get(k)
+            if bounds is not None and not (bounds[0] <= val <= bounds[1]):
+                # 금액과 달리 "그럴듯한 원인"을 추정할 수 없다(원↔만원
+                # 환산 같은 정정 규칙이 없다) — 있을 수 없는 값이므로
+                # 그대로 버리고, 규칙 파싱 값이 있으면 그걸 지킨다.
+                if k not in c:
+                    c.setdefault("condition_notes", []).append(
+                        f"{k}={_fmt(val)}로 분석됐으나 있을 수 없는 값이라 "
+                        f"반영하지 않았습니다")
+                continue
             if _unit_confusion(k, c.get(k), val, _text_ceiling):
                 # 규칙이 읽은 값이 있으면 그 값을 지키고, 없으면(천장값만으로
                 # 걸린 경우) 아예 버린다 — 지어낼 근거가 없다.
@@ -422,6 +448,12 @@ def describe_conditions(conditions: dict[str, Any]) -> str:
             # "80.0세"는 사람이 쓰는 표현이 아니다.
             age_v = int(v) if float(v).is_integer() else v
             parts.append(f"{label[k]} {age_v}세")
+        elif k in _NUMERIC_CONDITION_KEYS:
+            # age와 같은 이유 — pension_year 등도 LLM 경로에서 float으로
+            # 통일되므로, 정수로 떨어지면 정수로 보여준다. 실제로 "연금수령연차
+            # 5.0"처럼 소수점이 그대로 노출된 적이 있다(2026-08-29 실측).
+            num_v = int(v) if float(v).is_integer() else v
+            parts.append(f"{label[k]} {num_v}")
         elif isinstance(v, bool):
             if v:
                 parts.append(label[k])
