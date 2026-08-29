@@ -119,10 +119,57 @@ def label_of(key: str) -> str:
     return _LABELS.get(key, key)
 
 
+def _render_tax_choice(result: dict, indent: str) -> str:
+    """compare_taxation_options()의 결과 전용 문장 렌더러.
+
+    ⚠️ 왜 따로 두는가 — 이 함수만 유일하게 "선택지 두 개를 나눠 비교"하는
+    중첩 구조(separate/comprehensive)를 돌려준다. 범용 key=value 나열로
+    렌더링하면 "separate:"·"comprehensive:"가 번역 없이 그대로 노출되고
+    (_LABELS에 없는 raw 키), 코드처럼 보인다(2026-08-29 실측 — 사용자가
+    직접 지적). 숫자는 전부 result dict에서 그대로 가져온다 — 새로
+    계산하거나 지어내지 않는다.
+    """
+    if not result.get("choice_required", False):
+        note = result.get("note", "")
+        return f"{indent}{note}" if note else f"{indent}선택 대상이 아닙니다."
+
+    sep, comp = result.get("separate") or {}, result.get("comprehensive") or {}
+    sep_total = format_manwon(sep.get("합계", 0))
+    sep_private = format_manwon(sep.get("사적연금_분리과세", 0))
+    sep_other = sep.get("그외_종합과세", 0)
+
+    base = format_manwon(comp.get("과세표준", 0))
+    deduction = format_manwon(comp.get("연금소득공제", 0))
+    comp_total = format_manwon(comp.get("합계", 0))
+
+    cheaper = "분리과세" if result.get("lower_tax_option") == "SEPARATE" else "종합과세"
+    diff = format_manwon(result.get("difference", 0))
+    basis = result.get("기준", "")
+
+    sep_detail = (f"(사적연금 분리과세 {sep_private} + 그 외 소득 종합과세 "
+                 f"{format_manwon(sep_other)})" if sep_other else "")
+
+    lines = [
+        f"{indent}사적연금 연 수령액이 1,500만원을 초과해 분리과세와 종합과세 "
+        f"중 하나를 선택해야 합니다.",
+        f"{indent}분리과세를 선택하면 세액이 {sep_total}{(' ' + sep_detail) if sep_detail else ''}이고, "
+        f"종합과세를 선택하면 과세표준 {base}(연금소득공제 {deduction} 반영)에 "
+        f"대해 세액이 {comp_total}입니다.",
+        f"{indent}세액만 보면 {cheaper} 쪽이 {diff} 더 낮습니다"
+        + (f"({basis} 기준)." if basis else "."),
+    ]
+    if isinstance(result.get("⚠️"), str):
+        lines.append(f"{indent}※ {result['⚠️']}")
+    return "\n".join(lines)
+
+
 def render_calc_result(result: Any, indent: str = "  ") -> str:
     """계산 결과 dict를 줄 단위 텍스트로. variants 구조를 지원한다."""
     if not isinstance(result, dict):
         return f"{indent}{result}"
+
+    if "choice_required" in result and ("separate" in result or "note" in result):
+        return _render_tax_choice(result, indent)
 
     if "variants" in result and isinstance(result["variants"], list):
         variants = result["variants"]
