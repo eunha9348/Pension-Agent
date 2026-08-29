@@ -544,6 +544,30 @@ def _answer_question_impl(question_id: str, question: str,
     decision = decide_answerability(slots, trace=trace, refusal=refusal,
                                     evidence_count=len(evidence))
 
+    # ── 1.5 계획 감사 판정 반영 ────────────────────────────────
+    #
+    # ⚠️ 계획 감사는 라우팅 **앞**에서 돌린다 — 미등록 호출 제거가 계산보다
+    #    먼저 끝나야 하기 때문이다. 그런데 판정까지 그 자리에서 적용하면
+    #    경로를 모르는 채로 깎게 된다. 그래서 교정(safe_spec)은 즉시,
+    #    판정은 경로가 정해진 여기서 반영한다.
+    #
+    #    NO_SLOTS를 ADVISORY에서 제외하는 이유: 슬롯이 비는 것은 불특정
+    #    서술의 **정상 상태**이지 결함이 아니다. R3에서 L4-sub가 받기로 한
+    #    바로 그 경우를 다시 깎으면 그 변경이 무효가 된다.
+    #
+    #    (2026-08-29 이전에는 plan_result가 trace 로그로만 쓰이고 판정이
+    #     어디에도 반영되지 않았다 — 감사는 돌지만 결과가 버려졌다.)
+    if plan_result.downgraded_answerability:
+        codes = {f.code for f in plan_result.findings}
+        if route.is_advisory and codes <= {"NO_SLOTS"}:
+            trace.log("계획_감사_판정",
+                      "NO_SLOTS는 ADVISORY 경로의 정상 상태 — 강등하지 않는다")
+        elif decision == Answerability.ANSWER:
+            decision = Answerability(plan_result.downgraded_answerability)
+            trace.log("계획_감사_판정",
+                      f"ANSWER → {decision.value} "
+                      f"(계획 감사 지적: {', '.join(sorted(codes))})")
+
     # 함정 critical 감지 시 한 단계 보수화
     if trap_context["critical_count"] and decision == Answerability.ANSWER:
         decision = Answerability.PARTIAL
