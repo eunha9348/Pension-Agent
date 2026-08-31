@@ -77,7 +77,7 @@ from app.generation.advisory import (make_generate_advisory,
                                       render_advisory_fallback)
 from app.generation.answer_prompt import (make_generate_answer,
                                           render_template_answer,
-                                          strip_forbidden)
+                                          strip_forbidden, strip_markdown)
 from app.generation.grounding import make_verify_grounding
 from app.ingest.store import get_store
 from app.llm.clova import MOCK_BANNER, get_client, llm_call_adapter
@@ -610,6 +610,10 @@ def _answer_question_impl(question_id: str, question: str,
                                        assumptions, ask_back_items)
         trace.log("L5'_예산초과", f"남은 예산 부족 → {fallback_note}로 진행")
 
+    draft, md_found = strip_markdown(draft)
+    if md_found:
+        trace.log("마크다운_제거", "HCX가 낸 강조·제목 표기를 제거 "
+                                "(평가자는 answer를 일반 텍스트로 읽는다)")
     draft, forbidden = strip_forbidden(draft)
     if forbidden:
         trace.log("금지표현_치환",
@@ -700,6 +704,7 @@ def _answer_question_impl(question_id: str, question: str,
                 revised = ""
                 trace.log("L6_재생성_실패", f"재생성 호출 실패({e}) → 원본 답변 유지")
             if revised.strip():
+                revised, _ = strip_markdown(revised)
                 revised, _ = strip_forbidden(revised)
                 recheck = verify_grounding(revised, evidence)
                 if recheck:
@@ -761,6 +766,7 @@ def _answer_question_impl(question_id: str, question: str,
                                       max_tokens=1500))
 
         if rescued:
+            rescued, _ = strip_markdown(rescued)
             rescued, _ = strip_forbidden(rescued)
             recheck = verify_grounding(rescued, evidence)
             if recheck:

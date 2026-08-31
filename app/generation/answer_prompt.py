@@ -20,6 +20,7 @@ LLM은 **문장만 만든다.** 숫자는 계산 결과와 근거 문서에서 �
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Optional
 
 from app.analysis.conditions import describe_conditions
@@ -53,9 +54,13 @@ SUPERVISOR_SYSTEM_PROMPT = """당신은 연금 상담 답변을 작성하는 상
    근거에 "A와 B 중 적은 금액"이라고 되어 있으면 "A 또는 B 중 선택"이라고
    쓰면 안 됩니다. 숫자가 맞아도 관계를 틀리면 잘못된 답변입니다.
 6. 문서 ID(doc39 등)를 본문에 쓰지 마십시오. 근거 각주는 시스템이 붙입니다.
-7. 이미 발생한 **퇴직소득**(명예퇴직수당·퇴직금 등)과 **새로 납입하는 금액**은
+7. 이미 발생한 퇴직소득(명예퇴직수당·퇴직금 등)과 새로 납입하는 금액은
    적용 제도가 다릅니다. 전자는 이연퇴직소득세 감면, 후자는 연금계좌 세액공제
    입니다. 질문이 어느 쪽인지 확인하고, 다른 쪽 제도를 설명하지 마십시오.
+8. 마크다운 표기를 쓰지 마십시오. 답변은 상담 화면에 그대로 표시되는
+   일반 텍스트입니다. "**굵게**"처럼 별표를 붙이지 말고, "#"으로 시작하는
+   제목이나 "1." 번호 목록도 쓰지 마십시오. 강조하고 싶으면 문장으로
+   쓰십시오("600만원까지 가능합니다"처럼 — 별표로 감싸지 않습니다).
 
 ━━ 답변 구성 — 이 세 가지를 이 순서로, 이어지는 문장으로 ━━
 **대괄호 제목이나 번호로 구획을 나누지 마십시오.** 사람이 상담해 주듯
@@ -332,6 +337,39 @@ def make_generate_answer(client=None,
         return draft.strip()
 
     return generate_answer
+
+
+# ── 마크다운 잔재 제거 ─────────────────────────────────────────
+#
+# 프롬프트에 명시로 금지해도(SUPERVISOR_SYSTEM_PROMPT 규칙 8 등) HCX가
+# 관성적으로 강조 표기를 쓴다. 실연동에서 실제로 확인됐다(2026-09-01) —
+# "연금저축 단독으로는 **600만 원**까지 세액공제가 가능합니다"가 별표
+# 그대로 사용자 화면에 나갔다. mock 대역 300건 스캔에서는 0건이었던
+# 이유가 이것이다 — mock은 템플릿 렌더러라 애초에 마크다운을 안 쓴다.
+#
+# 표기 문자만 벗기고 내용은 그대로 두므로 새 정보를 만들지 않는다.
+# 반드시 verify_grounding(수치 검증)보다 **앞에서** 적용할 것 — 검증이
+# 본 텍스트와 사용자에게 나가는 텍스트가 달라지면 그 자체가 다른 종류의
+# 사고다(77만원 반올림 판정 오류와 같은 계열).
+_MD_BOLD = re.compile(r'\*\*(.+?)\*\*')
+_MD_BOLD_ALT = re.compile(r'__(.+?)__')
+_MD_HEADER = re.compile(r'^\s*#{1,6}\s*', re.M)
+
+
+def strip_markdown(answer: str) -> tuple[str, bool]:
+    """HCX가 낸 마크다운 표기를 제거한다. 반환: (정리된 답변, 발화 여부)"""
+    out = answer
+    changed = False
+    if _MD_BOLD.search(out):
+        out = _MD_BOLD.sub(r'\1', out)
+        changed = True
+    if _MD_BOLD_ALT.search(out):
+        out = _MD_BOLD_ALT.sub(r'\1', out)
+        changed = True
+    if _MD_HEADER.search(out):
+        out = _MD_HEADER.sub('', out)
+        changed = True
+    return out, changed
 
 
 def strip_forbidden(answer: str) -> tuple[str, list[str]]:
