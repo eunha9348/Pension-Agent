@@ -123,7 +123,26 @@ def test_납입액을_모르면_세액공제액을_내지_않는다():
     out = calc_private_contribution_limit()
     assert "A_tax_credit" not in out
     assert "IsLimitExceeded" not in out
-    assert "한도만" in out["note"]
+    assert "납입액이 확인되지 않아" in out["note"]
+
+
+def test_납입액을_몰라도_공제율은_낸다():
+    """★ 2026-09-01 — 공제율은 소득 구간만으로 정해진다.
+
+    예전에는 납입액이 없으면 한도만 내고 공제율을 아예 출력하지 않았다.
+    그래서 "총급여 8,000만원이면 얼마까지?"에 13.2%가 답변에 실릴 보장이
+    없었고, 실측에서 16.5%로 잘못 안내됐다.
+
+    형제 함수 calc_private_withholding이 이미 같은 원칙을 따른다 —
+    수령액을 몰라도 세율은 낸다. 산출 가능한 것은 내주고, 값이 더 필요한
+    부분만 확인 요청으로 돌린다.
+    """
+    assert calc_private_contribution_limit(r_tax_credit=0.132)["세액공제율"] == 0.132
+    assert calc_private_contribution_limit(r_tax_credit=0.165)["세액공제율"] == 0.165
+    # 납입액이 있어도 그대로 실린다
+    out = calc_private_contribution_limit(600, 300, r_tax_credit=0.132)
+    assert out["세액공제율"] == 0.132
+    assert "A_tax_credit" in out
 
 
 def test_납입액이_한쪽만_있어도_세액공제액은_계산된다():

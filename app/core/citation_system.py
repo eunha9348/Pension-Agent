@@ -299,10 +299,22 @@ def verify_citation_integrity(answer: str, citations: list[Citation],
     · 구법 의심 문서가 인용에 포함됐는가
     """
     issues = []
-    has_number = bool(re.search(r'\d', answer))
 
-    if not citations and has_number:
-        issues.append("근거 문서 없이 수치를 제시함 — 답변 보류 또는 근거 보강 필요")
+    # ⚠️ "근거 없이 수치를 제시함"(citations 0건 + 답변에 숫자 하나라도)을
+    #    여기서 보던 것을 **제거했다**(2026-09-01). 두 가지 이유다.
+    #
+    #    ① 오탐이 압도적이다. 298건 실측에서 20건(6.7%)이 걸렸는데 거의
+    #       전부 **질의에서 되읊은 숫자**였다 — "만 55세면 수령 가능한가요"에
+    #       "55세"라고 답한 것, "만 65세가 연 1200만원 받으면"에 그 수치를
+    #       그대로 확인해 준 것 등. 지어낸 수치가 아니다.
+    #    ② 진짜 판정은 이미 `verify_numeric_grounding`이 한다. 그쪽은
+    #       질의에 있던 숫자를 허용 집합에 넣고 대조하므로 위 오탐이 없다.
+    #       즉 이 검사는 **중복이면서 더 느슨한 버전**이었다.
+    #
+    #    남겨 두면 "인용 무결성이 수치를 검사한다"는 잘못된 인상을 준다.
+    #    실제로 trace에는 지적이 찍히는데 등급에는 반영되지 않아, 감사가
+    #    작동하는 것처럼 보이지만 아무 일도 하지 않는 상태였다.
+    #    지어낸 **상품명**은 `verify_product_grounding`이 따로 본다.
 
     if slots_used:
         covered = {s for c in citations for s in c.supports}
@@ -322,3 +334,95 @@ def verify_citation_integrity(answer: str, citations: list[Citation],
             "citation_count": len(citations),
             "trace": ("인용 무결성 통과" if not issues
                       else f"인용 무결성 지적 {len(issues)}건: {issues}")}
+
+
+# ════════════════════════════════════════════════════════════════
+# 7. 상품명 접지 검사 — 근거에 없는 상품을 지어내지 않았는가
+# ════════════════════════════════════════════════════════════════
+#
+# ━━ 왜 필요한가 (2026-09-01 실물 확인) ━━
+# "은퇴 5년 남았는데 안전한 상품 추천해줘"에 대해, 근거 문서가 **0건인데도**
+# 답변이 실존 펀드명을 콕 집어 추천했다. 과제 자료가 명시한 "근거 문서 고정"
+# 원칙을 정면으로 위반한 hallucination이다.
+#
+# 기존 상품 감사(audit_fitness)는 이것을 잡을 수 없었다. 그 감사는
+# `_products_in_answer()`가 넘긴 **검색 후보와 답변의 교집합**만 보기
+# 때문이다. 근거가 0건이면 후보가 비고, 후보가 비면 교집합도 비어서
+# **지어낸 이름은 애초에 검사 대상에 오르지 않는다.** 즉 "가입 불가 상품을
+# 추천했는가"는 보면서 "존재 근거가 없는 상품을 지어냈는가"는 보지 않았다.
+#
+# ━━ 오탐을 어떻게 막는가 ━━
+# ① 이름처럼 생긴 것만 본다 — 공백 없는 8자 이상의 토큰이 상품 접미사로
+#    끝날 때만. "이 투자신탁은", "증권 투자신탁" 같은 일반 서술은 공백이
+#    있거나 짧아서 걸리지 않는다.
+# ② 대조는 공백을 무시한다 — 코퍼스 OCR은 같은 이름도 띄어쓰기가 제각각이다
+#    ("미래에셋 퇴직연금" / "미래에셋퇴직연금").
+# ③ 앞 8자만 맞으면 통과 — 근거 문서가 겹쳐 그려짐·판독 실패로 뒷부분이
+#    깨져 있어도, 브랜드·시리즈 부분이 실재하면 지어낸 것이 아니다.
+#    (오탐이 미탐보다 나쁘다는 원칙 — 결정론 계층이라 되돌릴 수 없다)
+
+# 상품명으로 끝나는 접미사. 일반명사로도 쓰이므로 ①의 길이 조건과 함께 쓴다.
+_PRODUCT_SUFFIX = ("자투자신탁", "증권투자신탁", "투자신탁", "상장지수펀드",
+                   "증권펀드", "펀드", "변액연금보험", "연금보험")
+# 이름 토큰 — 공백·구두점으로 끊기지 않는 한글/영숫자 덩어리
+_NAME_TOKEN = re.compile(r'[가-힣A-Za-z0-9]{8,}')
+# 브랜드·시리즈 식별에 쓰는 앞부분 길이
+_NAME_PREFIX = 8
+
+
+def _no_space(s: str) -> str:
+    return re.sub(r'\s+', '', s or "")
+
+
+# 상품 '종류'를 가리키는 일반명사. 고유명사가 아니므로 근거 대조 대상이
+# 아니다. 길이 조건(8자)만으로는 "타깃데이트형펀드"처럼 긴 카테고리명이
+# 걸리므로 명시적으로 제외한다.
+_GENERIC_PRODUCT_TERMS = frozenset({
+    "상장지수펀드", "타깃데이트펀드", "타깃데이트형펀드", "인덱스펀드",
+    "채권형펀드", "주식형펀드", "혼합형펀드", "채권혼합형펀드",
+    "연금저축펀드", "재간접펀드", "머니마켓펀드", "사모펀드", "공모펀드",
+    "국공채형펀드", "원리금보장형펀드", "실적배당형펀드",
+    "증권투자신탁", "집합투자기구", "변액연금보험", "연금보험",
+})
+
+
+def extract_product_names(answer: str) -> list[str]:
+    """답변에서 상품명처럼 보이는 **고유명사**를 뽑는다.
+
+    일반 서술("이 투자신탁은", "증권 투자신탁의")은 공백이 있거나 짧아
+    걸리지 않고, 상품 종류를 가리키는 일반명사는 명시적으로 제외한다.
+    """
+    out: list[str] = []
+    for m in _NAME_TOKEN.finditer(answer or ""):
+        tok = m.group(0)
+        if tok in _GENERIC_PRODUCT_TERMS:
+            continue
+        if any(tok.endswith(sfx) for sfx in _PRODUCT_SUFFIX):
+            if tok not in out:
+                out.append(tok)
+    return out
+
+
+def verify_product_grounding(answer: str,
+                             evidence_texts: Iterable[str]) -> dict:
+    """답변이 든 상품명이 근거 문서에 실재하는가.
+
+    반환: {"passed": bool, "ungrounded": [이름...], "checked": n, "reason": str}
+    """
+    names = extract_product_names(answer)
+    if not names:
+        return {"passed": True, "ungrounded": [], "checked": 0,
+                "reason": "답변에 상품명 표기가 없음"}
+
+    haystack = _no_space(" ".join(evidence_texts or []))
+    ungrounded = [n for n in names
+                  if _no_space(n)[:_NAME_PREFIX] not in haystack]
+
+    if not ungrounded:
+        return {"passed": True, "ungrounded": [], "checked": len(names),
+                "reason": f"상품명 {len(names)}건 전부 근거 문서에서 확인"}
+    return {
+        "passed": False, "ungrounded": ungrounded, "checked": len(names),
+        "reason": (f"근거 문서에 없는 상품명 {len(ungrounded)}건: "
+                   f"{', '.join(ungrounded)}"),
+    }

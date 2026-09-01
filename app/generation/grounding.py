@@ -83,14 +83,15 @@ def _law_context(trap_ids: Optional[list[str]],
     **있으면 더 정확해지고 없으면 아무것도 망가뜨리지 않는다.**
     """
     if not trap_ids:
-        return [], []
+        return [], [], "감지된 함정이 없어 법령 판정 대상 없음"
     try:
         from app.law.anchors import anchors_for, law_backed
         from app.law.store import get_store
 
         store = get_store()
         if store.is_empty:
-            return [], []
+            return [], [], ("법령 수집본이 비어 있음 — 조문 판정을 수행하지 "
+                            "않았습니다 (data/law 수집 필요)")
 
         by_id = {c.get("id"): c for c in (trap_checks or [])}
         articles, seen, candidates = [], set(), []
@@ -109,11 +110,21 @@ def _law_context(trap_ids: Optional[list[str]],
                 if a.ref not in seen:
                     seen.add(a.ref)
                     articles.append(a)
-        return (articles, candidates) if candidates else ([], [])
+        if candidates:
+            return (articles, candidates,
+                    f"함정 {[c['id'] for c in candidates]}에 대해 조문 "
+                    f"{len(articles)}건으로 판정 수행")
+        return [], [], (f"감지된 함정 {trap_ids} 중 법령 앵커가 등재된 것이 "
+                        f"없어 조문 판정 대상 없음")
     except Exception as e:                                   # noqa: BLE001
         # 법령 계층이 없거나 깨져도 감사는 계속돼야 한다.
+        # ⚠️ 다만 **조용히** 넘어가면 안 된다. 예전에는 log.warning만 남겨
+        #    서버 로그에만 찍혔고, think_trace에는 아무 흔적도 없었다.
+        #    그래서 "법령 판정이 안 된 것"과 "판정 대상이 없던 것"을
+        #    사용자도 우리도 구별할 수 없었다 — 법령 계층이 통째로 죽은 채
+        #    배포됐던 이력이 있는데도 겉으로는 정상으로 보였다.
         log.warning("법령 컨텍스트 구성 실패 — 결정론적 경로로 진행: %s", e)
-        return [], []
+        return [], [], f"법령 계층 오류로 조문 판정을 수행하지 못함: {e}"
 
 
 def make_verify_grounding(question: str,
@@ -169,12 +180,21 @@ def make_verify_grounding(question: str,
             # 감지된 함정 중 **법령 근거가 등재된 것**만 판정 대상으로 올린다.
             # 근거 조문이 페이로드에 없으면 어차피 인용 검증을 통과할 수
             # 없으므로, 등재되지 않은 규칙을 올려봐야 판정이 폐기될 뿐이다.
-            law_articles, candidates = _law_context(trap_ids, trap_checks)
+            law_articles, candidates, law_status = _law_context(
+                trap_ids, trap_checks)
             supervision = supervise_hybrid(
                 answer=answer, question=question, llm_call=llm_call,
                 evidence_texts=evidence_texts,
                 law_articles=law_articles, candidate_traps=candidates,
                 **det_kwargs)
+            # ⚠️ 법령 판정을 **하지 못한 경우에도** 그 사실을 남긴다.
+            #    바로 위 의미감사 NOT_RUN과 같은 이유다 — "판정 대상이
+            #    없었다"와 "판정을 못 했다"는 다른 사건인데, 예전에는 둘 다
+            #    아무 흔적 없이 지나가 구별할 방법이 없었다.
+            #    심각도는 올리지 않는다(정보 기록 전용).
+            if not candidates:
+                supervision.findings.append(Finding(
+                    "법령근거", "NOT_RUN", supervision.verdict, law_status, ""))
         else:
             supervision = supervise(answer, **det_kwargs)
             # 감사자가 응답을 못 준 것과 '문제없음'은 다르다 —

@@ -84,6 +84,41 @@ def _is_balance_amount(question: str, value: float) -> bool:
     return False
 
 
+# 이 명사 바로 뒤에 붙은 금액은 **소득**이지 납입액이 아니다.
+_INCOME_NOUN = ("총급여", "연봉", "종합소득", "근로소득", "소득금액", "급여가", "연소득")
+
+
+def _is_income_amount(question: str, value: float) -> bool:
+    """그 금액이 납입액이 아니라 소득을 가리키는가.
+
+    ━━ 왜 필요한가 (2026-09-01 실측) ━━
+    "연금저축+IRP 세액공제, 총급여 8000만원이면 얼마까지?" 처럼 **납입액을
+    말하지 않고 소득만 말한 질의**에서, `_find_amount_near`가 '연금저축'과
+    'IRP' 양쪽에 대해 질의의 유일한 금액인 8,000만원을 집어 왔다. 그 결과
+
+        pension_saving_manwon=8000 · irp_manwon=8000 · total_income_manwon=8000
+
+    이 되어, 납입액이 연 한도(1,800만원)를 넘는 불가능한 전제가 만들어졌다.
+    계산은 "조건 부족"으로 실패했고, **소득 구간에 따른 공제율(13.2%)이
+    산출되지 못했다.** 사용자에게는 근거 문서가 잘린 채 인용돼 "16.5%"로
+    보였다 — 확정 법령 수치를 틀리는 것으로 드러난 결함의 실제 원인이다.
+
+    잔고 가드(`_is_balance_amount`)와 정확히 같은 계열의 문제다. 잔고는
+    막아 뒀는데 소득은 막혀 있지 않았다.
+
+    "총급여 8000만원인데 IRP에 900만원 넣으면"처럼 납입액이 따로 있으면
+    `_find_amount_near`가 더 가까운 900을 고르므로 이 가드는 발동하지 않는다.
+    """
+    q = question or ""
+    for start, _end, v in parse_amount_expressions(q):
+        if v != value:
+            continue
+        before = q[max(0, start - 12):start]
+        if any(n in before for n in _INCOME_NOUN):
+            return True
+    return False
+
+
 def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[float]:
     """키워드에 **가장 가까운 금액 표현 하나**를 고른다.
 
@@ -231,10 +266,12 @@ def derive_conditions(question: str,
     #    에서 3억을 납입액으로 잡으면 연 납입한도(1,800만원)로는 불가능한
     #    전제로 세액공제를 계산한다.
     saving = _find_amount_near(q, ("연금저축", "연저축"))
-    if saving is not None and _is_balance_amount(q, saving):
+    if saving is not None and (_is_balance_amount(q, saving)
+                               or _is_income_amount(q, saving)):
         saving = None
     irp = _find_amount_near(q, ("IRP", "irp", "개인형"))
-    if irp is not None and _is_balance_amount(q, irp):
+    if irp is not None and (_is_balance_amount(q, irp)
+                            or _is_income_amount(q, irp)):
         irp = None
     if (saving is not None and saving == irp
             and any(k in q for k in _COMBINED_SIGNALS)):

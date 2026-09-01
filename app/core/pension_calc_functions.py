@@ -111,10 +111,23 @@ def calc_private_contribution_limit(X_pension_saving=None, Y_irp_personal=None,
         "연금저축_단독_한도": LIMIT_PENSION_SAVING,
         "연금저축_IRP_합산_한도": LIMIT_COMBINED,
         "연간_총납입한도": LIMIT_ANNUAL_CONTRIB,
+        # ━━ 공제율은 납입액을 몰라도 정해진다 (2026-09-01 추가) ━━
+        # 공제율은 **소득 구간만으로** 결정된다. 그런데 예전에는 납입액이
+        # 없으면 한도만 내고 이 값을 아예 출력하지 않았다. 그 결과
+        # "총급여 8,000만원이면 얼마까지?"에 13.2%가 답변에 실릴 보장이
+        # 없었고, 실측에서 16.5%로 잘못 안내됐다.
+        #
+        # 형제 함수 calc_private_withholding이 이미 같은 원칙을 따른다 —
+        # 수령액을 몰라도 세율(r_withholding)은 낸다. 산출 가능한 것은
+        # 내주고, 값이 더 필요한 부분만 확인 요청으로 돌린다.
+        #
+        # 소득을 모르면 호출 측(calc_params의 _RATE_VARIANTS)이 두 구간을
+        # 각각 계산하므로, 여기서 한쪽을 단정하는 일은 생기지 않는다.
+        "세액공제율": r_tax_credit,
     }
     if X_pension_saving is None and Y_irp_personal is None:
-        out["note"] = ("납입액이 확인되지 않아 한도만 안내합니다. "
-                       "실제 세액공제액은 납입액과 소득 구간에 따라 달라집니다.")
+        out["note"] = ("납입액이 확인되지 않아 한도와 공제율만 안내합니다. "
+                       "실제 세액공제액은 납입액에 따라 달라집니다.")
         return out
 
     x = X_pension_saving or 0.0

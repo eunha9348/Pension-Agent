@@ -117,7 +117,7 @@ def test_법령_계층은_함정_탐지에_전적으로_의존한다():
 
     checks = [{"id": "A1", "severity": "critical", "title": "중도인출 사유",
                "correction": "확인 필요", "docs": [], "verify_any": ["중도인출"]}]
-    articles, candidates = _law_context([], checks)      # 함정 0건
+    articles, candidates, _status = _law_context([], checks)   # 함정 0건
     assert articles == [] and candidates == [], (
         "함정이 없는데 조문이 실렸다 — 게이팅이 풀렸다")
 
@@ -139,6 +139,6 @@ def test_함정이_있으면_조문이_실린다(monkeypatch):
 
     checks = [{"id": "A1", "severity": "critical", "title": "중도인출 사유",
                "correction": "확인 필요", "docs": [], "verify_any": ["중도인출"]}]
-    articles, candidates = _law_context(["A1"], checks)
+    articles, candidates, _status = _law_context(["A1"], checks)
     assert articles, "함정이 있는데 조문이 실리지 않았다"
     assert candidates, "판정 대상이 만들어지지 않았다"

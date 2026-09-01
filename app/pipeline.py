@@ -55,6 +55,7 @@ from app.analysis.routing import classify_route
 from app.analysis.slot_matching import answer_covers_slot, make_slot_evidence_matcher
 from app.config import SETTINGS
 from app.core.citation_system import (attach_citations, build_citations,
+                                      verify_product_grounding,
                                       citations_to_retrieved_context,
                                       verify_citation_integrity)
 from app.core.coverage_pipeline import (CALC_REGISTRY, Answerability,
@@ -800,6 +801,29 @@ def _answer_question_impl(question_id: str, question: str,
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
 
+    # ── 상품명 접지 검사 ──────────────────────────────────────
+    #
+    # ⚠️ 근거에 없는 상품명은 **근거에 없는 수치와 같은 종류의 사고**이므로
+    #    같은 자리에서 같은 방식으로 처리한다. 실물에서 확인됐다
+    #    (2026-09-01) — 근거 문서가 0건인데 답변이 실존 펀드명을 콕 집어
+    #    추천했다. 과제 자료의 "근거 문서 고정" 원칙 위반이고, 채점의
+    #    'Hallucination 방지' 항목에 직접 걸린다.
+    #
+    #    기존 상품 감사(audit_fitness)는 이걸 잡을 수 없다. 그 감사는
+    #    검색 후보와 답변의 **교집합**만 보는데, 근거가 0건이면 후보가 비어
+    #    지어낸 이름은 검사 대상에 오르지도 않는다.
+    #
+    #    REVISE(재생성)가 아니라 축퇴를 고르는 이유: 근거가 없다는 것은
+    #    확정 사실이므로 다시 써도 그 상품을 말할 근거는 생기지 않는다.
+    #    상품 얘기를 뺀 답변이 정답이고, 그것이 render_template_answer다.
+    product_check = verify_product_grounding(draft, [c.text for c in evidence])
+    if not product_check["passed"]:
+        trace.log("상품명_접지_실패",
+                  f"{product_check['reason']} → 근거 없는 상품 언급을 제거한 "
+                  f"결정론적 답변으로 축퇴")
+        draft = render_template_answer(query_spec, evidence, slots, trap_context,
+                                       assumptions, ask_back_items)
+
     # ── 계산값이 끝내 답변에 없으면 결정론적으로 덧붙인다 ──────
     #
     # ⚠️ 재생성까지 했는데도 L5'가 숫자를 안 쓴 경우다. 여기서 포기하면
@@ -861,7 +885,14 @@ def _answer_question_impl(question_id: str, question: str,
     integrity = verify_citation_integrity(
         draft, citations, slots_used=[s.description for s in slots
                                       if s.status != SlotStatus.MISSING])
-    trace.log("인용_무결성", integrity["trace"])
+    # ⚠️ 이 검사의 결과는 **등급에 반영되지 않는다.** 남은 항목(인용 미연결 ·
+    #    구법 문서 인용 · 외부자료 미고지)은 사람이 보고 판단할 참고 정보이지,
+    #    답변을 반려할 근거가 아니기 때문이다. 답변을 실제로 막는 판정은
+    #    수치 검증(verify_numeric_grounding)과 상품명 접지
+    #    (verify_product_grounding)가 각각 위에서 이미 수행했다.
+    #    "감사가 있다는 주장은 결과가 반영될 때만 참"이므로, 반영하지 않는
+    #    검사는 반영하지 않는다고 적어 둔다.
+    trace.log("인용_무결성", integrity["trace"] + " (참고 정보 — 등급 미반영)")
 
     # ── Sub-Agent · 전 구간 로직 건전성 ───────────────────────
     #

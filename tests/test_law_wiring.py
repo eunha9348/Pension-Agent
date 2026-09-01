@@ -55,7 +55,7 @@ def _hybrid(raw: str, trap_ids=("A1",), **kw):
     """감사 LLM이 raw를 돌려준다고 가정하고 supervise_hybrid를 돌린다."""
     from app.generation.grounding import _law_context
 
-    articles, candidates = _law_context(list(trap_ids), _CHECKS)
+    articles, candidates, _status = _law_context(list(trap_ids), _CHECKS)
     return supervise_hybrid(
         answer="중도인출에 대한 답변입니다.",
         question="중도인출 되나요?",
@@ -124,7 +124,7 @@ def test_공개진입점을_통해_검증된_판정이_실제로_반영된다():
 def test_법령_컨텍스트가_등재된_함정만_고른다():
     from app.generation.grounding import _law_context
 
-    articles, candidates = _law_context(["A1", "B2"], _CHECKS)
+    articles, candidates, _status = _law_context(["A1", "B2"], _CHECKS)
     assert [a.ref for a in articles] == ["시험법 제10조 제1항"]
     assert [c["id"] for c in candidates] == ["A1"], "미등재 B2가 섞였다"
 
@@ -237,14 +237,20 @@ def test_저장소가_비면_법령_계층이_통째로_비활성된다(monkeypa
     monkeypatch.setattr("app.law.anchors.get_store", lambda **k: empty)
     from app.generation.grounding import _law_context
 
-    assert _law_context(["A1"], _CHECKS) == ([], [])
+    articles, candidates, status = _law_context(["A1"], _CHECKS)
+    assert (articles, candidates) == ([], [])
+    # ★ 왜 비었는지가 남아야 한다 — "판정 대상이 없었다"와 "판정을 못 했다"는
+    #   다른 사건인데, 예전에는 둘 다 흔적 없이 지나가 구별할 수 없었다.
+    assert "수집본이 비어" in status, status
 
 
 def test_등재된_앵커가_없으면_판정_대상도_없다(monkeypatch):
     monkeypatch.setattr("app.law.anchors.ANCHORS", {})
     from app.generation.grounding import _law_context
 
-    assert _law_context(["A1"], _CHECKS) == ([], [])
+    articles, candidates, status = _law_context(["A1"], _CHECKS)
+    assert (articles, candidates) == ([], [])
+    assert "앵커가 등재된 것이 없어" in status, status
 
 
 def test_법령_계층이_터져도_감사는_계속된다(monkeypatch):
@@ -275,3 +281,69 @@ def test_LLM_호출은_여전히_1회다():
         candidate_traps=[{"id": "A1", "title": "t", "verify_any": ["중도인출"]}],
         trap_ids=["A1"], trap_checks=_CHECKS)
     assert len(calls) == 1
+
+
+# ════════════════════════════════════════════════════════════════
+# 법령 판정을 '하지 못한 것'도 기록되는가 (2026-09-01)
+# ════════════════════════════════════════════════════════════════
+
+def test_법령_판정을_못한_사실이_감사에_남는다(monkeypatch):
+    """★ 조용한 비활성을 없앤다.
+
+    예전에는 `_law_context`가 예외를 log.warning으로만 삼키고 빈 값을
+    돌려줬다. 서버 로그에만 찍히므로 think_trace에는 아무 흔적도 없었고,
+    "법령 앵커가 없어 판정 대상이 없던 것"과 "법령 계층이 깨져 판정을
+    못 한 것"을 **사용자도 우리도 구별할 수 없었다.**
+
+    실제로 법령 계층이 통째로 죽은 채 배포된 이력이 있는데, 그때도
+    겉으로는 정상으로 보였다. 그래서 판정을 못 했으면 못 했다고 남긴다.
+    """
+    from app.core.supervisory_board import Verdict
+    from app.generation.grounding import make_verify_grounding
+
+    def boom(*a, **k):
+        raise RuntimeError("법령 저장소 손상")
+
+    monkeypatch.setattr("app.law.store.get_store", boom)
+
+    checks = [{"id": "A1", "severity": "critical", "title": "중도인출 사유",
+               "correction": "확인 필요", "docs": [], "verify_any": ["중도인출"]}]
+    vg = make_verify_grounding(
+        question="중도인출 사유가 어떻게 되나요?", slots=[],
+        llm_call=lambda s, u: '{"verdict":"APPROVE","findings":[]}',
+        trap_ids=["A1"], trap_checks=checks)
+    v = vg("중도인출은 법정 사유에 해당해야 합니다.", [])
+
+    notes = [f for f in v.supervision.findings if f.code == "NOT_RUN"
+             and f.auditor == "법령근거"]
+    assert notes, "법령 판정 실패가 감사에 기록되지 않았다"
+    assert "오류" in notes[0].detail, notes[0].detail
+    # 정보 기록일 뿐 심각도를 바꾸지 않는다
+    assert notes[0].severity == v.supervision.verdict
+
+
+def test_법령_판정을_수행하면_NOT_RUN이_남지_않는다(monkeypatch):
+    """반대편 — 실제로 판정했으면 '못 했다'는 기록이 없어야 한다."""
+    art = LawArticle(
+        law_name="시험법", article_no="제10조", clause_no="제1항",
+        text="가입자가 적립금을 중도인출하는 경우에는 대통령령으로 "
+             "정하는 사유에 해당하여야 한다.",
+        effective_date="2026-01-01", source_url="u", fetched_at="t")
+    store = LawStore([art])
+    monkeypatch.setattr("app.law.store.get_store", lambda **k: store)
+    monkeypatch.setattr("app.law.anchors.get_store", lambda **k: store)
+    monkeypatch.setattr("app.law.anchors.ANCHORS",
+                        {"A1": ("시험법 제10조 제1항",)})
+
+    from app.generation.grounding import make_verify_grounding
+
+    checks = [{"id": "A1", "severity": "critical", "title": "중도인출 사유",
+               "correction": "확인 필요", "docs": [], "verify_any": ["중도인출"]}]
+    vg = make_verify_grounding(
+        question="중도인출 사유가 어떻게 되나요?", slots=[],
+        llm_call=lambda s, u: '{"verdict":"APPROVE","findings":[]}',
+        trap_ids=["A1"], trap_checks=checks)
+    v = vg("중도인출은 법정 사유에 해당해야 합니다.", [])
+
+    assert not [f for f in v.supervision.findings
+                if f.code == "NOT_RUN" and f.auditor == "법령근거"]
