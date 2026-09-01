@@ -6,6 +6,8 @@ CLAUDE.md에 적힌 설계 원칙이 **코드에서 실제로 지켜지는지**�
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from app.analysis.conditions import derive_conditions
@@ -195,27 +197,86 @@ def test_합산_표현은_합산으로_인식한다():
 # LLM 호출 예산 — 설계 가정(3개소)을 벗어나지 않는가
 # ════════════════════════════════════════════════════════════════
 
+# 프롬프트가 "이 말은 반드시 답변에 나와야 한다"고 못박는 줄
+# (answer_prompt.py의 [주의할 혼동] 블록).
+_REQUIRED_TERMS = re.compile(r'반드시 답변에 등장해야 함: ([^)\n]+)')
+# [계산 결과 — 이 수치만 사용 가능] 블록의 "항목 = 값" 줄.
+_CALC_BLOCK = re.compile(r'\[계산 결과[^\]]*\]\n(.*?)(?=\n\[|\Z)', re.S)
+_CALC_LINE = re.compile(r'^\s{2,}(\S[^=\n]*?)\s*=\s*(\S[^\n]*)$', re.M)
+
+
+class _FakeClient:
+    """호출 횟수를 세는 대역.
+
+    `comply=True` 면 프롬프트의 지시를 **실제로 따른다** — 함정 반영
+    항목과 계산 결과를 답변 본문에 그대로 적는다.
+
+    ⚠️ 이 대역이 지시를 따르지 않으면 '정상 경로'가 아니라 '감독이
+       반려하는 경로'를 재현하게 되고, 호출 횟수 검사가 측정하려는 대상
+       자체가 달라진다. 예전 대역은 답변을 최대한 모호하게 써서 감사를
+       피하고 있었다 — 수치를 하나라도 적는 순간 CALC_NOT_SHOWN에 걸려
+       재생성을 탔다. 통과하고 있었을 뿐 '정상 경로'는 아니었다.
+    """
+
+    is_mock = False
+
+    def __init__(self, comply: bool = True):
+        self.calls: list[str] = []
+        self.comply = comply
+
+    def call(self, system, user, purpose="?", **kw):
+        self.calls.append(purpose)
+        if "감사자" in system:
+            return '{"verdict":"APPROVE","findings":[]}'
+        body = "[확인된 조건]\n확인했습니다.\n\n[조건별 결론]\n"
+        if self.comply:
+            # 계산 결과를 그대로 옮긴다 (새로 계산하지 않는다)
+            if blk := _CALC_BLOCK.search(user):
+                for label, value in _CALC_LINE.findall(blk.group(1)):
+                    body += f"{label}는 {value}입니다.\n"
+            # 함정 반영 지시를 따른다
+            for m in _REQUIRED_TERMS.finditer(user):
+                term = m.group(1).split(",")[0].strip()
+                body += f"자료 기준 {term}원 기준으로 갈립니다.\n"
+        if "주의할 혼동" in user:
+            body += "두 개념은 서로 다릅니다. 주의하실 점입니다.\n"
+        body += "제공 자료 근거로 안내드립니다.\n\n[한계 고지]\n확인이 필요합니다."
+        return body
+
+    def call_with_functions(self, s, u, t, purpose="?", **kw):
+        self.calls.append(purpose)
+        return {"name": None, "arguments": None, "raw": ""}
+
+
 def test_정상_경로에서_LLM_호출은_3회_이하():
     """L1 · L5' · L6. 재생성이 매번 돌면 문항당 5회가 되어
     크레딧 소모가 설계 가정의 1.7배가 된다."""
     from app.pipeline import answer_question
 
-    class Compliant:
-        is_mock = False
-        def __init__(self): self.calls = []
-        def call(self, system, user, purpose="?", **kw):
-            self.calls.append(purpose)
-            if "감사자" in system:
-                return '{"verdict":"APPROVE","findings":[]}'
-            body = "[확인된 조건]\n확인했습니다.\n\n[조건별 결론]\n"
-            if "주의할 혼동" in user:
-                body += "두 개념은 서로 다릅니다. 주의하실 점입니다.\n"
-            body += "제공 자료 근거로 안내드립니다.\n\n[한계 고지]\n확인이 필요합니다."
-            return body
-        def call_with_functions(self, s, u, t, purpose="?", **kw):
-            self.calls.append(purpose)
-            return {"name": None, "arguments": None, "raw": ""}
-
-    client = Compliant()
+    client = _FakeClient(comply=True)
     answer_question("Q", "연금저축 세액공제 한도가 얼마인가요?", client=client)
     assert len(client.calls) <= 3, f"호출 {client.calls}"
+
+
+def test_함정을_반영하지_않은_답변은_재생성을_탄다():
+    """★ 2026-09-01 추가 — 감사 결과가 실제로 답변에 반영되는가.
+
+    예전에는 high 등급 함정이 미반영이어도 DOWNGRADE에 그쳐 **재생성을
+    타지 않았다.** 감사가 "[E3] 개인계좌로 직접 수령 가능"처럼 구체적인
+    시정 지시를 만들어 놓고도 그것을 버린 채 등급 라벨만 바꿔 원본을
+    그대로 내보냈다. 실물에서 확인된 결함이다.
+
+    같은 질의·같은 대역이되 지시를 따르지 않는 답변은 호출이 늘어야 한다 —
+    늘지 않는다면 시정 지시가 다시 버려지고 있다는 뜻이다.
+    """
+    from app.pipeline import answer_question
+
+    ok = _FakeClient(comply=True)
+    answer_question("Q", "연금저축 세액공제 한도가 얼마인가요?", client=ok)
+
+    bad = _FakeClient(comply=False)
+    answer_question("Q", "연금저축 세액공제 한도가 얼마인가요?", client=bad)
+
+    assert len(bad.calls) > len(ok.calls), (
+        f"함정 미반영 답변이 재생성을 타지 않았다 — "
+        f"준수 {ok.calls} / 미준수 {bad.calls}")

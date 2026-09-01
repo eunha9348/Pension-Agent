@@ -55,14 +55,32 @@ def test_함정마다_따로_판정한다():
     assert missed == {"E1", "E2"}
 
 
-def test_critical_미해소는_REVISE_비critical은_DOWNGRADE():
-    crit = [{"id": "E1", "severity": "critical",
-             "verify_any": verify_terms_for("E1"), "correction": "…"}]
-    high = [{"id": "D2", "severity": "high",
-             "verify_any": verify_terms_for("D2"), "correction": "…"}]
+def test_critical과_high_미해소는_REVISE_medium은_DOWNGRADE():
+    """★ 2026-09-01 판정 변경 — high가 DOWNGRADE에서 REVISE로 올라갔다.
+
+    예전 불변식은 'critical만 REVISE'였다. 그런데 DOWNGRADE는 **재생성을
+    타지 않는다**(pipeline은 REVISE에서만 L5'로 되돌린다). 그래서 감사가
+    "[E3] 개인계좌로 직접 수령 가능 / [E4] 60일 내면 환급 가능"이라는
+    구체적 시정 지시를 만들어 놓고도 그것을 버린 채 등급 라벨만 바꿔
+    원본을 그대로 내보냈다. 실물에서 확인된 결함이다 — 사용자에게는
+    E3·E4가 통째로 빠진 답변이 나갔다.
+
+    high는 '틀리면 세금 계산이 달라지는' 등급이므로 지시를 써야 한다.
+    medium은 뉘앙스라 재생성 비용에 값하지 않아 DOWNGRADE로 남긴다.
+
+    비용 실측(298건, mock 파이프라인): 함정 감지 149건 중 high만 미해소는
+    2건 — 재생성이 새로 붙는 질의는 전체의 0.67%다.
+    """
     a = "일반적인 답변입니다."
-    assert audit_fitness(a, trap_checks=crit)[0].severity == Verdict.REVISE
-    assert audit_fitness(a, trap_checks=high)[0].severity == Verdict.DOWNGRADE
+
+    def verdict_for(severity, tid):
+        checks = [{"id": tid, "severity": severity,
+                   "verify_any": verify_terms_for(tid), "correction": "…"}]
+        return audit_fitness(a, trap_checks=checks)[0].severity
+
+    assert verdict_for("critical", "E1") == Verdict.REVISE
+    assert verdict_for("high", "D2") == Verdict.REVISE
+    assert verdict_for("medium", "E7") == Verdict.DOWNGRADE
 
 
 def test_시정_지시에_무엇을_고칠지_담긴다():

@@ -334,17 +334,39 @@ def audit_fitness(answer: str,
         missed = unaddressed_traps(answer, trap_checks)
         if missed:
             crit = [m["id"] for m in missed if m.get("severity") == "critical"]
-            rest = [m["id"] for m in missed if m.get("severity") != "critical"]
+            high = [m["id"] for m in missed if m.get("severity") == "high"]
+            rest = [m["id"] for m in missed
+                    if m.get("severity") not in ("critical", "high")]
             # 무엇을 어떻게 바로잡아야 하는지까지 준다 — 지시가 구체적이어야
             # 재생성이 성공한다. 예전의 뭉뚱그린 지시는 재생성도 실패했다.
             directive = " / ".join(
                 f"[{m['id']}] {m.get('correction') or m.get('title', '')}"
                 for m in missed[:3])
+            # ⚠️ high도 REVISE다. 예전에는 critical만 REVISE고 high는
+            #    DOWNGRADE였는데, DOWNGRADE는 **재생성을 타지 않는다**
+            #    (pipeline은 REVISE에서만 L5'로 되돌린다). 그래서 감사가
+            #    "[E3] 개인계좌로 직접 수령 가능 / [E4] 60일 내면 환급 가능"
+            #    이라는 구체적 시정 지시를 만들어 놓고도 그것을 버린 채
+            #    등급 라벨만 바꿔 원본을 그대로 내보냈다. 실측에서 확인됐다
+            #    (2026-09-01) — 사용자에게는 E3·E4가 통째로 빠진 답변이
+            #    나갔고, 감사가 문제를 정확히 짚었다는 사실은 어디에도
+            #    드러나지 않았다. CLAUDE.md의 "감사가 있다는 주장은 결과가
+            #    반영될 때만 참이다"를 정면으로 위반한 상태였다.
+            #
+            #    high는 '틀리면 세금 계산이 달라지는' 등급이다. 지시를
+            #    만들어 놓고 쓰지 않을 이유가 없다. medium은 뉘앙스라
+            #    DOWNGRADE로 남긴다 — 재생성 비용에 값하지 않는다.
+            #
+            #    비용 실측(298건, mock 파이프라인): 함정 감지 149건 중
+            #    high만 미해소는 2건(L14·O10). 즉 재생성이 새로 붙는 질의는
+            #    전체의 0.67%다. 지연에 실질적인 영향이 없다.
+            severe = crit + high
             findings.append(Finding(
                 "적합성", "TRAP_UNADDRESSED",
-                Verdict.REVISE if crit else Verdict.DOWNGRADE,
+                Verdict.REVISE if severe else Verdict.DOWNGRADE,
                 f"감지된 함정 중 답변에서 다뤄지지 않은 것: "
-                f"{crit + rest} (critical {len(crit)}건)",
+                f"{crit + high + rest} "
+                f"(critical {len(crit)}건 · high {len(high)}건)",
                 f"다음을 답변에 명시적으로 반영할 것 — {directive}",
             ))
     elif trap_ids:
