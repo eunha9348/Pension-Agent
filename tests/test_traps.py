@@ -22,8 +22,10 @@ CLEAN_QUERIES = [
 ]
 
 
-def test_규칙이_26종이다():
-    assert len(TRAPS) == 26
+def test_규칙이_27종이다():
+    # 2026-09-01 A9 추가 — 연금 외 수령 시 재원별 과세 구분
+    # (이연퇴직소득은 퇴직소득 과세기준 / 세액공제분·운용수익은 기타소득세)
+    assert len(TRAPS) == 27
 
 
 def test_규칙_스키마가_온전하다():
