@@ -721,12 +721,28 @@ def _answer_question_impl(question_id: str, question: str,
                     supervision = recheck.supervision
                     trace.log("L6_재생성_반영",
                               "재생성 답변이 검증을 통과해 채택 (판정도 갱신)")
+                elif _is_improvement(draft, revised, recheck,
+                                     trap_context.get("checks")):
+                    # ⚠️ 완전히 통과하지는 못했지만 **원본보다 확실히 낫다.**
+                    #    예전에는 이 경우도 통째로 기각해 더 나쁜 원본을
+                    #    내보냈다(2026-09-02 실측 — 미해소 ['C1','C2']인
+                    #    오답을 유지하고 ['C1']로 줄인 개선안을 버렸다).
+                    #    판정은 완화하지 않는다 — unresolved를 True로 두어
+                    #    고지·강등은 그대로 하고, 두 후보 중 덜 나쁜 쪽만 고른다.
+                    draft = revised.strip()
+                    verdict = recheck
+                    supervision = recheck.supervision
+                    unresolved = True
+                    trace.log("L6_재생성_부분반영",
+                              "재생성 답변이 검증을 완전히 통과하지는 못했으나 "
+                              "미해소 지적이 줄어 원본보다 낫다 → 채택하되 "
+                              "남은 지적은 그대로 고지하고 등급을 낮춘다")
                 else:
                     unresolved = True
                     trace.log("L6_재생성_기각",
-                              "재생성 답변도 검증에 실패 → 원본을 유지하되, "
-                              "검증을 통과하지 못했다는 사실을 답변에 고지하고 "
-                              "답변 등급을 낮춘다")
+                              "재생성 답변도 검증에 실패했고 원본보다 낫지도 "
+                              "않다 → 원본을 유지하되, 검증을 통과하지 못했다는 "
+                              "사실을 답변에 고지하고 답변 등급을 낮춘다")
             else:
                 unresolved = True
         else:
@@ -781,10 +797,23 @@ def _answer_question_impl(question_id: str, question: str,
                 trace.log("SubAgent_구제_반영",
                           "Sub-Agent가 다시 쓴 답변이 검증을 통과해 채택 "
                           "(판정도 갱신)")
+            elif _is_improvement(draft, rescued, recheck,
+                                 trap_context.get("checks")):
+                # L5' 재생성과 같은 원칙 — 완전히 통과하지 못했어도 원본보다
+                # 확실히 나으면 채택한다. unresolved는 True로 남겨 고지·강등을
+                # 유지하므로 사용자에게 "완전히 검증되지 않았다"는 사실은
+                # 그대로 전달된다.
+                draft = rescued.strip()
+                verdict = recheck
+                supervision = recheck.supervision
+                trace.log("SubAgent_구제_부분반영",
+                          "Sub-Agent 답변이 검증을 완전히 통과하지는 못했으나 "
+                          "미해소 지적이 줄어 원본보다 낫다 → 채택하되 남은 "
+                          "지적은 그대로 고지한다")
             else:
                 trace.log("SubAgent_구제_기각",
-                          "Sub-Agent 답변도 검증에 실패 → 원본을 유지하고 "
-                          "검증 미통과 사실을 고지한다")
+                          "Sub-Agent 답변도 검증에 실패했고 원본보다 낫지도 "
+                          "않다 → 원본을 유지하고 검증 미통과 사실을 고지한다")
         else:
             trace.log("SubAgent_구제_실패",
                       "Sub-Agent 재생성 호출이 답변을 만들지 못함 → 원본 유지")
@@ -1160,6 +1189,47 @@ def _compose_trace(query_spec: dict, trace: TraceLogger) -> str:
 #   ② directive가 LLM용 지시문("반드시 문장 안에 그대로 적으십시오")이라
 #      내부 프롬프트가 답변에 그대로 노출된다
 _SELF_RESOLVING = {"CALC_NOT_SHOWN"}
+
+
+def _is_improvement(old_draft: str, new_draft: str,
+                    new_verdict, trap_checks: Optional[list[dict]]) -> bool:
+    """재생성 결과가 원본보다 **확실히 나은가** (결정론적 판정).
+
+    ━━ 왜 필요한가 (2026-09-02 실측 확인) ━━
+    예전에는 재생성 결과를 "완전히 통과했는가"로만 채택했다(all-or-nothing).
+    그래서 **명백히 개선된 답변이 통째로 버려지고 더 나쁜 원본이 나갔다.**
+    실측 재현:
+
+        원본   : 미해소 함정 ['C1', 'C2']  ("1,500만원 이하로 조절하세요" — 오답)
+        재생성 : 미해소 함정 ['C1']        (C2를 정확히 반영한 개선된 답변)
+        결과   : C1이 남았다는 이유로 재생성 기각 → **원본(오답)이 최종 답변**
+
+    "확실히 통과하지 못한 답변은 재생성으로 품질을 높인다"는 설계 의도가
+    정확히 반대로 동작한 것이다. 완벽하지 않다고 더 나쁜 것을 고르면 안 된다.
+
+    ━━ 무엇을 완화하고 무엇을 완화하지 않는가 ━━
+    · **수치 검증은 절대 완화하지 않는다.** 근거 없는 수치가 들어간 답변은
+      '개선'이 아니라 날조 위험이다. numeric.passed가 False면 여기서 즉시
+      False를 돌려준다 — 함정을 몇 개 더 반영했든 상관없다.
+    · 미해소 함정이 **엄격히 줄었을 때만** 개선으로 본다. 새로 생긴 함정이
+      하나라도 있으면(부분집합이 아니면) 개선이 아니다 — 하나 고치고 하나
+      깨뜨린 답변을 채택하면 품질이 단조 증가하지 않는다.
+
+    ━━ 단조성과 충돌하지 않는다 ━━
+    감사 판정을 **완화하는 것이 아니다.** 판정은 그대로 REVISE로 남고
+    (unresolved=True, 고지·강등 그대로), 두 후보 중 **덜 나쁜 쪽을 고르는**
+    것뿐이다. 사용자에게는 여전히 "검증을 완전히 통과하지 못했다"고 알린다.
+    """
+    if not trap_checks:
+        return False           # 비교 기준이 없으면 개선을 주장하지 않는다
+    numeric = getattr(new_verdict, "numeric", None)
+    if numeric is not None and not numeric.passed:
+        return False           # 근거 없는 수치 — 개선이 아니라 사고다
+
+    old_missed = {t["id"] for t in unaddressed_traps(old_draft, trap_checks)}
+    new_missed = {t["id"] for t in unaddressed_traps(new_draft, trap_checks)}
+    # 진부분집합일 때만 — 줄었고, 새로 깨진 것이 없다
+    return new_missed < old_missed
 
 
 def _unresolved_notice(supervision) -> tuple[str, list[str]]:
