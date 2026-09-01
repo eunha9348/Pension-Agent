@@ -630,8 +630,11 @@ def _answer_question_impl(question_id: str, question: str,
     if constraint_warnings:
         draft += "\n\n※ " + " / ".join(constraint_warnings)
 
-    # ── critical 함정 교정 강제 ───────────────────────────────
-    draft = _enforce_critical_traps(draft, trap_context.get("checks"), trace)
+    # ⚠️ critical 함정 강제 삽입은 **여기서 하지 않는다.** REVISE→재생성→
+    #    구제재생성 뒤, 정말 끝까지 반영되지 않았을 때만 돈다(맨 아래
+    #    "critical 함정 교정 강제 (최후의 보루)" 참조). 이유는 그 자리의
+    #    주석에 있다 — 여기서 먼저 돌면 재생성이 본문을 고칠 기회 자체를
+    #    잃는다(2026-09-01 실물 확인).
 
     # ── 인용 조립 ─────────────────────────────────────────────
     used_evidence = _used_evidence(
@@ -880,6 +883,45 @@ def _answer_question_impl(question_id: str, question: str,
     if decision in (Answerability.PARTIAL, Answerability.ASK_BACK) and ask_back_items:
         draft += ("\n\n확인해 주시면 더 정확히 안내드릴 수 있습니다: "
                   + " / ".join(ask_back_items[:2]))
+
+    # ── critical 함정 교정 강제 (최후의 보루) ─────────────────
+    #
+    # ⚠️ 2026-09-01 실물 확인 — 예전에는 이 블록이 **REVISE→재생성→
+    #    구제재생성보다 앞**(요구사항 반영 검증 직후)에서 돌았다. 그러면
+    #    강제 삽입이 만든 각주 하나로 `unaddressed_traps`가 즉시 '해소'로
+    #    보고, critical 함정의 TRAP_UNADDRESSED가 REVISE를 낼 이유
+    #    자체가 사라졌다 — 재생성이 본문을 실제로 고칠 기회를 얻지
+    #    못하고 매번 건너뛰어졌다.
+    #
+    #    실제로 이렇게 나갔다: "IRP 퇴직금 3억, 1500만원 넘으면
+    #    종합과세?"에 각주("이연퇴직소득은 1,500만원 계산에 포함되지
+    #    않습니다")는 붙었지만, 본문은 "1,500만원 이하로 조절하는 게
+    #    중요합니다"라는 **반대** 조언을 그대로 유지했다. L6은 각주
+    #    덕분에 TRAP_UNADDRESSED가 이미 꺼진 채로 감사해 "지적사항
+    #    없음"으로 승인했다 — 각주와 본문이 서로 모순인 채로 나갔다.
+    #
+    #    지금은 REVISE→재생성→구제재생성이 **먼저** 시도된다. 그 두
+    #    경로는 이미 시정 지시(directive)에 이 함정의 correction 문구를
+    #    그대로 담아 LLM에 넘기므로(build_remediation_prompt ·
+    #    build_rewrite_payload), 각주를 억지로 붙이는 것보다 본문 자체를
+    #    일관되게 고칠 기회를 얻는다. 그래도 끝내 반영되지 않은 critical
+    #    함정만 지금 이 자리에서 결정론적으로 덧붙인다 — 원래 이 함수가
+    #    설계된 의도 그대로다(아래 docstring 참조).
+    draft = _enforce_critical_traps(draft, trap_context.get("checks"), trace)
+
+    # ⚠️ 위에서 방금 덧붙인 교정문의 근거 문서가 있다면 인용에도 반영한다.
+    #    시점을 옮기고 여기서 다시 계산하지 않으면 "본문에는 답이 나갔는데
+    #    그 답의 근거는 retrieved_context에 없는" 상태가 된다 — 근거를
+    #    빠짐없이 싣는다는 원칙(CLAUDE.md "사용한 것만 인용")에 어긋난다.
+    #    이미 자연스럽게 반영돼 바뀐 것이 없으면(대다수의 경우) 여기서
+    #    다시 계산해도 결과가 같으므로 비용은 없다.
+    used_evidence = _used_evidence(
+        evidence, slots, query_spec,
+        trap_docs=_addressed_trap_docs(draft, trap_context.get("checks")))
+    citations = build_citations(used_evidence, calc_results,
+                                doc_meta=store.doc_meta_map(),
+                                external_sources=external,
+                                legacy_checker=detect_legacy_tax_content)
 
     # ── 인용 무결성 ───────────────────────────────────────────
     integrity = verify_citation_integrity(
