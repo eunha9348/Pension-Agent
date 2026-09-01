@@ -627,7 +627,7 @@ def make_extract_query_spec(client=None,
                      ⚠️ 문서 원문이 아니라 영역·용어 목록만 넣는다.
                         원문을 주면 L1이 이를 근거로 착각해 답변을 만들어낸다.
     """
-    from app.llm.clova import get_client
+    from app.llm.clova import USAGE, get_client
     c = client or get_client()
 
     def extract_query_spec(question: str) -> dict:
@@ -646,6 +646,7 @@ def make_extract_query_spec(client=None,
             if trace_log:
                 trace_log("질의분석_LLM_실패",
                           f"L1 호출 실패({e}) → 규칙 기반 추출로 진행")
+            USAGE.record_degradation("l1_규칙축퇴")
             return fallback
 
         args = parse_spec_json(raw)
@@ -655,6 +656,7 @@ def make_extract_query_spec(client=None,
                           else "함수 호출 응답 없음")
                 trace_log("질의분석_규칙기반",
                           f"L1이 구조화 결과를 주지 못함({reason}) → 규칙 기반 추출 사용")
+            USAGE.record_degradation("l1_규칙축퇴")
             return fallback
 
         spec = sanitize_spec(args, question)

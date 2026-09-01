@@ -43,6 +43,16 @@ class UsageTracker:
     output_tokens: int = 0
     failures: int = 0
     by_purpose: dict[str, int] = field(default_factory=dict)
+    # ━━ 축퇴 집계 (2026-09-01 추가) ━━
+    # `failures`는 **예외**만 센다. 그런데 이 시스템에는 예외 없이 조용히
+    # 결정론적 경로로 내려앉는 길이 셋 있다 — L1이 JSON을 못 주면 규칙
+    # 추출로, L5'/L4-sub가 빈 문장을 주면 템플릿 답변으로 간다.
+    #
+    # 그 상태로도 200 OK에 그럴듯한 답변이 나가므로, **HyperCLOVA X가
+    # 실제로 답변을 만들었는지**를 밖에서 확인할 방법이 없었다. 평가는
+    # 단일 GET이라 한 번 잘못 나가면 되돌릴 수 없고, 답변 생성이 HCX가
+    # 아니면 절대 제약 위반이다. 그래서 세어서 /health에 노출한다.
+    degradations: dict[str, int] = field(default_factory=dict)
 
     def record(self, purpose: str, input_tokens: int, output_tokens: int) -> None:
         self.calls += 1
@@ -50,7 +60,12 @@ class UsageTracker:
         self.output_tokens += int(output_tokens or 0)
         self.by_purpose[purpose] = self.by_purpose.get(purpose, 0) + 1
 
+    def record_degradation(self, kind: str) -> None:
+        """LLM 문장 생성이 결정론적 경로로 대체된 횟수."""
+        self.degradations[kind] = self.degradations.get(kind, 0) + 1
+
     def as_dict(self) -> dict:
+        deg_total = sum(self.degradations.values())
         return {
             "calls": self.calls,
             "input_tokens": self.input_tokens,
@@ -58,6 +73,10 @@ class UsageTracker:
             "total_tokens": self.input_tokens + self.output_tokens,
             "failures": self.failures,
             "by_purpose": dict(self.by_purpose),
+            # HCX가 문장을 만들지 못해 결정론적 경로로 대체된 횟수.
+            # 0이 아니면 그만큼의 답변이 HCX 생성물이 아니다.
+            "degradations": dict(self.degradations),
+            "degradation_total": deg_total,
         }
 
 

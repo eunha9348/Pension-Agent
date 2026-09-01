@@ -307,7 +307,7 @@ def make_generate_answer(client=None,
                          ask_back_items: Optional[list[str]] = None,
                          trace_log: Optional[Callable[..., Any]] = None):
     """(query_spec, evidence, slots) -> str 시그니처의 함수를 만든다."""
-    from app.llm.clova import get_client
+    from app.llm.clova import USAGE, get_client
     c = client or get_client()
 
     def generate_answer(query_spec: dict,
@@ -332,6 +332,7 @@ def make_generate_answer(client=None,
                 trace_log("답변생성_템플릿_축퇴",
                           f"L5'가 문장을 생성하지 못함({reason}) → "
                           f"계산 결과·근거만 조합한 템플릿 답변 사용")
+            USAGE.record_degradation("l5_템플릿축퇴")
             return render_template_answer(query_spec, evidence, slots,
                                           trap_context, assumptions, ask_back_items)
         return draft.strip()

@@ -3,7 +3,17 @@
 # ━━ 쓰는 법 ━━
 #   1) cp .env.example .env  하고 CLOVA_API_KEY 를 채운다
 #   2) 제공 문서를 ./data/corpus/ 에 넣는다
-#   3) docker compose up -d --build
+#   3) docker compose --profile tools run --rm smoke    ← ★ 건너뛰지 말 것
+#   4) docker compose up -d --build
+#   5) curl -s localhost/health | grep -E 'llm_mock|degradation'
+#
+# ━━ 3)을 건너뛰면 안 되는 이유 ━━
+# 키가 잘못돼도 서버는 정상 기동하고 200 OK를 낸다. 각 계층이 LLM 실패를
+# 예외 없이 삼키고 결정론적 경로로 내려앉기 때문이다(L1→규칙추출,
+# L5'/L4-sub→템플릿). 그 답변은 HyperCLOVA X 생성물이 아니므로 절대 제약
+# 위반인데, 겉으로는 아무 이상이 없어 보인다.
+# smoke 는 키로 실제 1회 호출해 이 상태를 배포 **전에** 드러낸다.
+# 5)의 degradation_total 이 0인지도 함께 확인할 것.
 #
 # ━━ 왜 코퍼스를 볼륨으로 두는가 ━━
 # 이미지에 문서를 굽지 않는다. 문서를 추가·교체할 때 이미지를 다시 빌드할
@@ -42,6 +52,23 @@ services:
         required: false
 
     environment:
+      # ★ 운영에서는 mock LLM으로 떨어지지 않는다 ★
+      #
+      # 기본값은 LLM_MODE=auto 인데, auto는 **키가 없으면 조용히 mock으로
+      # 전환한다.** .env 마운트 실패·키 오타·키 만료 어느 쪽이든 서버는
+      # 정상 기동하고 200 OK로 결정론적 템플릿 답변을 낸다. 그 답변은
+      # HyperCLOVA X가 만든 것이 아니므로 절대 제약 #1 위반이고,
+      # 평가는 단일 GET이라 되돌릴 수 없다.
+      #
+      # real 로 못박으면 mock 클라이언트가 아예 생성되지 않는다. 키가
+      # 잘못됐으면 /answer 가 실패하므로 배포 직후 바로 드러난다.
+      # (기동 자체를 막지는 않는다 — restart: always 라 오타 하나가
+      #  재시작 루프 + 전면 장애가 되는 편이 더 나쁘다)
+      #
+      # ⚠️ 키가 살아 있어도 호출이 실패하면 각 계층이 결정론적 경로로
+      #    내려앉는다. 그 횟수는 /health 의 llm_usage.degradations 로
+      #    확인할 것 — 0이 아니면 그만큼 HCX 생성물이 아니다.
+      LLM_MODE: "real"
       # 코퍼스가 비었을 때 mock 문서로 인덱스를 만들지 여부.
       # 운영에서는 반드시 false — true면 지어낸 문서로 답변하게 된다.
       ALLOW_MOCK_CORPUS: "false"

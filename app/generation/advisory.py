@@ -121,7 +121,7 @@ def make_generate_advisory(client=None,
        이후 검증·인용·감독 계층이 한 벌로 유지된다. 경로마다 다른
        처리를 만들면 검증이 두 벌이 되고 반드시 어긋난다.
     """
-    from app.llm.clova import get_client
+    from app.llm.clova import USAGE, get_client
     c = client or get_client()
 
     def generate_advisory(query_spec: dict,
@@ -146,6 +146,7 @@ def make_generate_advisory(client=None,
                 trace_log("L4sub_템플릿_축퇴",
                           f"상담 답변을 생성하지 못함({reason}) → "
                           f"확인 항목만 담은 결정론적 안내 사용")
+            USAGE.record_degradation("l4sub_템플릿축퇴")
             return render_advisory_fallback(query_spec, evidence,
                                             extra_conditions)
         return draft.strip()
