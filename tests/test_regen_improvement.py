@@ -98,6 +98,51 @@ def test_비교할_함정이_없으면_개선을_주장하지_않는다():
     assert _is_improvement(_NONE, _BOTH, _Verdict(), None) is False
 
 
+# ── 개선의 두 번째 종류 — 수치 검증 실패 → 통과 (2026-09-02 2차) ──
+#
+# 처음에는 함정 해소만 개선으로 셌는데, 그러면 실측에서 관측된 다른 개선
+# 유형을 통째로 버린다. 수치 검증 실패는 verify_grounding 직후 **무조건
+# 템플릿 축퇴**를 부르므로, 지어낸 수치를 지운 재생성은 축퇴를 피할 유일한
+# 기회다. 그것을 기각하는 것은 재생성을 넣은 목적과 정반대다.
+#
+#     원본   : 근거 없는 수치 [56.0] 포함 → 수치검증 실패
+#     재생성 : 그 수치를 제거 (미해소 함정 집합은 그대로)
+#     예전   : new_missed < old_missed 가 아니라서 기각 → 원본 유지 → 축퇴
+
+def test_지어낸_수치를_지우면_함정이_그대로여도_개선이다():
+    """★ 실측 UI-020 그대로 — 수치 실패 → 통과, 함정은 동률."""
+    assert _is_improvement(_NONE, _NONE, _Verdict(numeric_passed=True),
+                           _CHECKS,
+                           old_verdict=_Verdict(numeric_passed=False)) is True
+
+
+def test_수치를_고쳐도_함정이_늘면_개선이_아니다():
+    """★ 한쪽이 나아지는 동안 다른 쪽이 나빠지면 채택하지 않는다."""
+    assert _is_improvement(_C2_ONLY, _NONE, _Verdict(numeric_passed=True),
+                           _CHECKS,
+                           old_verdict=_Verdict(numeric_passed=False)) is False
+
+
+def test_원본도_수치를_통과했으면_수치_개선을_주장하지_않는다():
+    """나아진 것이 없는데 '수치를 고쳤다'고 하면 근거 없는 주장이다."""
+    assert _is_improvement(_NONE, _NONE, _Verdict(numeric_passed=True),
+                           _CHECKS,
+                           old_verdict=_Verdict(numeric_passed=True)) is False
+
+
+def test_원본_판정을_모르면_수치_개선을_주장하지_않는다():
+    """old_verdict가 없으면 비교 대상이 없다 — 예전 동작 그대로."""
+    assert _is_improvement(_NONE, _NONE, _Verdict(numeric_passed=True),
+                           _CHECKS) is False
+
+
+def test_수치_개선이어도_새_답변이_수치검증에_실패하면_기각이다():
+    """★ 절대 완화하지 않는 선 — 근거 없는 수치가 남아 있으면 개선이 아니다."""
+    assert _is_improvement(_NONE, _BOTH, _Verdict(numeric_passed=False),
+                           _CHECKS,
+                           old_verdict=_Verdict(numeric_passed=False)) is False
+
+
 # ── end-to-end — 파이프라인에서 실제로 채택되는가 ────────────
 
 class _RegenImproves:

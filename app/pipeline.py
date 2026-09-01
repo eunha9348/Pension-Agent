@@ -39,6 +39,7 @@ coverage_pipeline.run_with_timeout()은 ThreadPoolExecutor 기반이라
 
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -86,6 +87,32 @@ from app.retrieval.coarse import make_coarse_search
 from app.retrieval.embedding import embedding_enabled
 from app.retrieval.hybrid import make_retrieve_hybrid
 
+log = logging.getLogger("pipeline")
+
+
+def _budget_sec(name: str, default: float) -> float:
+    """예산 환경변수 읽기. 잘못된 값은 조용히 기본값으로 — 기동을 막지 않는다.
+
+    ⚠️ 하한을 둔다. 0이나 음수가 들어오면 모든 LLM 단계가 통째로 생략돼
+       "200 OK인데 HCX가 만들지 않은 답변"이 나간다 — 절대 제약 #1 위반을
+       오타 하나로 만들 수 있는 자리다.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        log.warning("%s 값을 읽을 수 없어 기본값 %.1f초를 씁니다: %r",
+                    name, default, raw)
+        return default
+    if val < 10.0:
+        log.warning("%s=%.1f 는 너무 작아 기본값 %.1f초를 씁니다 "
+                    "(LLM 단계가 통째로 생략됩니다)", name, val, default)
+        return default
+    return val
+
+
 # 전체 요청 예산(초). 평가 API는 단일 GET 안에서 끝나야 한다.
 #
 # 2026-08-18 실코퍼스(158문서) 대상 실배포 로그로 재갱신:
@@ -94,15 +121,30 @@ from app.retrieval.hybrid import make_retrieve_hybrid
 #   붙고 그 중 한 번이라도 타임아웃→재시도를 타면 L1+L5+L6+regen(L5)+L6
 #   전체 경로가 30초를 넘길 수 있다(실측: 정상 완료 31160ms). 25초는 이
 #   정상 경로조차 못 담아 조기에 잘라내므로 상향한다.
-TOTAL_BUDGET_SEC = 45.0
+#
+# 2026-09-02 — 환경변수로 뺀다(기본값은 45초 그대로).
+#   실측에서 REVISE가 떴는데 `L6_재생성_생략`으로 빠지는 경우가 나왔다.
+#   이 예산은 **평가 측 타임아웃과의 트레이드오프**라 코드가 혼자 정할 수
+#   없다 — 올리면 재생성 기회가 생기고, 너무 올리면 평가가 먼저 끊는다.
+#   그래서 값을 상수에 박아 두는 대신 배포 설정에서 조정할 수 있게 한다
+#   (docker-compose의 agent 서비스에 PIPELINE_BUDGET_SEC 지정).
+#   ⚠️ 이 예산은 **게이트일 뿐 중단 장치가 아니다.** 이미 시작한 호출을
+#      끊지는 않으므로, 낮춘다고 응답이 그만큼 빨라지지는 않는다.
+TOTAL_BUDGET_SEC = _budget_sec("PIPELINE_BUDGET_SEC", 45.0)
 
-log = logging.getLogger("pipeline")
 # 단계별 예산 — 이 시점까지 남은 시간이 없으면 해당 LLM 단계를 건너뛴다.
 # CLOVA_TIMEOUT_SEC(기본 15초)를 함께 올렸으므로, 정상적인 대형 프롬프트
 # 호출(5~8초)이 타임아웃으로 오인돼 재시도되는 일을 줄이는 게 우선이다.
 BUDGET_L1 = 7.0
 BUDGET_L5 = 10.0
 BUDGET_L6 = 3.0
+# ⚠️ 이 값은 **재생성 호출 자체**의 예산이다. 재생성 결과의 재검증
+#    (verify_grounding → 의미 감사 HCX 호출 1회)은 이 게이트와 무관하게
+#    무조건 수행된다 — 검증 없이 채택하면 감사를 우회하는 뒷문이 되기
+#    때문이다(CLAUDE.md). 즉 이 분기의 실제 소요는 BUDGET_REGEN이 아니라
+#    대략 BUDGET_REGEN + BUDGET_L6다. 게이트를 그 합으로 올리면 정확해지는
+#    대신 재생성이 더 자주 생략되므로, 총 예산을 함께 올릴 수 있을 때만
+#    올릴 것.
 BUDGET_REGEN = 10.0
 # Sub-Agent는 보조 장치다. 남은 시간이 이만큼 없으면 감지만 하고 호출하지
 # 않는다 — 보조 장치가 본체를 지연시키면 그 자체가 결함이다.
@@ -722,7 +764,8 @@ def _answer_question_impl(question_id: str, question: str,
                     trace.log("L6_재생성_반영",
                               "재생성 답변이 검증을 통과해 채택 (판정도 갱신)")
                 elif _is_improvement(draft, revised, recheck,
-                                     trap_context.get("checks")):
+                                     trap_context.get("checks"),
+                                     old_verdict=verdict):
                     # ⚠️ 완전히 통과하지는 못했지만 **원본보다 확실히 낫다.**
                     #    예전에는 이 경우도 통째로 기각해 더 나쁜 원본을
                     #    내보냈다(2026-09-02 실측 — 미해소 ['C1','C2']인
@@ -735,8 +778,9 @@ def _answer_question_impl(question_id: str, question: str,
                     unresolved = True
                     trace.log("L6_재생성_부분반영",
                               "재생성 답변이 검증을 완전히 통과하지는 못했으나 "
-                              "미해소 지적이 줄어 원본보다 낫다 → 채택하되 "
-                              "남은 지적은 그대로 고지하고 등급을 낮춘다")
+                              "미해소 지적이 줄었거나 근거 없는 수치가 사라져 "
+                              "원본보다 낫다 → 채택하되 남은 지적은 그대로 "
+                              "고지하고 등급을 낮춘다")
                 else:
                     unresolved = True
                     trace.log("L6_재생성_기각",
@@ -747,9 +791,20 @@ def _answer_question_impl(question_id: str, question: str,
                 unresolved = True
         else:
             unresolved = True
+            # ⚠️ 사유를 뭉뚱그리지 않는다. 예전 문구는 "예산이 없거나 mock
+            #    모드"라 **둘 중 무엇이었는지 알 수 없었다.** 실측에서 이
+            #    분기가 걸렸을 때(2026-09-02 UI-019) 남은 시간이 얼마였는지
+            #    확인할 방법이 없어 예산 상수를 근거 있게 조정할 수 없었다.
+            #    "법령 판정을 '못 한 것'과 '대상이 없던 것'을 구별할 것"과
+            #    같은 이유다 — 사유가 없으면 고칠 수 없다.
+            if getattr(client, "is_mock", False):
+                why = "mock 모드에서는 재생성 경로를 열지 않는다"
+            else:
+                why = (f"남은 시간 {deadline.remaining:.1f}초 < 재생성 예산 "
+                       f"{BUDGET_REGEN:.1f}초 (총 예산 {deadline.total:.0f}초)")
             trace.log("L6_재생성_생략",
-                      "재생성 예산이 없거나 mock 모드 — 검증 미통과 사실을 고지하고 "
-                      "등급을 낮춘 채로 진행")
+                      f"재생성을 건너뛴다 — {why}. 검증 미통과 사실을 고지하고 "
+                      f"등급을 낮춘 채로 진행")
 
     # ── 구제 재생성 — Sub-Agent가 직접 다시 쓴다 ──────────────
     #
@@ -766,8 +821,21 @@ def _answer_question_impl(question_id: str, question: str,
     #    검증을 건너뛰면 Sub-Agent가 감사를 빠져나가는 뒷문이 되고,
     #    "LLM 감사는 심각도를 올릴 수만 있다"는 단조성이 무너진다.
     #    통과하지 못하면 예전과 똑같이 원본 + 고지 + 강등으로 간다.
-    if (unresolved and supervision is not None
-            and supervision.verdict == Verdict.REVISE
+    rescue_wanted = (unresolved and supervision is not None
+                     and supervision.verdict == Verdict.REVISE)
+    if rescue_wanted and (not deadline.allows(BUDGET_SUBAGENT_REWRITE)
+                          or getattr(client, "is_mock", False)):
+        # ⚠️ 예전에는 이 경우가 **아무 기록도 남기지 않았다.** 구제 재생성이
+        #    필요한 상황이었는데 열리지 않았다는 사실이 think_trace에서
+        #    사라지면, 밖에서 보기에는 "구제를 시도했는데 실패한 것"과
+        #    구별되지 않는다("법령 판정을 '못 한 것'과 '대상이 없던 것'을
+        #    구별할 것"과 같은 계열의 결함이다).
+        trace.log("SubAgent_구제_생략",
+                  ("mock 모드에서는 구제 재생성 경로를 열지 않는다"
+                   if getattr(client, "is_mock", False) else
+                   f"남은 시간 {deadline.remaining:.1f}초 < 구제 재생성 예산 "
+                   f"{BUDGET_SUBAGENT_REWRITE:.1f}초 → 원본 유지 + 고지"))
+    if (rescue_wanted
             and deadline.allows(BUDGET_SUBAGENT_REWRITE)
             and not getattr(client, "is_mock", False)):
         from app.core.sub_agent import rescue_answer
@@ -798,7 +866,8 @@ def _answer_question_impl(question_id: str, question: str,
                           "Sub-Agent가 다시 쓴 답변이 검증을 통과해 채택 "
                           "(판정도 갱신)")
             elif _is_improvement(draft, rescued, recheck,
-                                 trap_context.get("checks")):
+                                 trap_context.get("checks"),
+                                 old_verdict=verdict):
                 # L5' 재생성과 같은 원칙 — 완전히 통과하지 못했어도 원본보다
                 # 확실히 나으면 채택한다. unresolved는 True로 남겨 고지·강등을
                 # 유지하므로 사용자에게 "완전히 검증되지 않았다"는 사실은
@@ -808,8 +877,8 @@ def _answer_question_impl(question_id: str, question: str,
                 supervision = recheck.supervision
                 trace.log("SubAgent_구제_부분반영",
                           "Sub-Agent 답변이 검증을 완전히 통과하지는 못했으나 "
-                          "미해소 지적이 줄어 원본보다 낫다 → 채택하되 남은 "
-                          "지적은 그대로 고지한다")
+                          "미해소 지적이 줄었거나 근거 없는 수치가 사라져 "
+                          "원본보다 낫다 → 채택하되 남은 지적은 그대로 고지한다")
             else:
                 trace.log("SubAgent_구제_기각",
                           "Sub-Agent 답변도 검증에 실패했고 원본보다 낫지도 "
@@ -1191,8 +1260,15 @@ def _compose_trace(query_spec: dict, trace: TraceLogger) -> str:
 _SELF_RESOLVING = {"CALC_NOT_SHOWN"}
 
 
+def _numeric_passed(verdict) -> bool:
+    """수치 검증을 통과했는가. 검증기가 돌지 않았으면(None) 통과로 본다."""
+    numeric = getattr(verdict, "numeric", None)
+    return True if numeric is None else bool(numeric.passed)
+
+
 def _is_improvement(old_draft: str, new_draft: str,
-                    new_verdict, trap_checks: Optional[list[dict]]) -> bool:
+                    new_verdict, trap_checks: Optional[list[dict]],
+                    old_verdict=None) -> bool:
     """재생성 결과가 원본보다 **확실히 나은가** (결정론적 판정).
 
     ━━ 왜 필요한가 (2026-09-02 실측 확인) ━━
@@ -1207,29 +1283,56 @@ def _is_improvement(old_draft: str, new_draft: str,
     "확실히 통과하지 못한 답변은 재생성으로 품질을 높인다"는 설계 의도가
     정확히 반대로 동작한 것이다. 완벽하지 않다고 더 나쁜 것을 고르면 안 된다.
 
-    ━━ 무엇을 완화하고 무엇을 완화하지 않는가 ━━
-    · **수치 검증은 절대 완화하지 않는다.** 근거 없는 수치가 들어간 답변은
-      '개선'이 아니라 날조 위험이다. numeric.passed가 False면 여기서 즉시
-      False를 돌려준다 — 함정을 몇 개 더 반영했든 상관없다.
-    · 미해소 함정이 **엄격히 줄었을 때만** 개선으로 본다. 새로 생긴 함정이
-      하나라도 있으면(부분집합이 아니면) 개선이 아니다 — 하나 고치고 하나
-      깨뜨린 답변을 채택하면 품질이 단조 증가하지 않는다.
+    ━━ 개선의 종류는 둘이다 (2026-09-02 2차 보강) ━━
+    처음에는 **함정 해소**만 개선으로 셌는데, 그러면 실측에서 관측된 다른
+    개선 유형을 통째로 버린다:
+
+        원본   : 근거 없는 수치 [56.0] 포함 → 수치검증 실패
+        재생성 : 그 수치를 제거 (함정 미해소 집합은 그대로)
+        결과   : new_missed < old_missed 가 아니므로 **기각** →
+                 원본이 유지되고, 수치검증 실패 때문에 곧바로
+                 **템플릿 축퇴**(근거 발췌 나열)로 떨어진다
+
+    수치 검증 실패는 `verify_grounding` 직후 무조건 축퇴를 부르므로,
+    "수치를 고친 재생성"은 축퇴를 피할 유일한 기회다. 그것을 기각하는 것은
+    재생성을 넣은 목적과 정반대다. 그래서 판정을 둘로 나눈다:
+
+      ① 미해소 함정이 **엄격히 줄었다** (진부분집합) — 수치는 나빠지지 않았다
+      ② 수치 검증이 **실패 → 통과**로 바뀌었다 — 함정은 나빠지지 않았다
+
+    ━━ 무엇을 완화하지 않는가 ━━
+    · **새 답변의 수치 검증 실패는 어떤 경우에도 개선이 아니다.** 근거 없는
+      수치가 들어간 답변은 '개선'이 아니라 날조 위험이다 — 함정을 몇 개 더
+      반영했든 상관없이 즉시 False다.
+    · 두 축 모두 **한쪽이 나아지는 동안 다른 쪽이 나빠지면 안 된다.** 하나
+      고치고 하나 깨뜨린 답변을 채택하면 품질이 단조 증가하지 않는다.
 
     ━━ 단조성과 충돌하지 않는다 ━━
     감사 판정을 **완화하는 것이 아니다.** 판정은 그대로 REVISE로 남고
     (unresolved=True, 고지·강등 그대로), 두 후보 중 **덜 나쁜 쪽을 고르는**
     것뿐이다. 사용자에게는 여전히 "검증을 완전히 통과하지 못했다"고 알린다.
     """
-    if not trap_checks:
-        return False           # 비교 기준이 없으면 개선을 주장하지 않는다
-    numeric = getattr(new_verdict, "numeric", None)
-    if numeric is not None and not numeric.passed:
+    if not _numeric_passed(new_verdict):
         return False           # 근거 없는 수치 — 개선이 아니라 사고다
 
-    old_missed = {t["id"] for t in unaddressed_traps(old_draft, trap_checks)}
-    new_missed = {t["id"] for t in unaddressed_traps(new_draft, trap_checks)}
-    # 진부분집합일 때만 — 줄었고, 새로 깨진 것이 없다
-    return new_missed < old_missed
+    if trap_checks:
+        old_missed = {t["id"] for t in unaddressed_traps(old_draft, trap_checks)}
+        new_missed = {t["id"] for t in unaddressed_traps(new_draft, trap_checks)}
+    else:
+        # 비교 기준이 없으면 "함정이 줄었다"고 주장하지 않는다. 다만 수치
+        # 개선(②)까지 막을 이유는 없으므로 '동률'로 두고 아래에서 판단한다.
+        old_missed = new_missed = frozenset()
+
+    # ① 함정이 엄격히 줄었다 — 줄었고, 새로 깨진 것이 없다
+    if new_missed < old_missed:
+        return True
+
+    # ② 수치 검증이 실패 → 통과 — 축퇴를 피할 유일한 기회다.
+    #    (old_verdict가 없으면 비교 대상이 없으므로 주장하지 않는다)
+    if old_verdict is not None and not _numeric_passed(old_verdict):
+        return new_missed <= old_missed      # 함정이 나빠지지 않았을 때만
+
+    return False
 
 
 def _unresolved_notice(supervision) -> tuple[str, list[str]]:

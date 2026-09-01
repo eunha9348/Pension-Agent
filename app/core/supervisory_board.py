@@ -258,6 +258,16 @@ _ACCOUNT_MISMATCH = {
 }
 
 
+def _required_terms(check: dict, limit: int = 3) -> list[str]:
+    """이 함정이 '해소됐다'고 판정받으려면 답변에 있어야 할 표현.
+
+    `unaddressed_traps`가 쓰는 판정 기준(verify_any)을 그대로 돌려준다.
+    재생성 지시에 실어 **합격 조건을 명시**하기 위한 것이다 — 기준을
+    바꾸는 것이 아니라 밝히는 것이므로 감사의 엄격성은 그대로다.
+    """
+    return [t for t in (check.get("verify_any") or []) if t][:limit]
+
+
 def audit_fitness(answer: str,
                    user_conditions: Optional[dict] = None,
                    mentioned_products: Optional[list[dict]] = None,
@@ -339,8 +349,20 @@ def audit_fitness(answer: str,
                     if m.get("severity") not in ("critical", "high")]
             # 무엇을 어떻게 바로잡아야 하는지까지 준다 — 지시가 구체적이어야
             # 재생성이 성공한다. 예전의 뭉뚱그린 지시는 재생성도 실패했다.
+            #
+            # ⚠️ 해소 판정 기준(verify_any)을 지시에 함께 싣는다 (2026-09-02).
+            #    실측에서 재생성이 계속 기각됐다 — 시정 지시는 correction 문장
+            #    뿐이라, 모델이 취지는 반영하면서 다른 말로 바꿔 쓰면
+            #    `unaddressed_traps`가 여전히 미해소로 판정했다. 즉 **합격
+            #    조건을 알려주지 않은 채 다시 쓰라고 시킨 것**이다. 그 결과
+            #    L5' 재생성도 Sub-Agent 구제도 같은 자리에서 떨어졌고
+            #    (L6_재생성_기각 → SubAgent_구제_기각), 답변은 축퇴로 갔다.
+            #    검사 기준을 밝히는 것은 감사를 무르는 것이 아니다 — 판정
+            #    로직은 그대로고, 무엇을 써야 통과하는지를 알려줄 뿐이다.
             directive = " / ".join(
                 f"[{m['id']}] {m.get('correction') or m.get('title', '')}"
+                + (f" (반드시 '{'‧'.join(_required_terms(m))}' 중 한 표현을 "
+                   f"답변 본문에 그대로 쓸 것)" if _required_terms(m) else "")
                 for m in missed[:3])
             # ⚠️ high도 REVISE다. 예전에는 critical만 REVISE고 high는
             #    DOWNGRADE였는데, DOWNGRADE는 **재생성을 타지 않는다**
@@ -600,11 +622,38 @@ def build_remediation_prompt(result: SupervisionResult, original_answer: str) ->
     """REVISE 판정 시 Supervisor에게 전달할 재생성 지시문.
 
     감독 계층이 LLM에게 '무엇을 어떻게 고치라'고 지시하는 부분.
+
+    ━━ 지시는 강제력이 있어야 한다 (2026-09-02 보강) ━━
+    실측에서 재생성이 반복적으로 기각됐다. 원인은 지시가 약해서였다 —
+    "다음 지적사항에 따라 수정하십시오"만으로는 모델이 **원본 문장을
+    대부분 그대로 두고 표현만 다듬는다.** 그러면 미해소 함정 집합이
+    그대로라 `_is_improvement`도 통과하지 못하고, 답변은 축퇴로 간다.
+
+    그래서 세 가지를 못박는다:
+      · 지적된 문장은 **삭제하거나 바로잡는다** (그대로 두면 안 된다)
+      · 지시에 '그대로 쓸 것'이라고 표시된 표현은 **본문에 그대로** 넣는다
+      · 지적사항을 반영했는지 **스스로 대조한 뒤** 출력한다
     """
     if result.verdict != Verdict.REVISE or not result.directives:
         return ""
-    lines = ["아래 답변을 다음 지적사항에 따라 수정하십시오.",
-             "새로운 수치를 만들지 말고, 기존 계산 결과와 근거 문서만 사용하십시오.", ""]
+    lines = [
+        # ⚠️ 이 지시문에 마크다운(**굵게**)을 쓰지 말 것 — HCX가 그대로
+        #    따라 써서 사용자 화면에 노출된 이력이 있다(2026-09-01).
+        "아래 원본 답변은 내부 감사에서 반려됐습니다. 지적사항을 반영해 "
+        "답변을 처음부터 다시 작성하십시오.",
+        "",
+        "[반드시 지킬 것]",
+        "· 지적된 내용과 어긋나는 원본 문장은 그대로 두지 말고 삭제하거나 "
+        "바로잡으십시오. 표현만 다듬는 수정은 반려됩니다.",
+        "· 지시에 \"그대로 쓸 것\"이라고 표시된 표현은 답변 본문에 그 표현 "
+        "그대로 포함시키십시오.",
+        "· 새로운 수치를 만들지 말고, 기존 계산 결과와 근거 문서에 있는 "
+        "값만 사용하십시오.",
+        "· 출력 전에 아래 지적사항을 하나씩 되짚어, 각 항목이 답변에 "
+        "반영됐는지 확인하십시오.",
+        "",
+        "[지적사항]",
+    ]
     for i, d in enumerate(result.directives, 1):
         lines.append(f"{i}. {d}")
     lines += ["", "── 원본 답변 ──", original_answer]
