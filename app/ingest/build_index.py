@@ -19,6 +19,7 @@ from app.config import REPO_ROOT
 from app.ingest.chunker import chunk_document
 from app.ingest.metadata import apply_chunk_metadata, build_doc_metadata
 from app.ingest.loader import corpus_files, is_ingestible, iter_documents
+from app.ingest.ocr_repair import repair_documents
 from app.ingest.store import DEFAULT_INDEX_DIR, ChunkRecord, DocumentStore
 from app.retrieval.bm25 import build_index as build_bm25
 
@@ -49,7 +50,23 @@ def ingest(corpus_dir: Path, corpus_kind: str) -> DocumentStore:
     all_warnings: list[str] = []
     skipped: list[str] = []
 
-    for doc in iter_documents(corpus_dir):
+    # ⚠️ 청킹 전에 **코퍼스 전체를 모아** OCR 판독 실패 구간을 복원한다.
+    #    교차 문서 대조라 한 문서씩 스트리밍하면서는 할 수 없다 — 깨진 자리를
+    #    메울 근거가 다른 문서에 있기 때문이다. 청킹 뒤로 미루면 청크 경계가
+    #    앵커를 잘라 복원율이 떨어진다.
+    documents = list(iter_documents(corpus_dir))
+    repair = repair_documents(documents)
+    if repair.runs_found:
+        print(f"\n[OCR 복원] {repair.summary()}")
+        for s_ in repair.samples:
+            print(f"    · {s_}")
+        if repair.runs_masked:
+            print(f"    ⚠ 복원하지 못한 {repair.runs_masked}건은 "
+                  f"'(판독불가)'로 표시됩니다 — 원문이 깨진 것이며 "
+                  f"인용문에 '?'가 그대로 나가지는 않습니다")
+        print()
+
+    for doc in documents:
         if not doc.pages:
             # 판독 실패를 조용히 넘기지 않는다 — 문서가 통째로 빠진 채
             # 서비스가 뜨는 것이 가장 위험하다
@@ -83,6 +100,13 @@ def ingest(corpus_dir: Path, corpus_kind: str) -> DocumentStore:
             print(f"  ⚠ {w}")
 
     store.skipped_files = skipped
+    store.ocr_repair = {
+        "runs_found": repair.runs_found,
+        "runs_repaired": repair.runs_repaired,
+        "runs_masked": repair.runs_masked,
+        "pages_garbled": repair.pages_garbled,
+        "summary": repair.summary(),
+    }
     return store
 
 

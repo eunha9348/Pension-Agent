@@ -19,6 +19,7 @@ from pathlib import Path
 from app.config import REPO_ROOT
 from app.ingest.loader import (NEEDS_CONVERSION, corpus_files, is_ingestible,
                                load_file)
+from app.ingest.ocr_repair import repair_documents
 
 DEFAULT = REPO_ROOT / "data" / "corpus"
 
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
 
     ok, empty, unsupported = [], [], []
     total_chars = 0
+    loaded = []          # OCR 복원 점검용 — 아래에서 코퍼스 전체로 대조한다
 
     for path in files:
         rel = path.relative_to(target)
@@ -60,8 +62,24 @@ def main(argv: list[str] | None = None) -> int:
                   f"{'; '.join(doc.warnings) or '내용 없음'}")
         else:
             ok.append((rel, chars))
+            loaded.append(doc)
             print(f"  ✅ {str(rel):45s} {doc.page_count:4d}쪽 {chars:>8,}자 "
                   f"[{doc.layout}]")
+
+    # ── OCR 판독 실패 구간 점검 ─────────────────────────────────
+    # 인덱스를 만들기 전에 "원문이 얼마나 깨져 있고 그중 얼마나 복원되는지"를
+    # 먼저 본다. 여기서 복원율이 낮으면 인용문에 (판독불가)가 많이 나간다.
+    if loaded:
+        repair = repair_documents(loaded)     # loaded는 사본이므로 안전
+        if repair.runs_found:
+            print("\n" + "─" * 72)
+            print(f" [OCR 판독 실패] {repair.summary()}")
+            for s_ in repair.samples:
+                print(f"   · {s_}")
+            if repair.runs_masked:
+                print(f"   ⚠ 복원 실패 {repair.runs_masked}건은 '(판독불가)'로 "
+                      f"표시됩니다. 원문 OCR이 깨진 것이며, '?'가 인용문에 "
+                      f"그대로 나가지는 않습니다.")
 
     print("\n" + "─" * 72)
     print(f" 전체 {len(files)}건 → 판독 성공 {len(ok)}건 · "

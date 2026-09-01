@@ -36,8 +36,19 @@ class ChunkRecord:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ChunkRecord":
+        # ★ 적재 시점의 안전망 — 인덱스는 호스트 볼륨(./data/index)에 남고
+        #   entrypoint는 있으면 재사용한다. 즉 **이 코드보다 먼저 만들어진
+        #   인덱스**에는 '?????????'가 그대로 박혀 있고, 이미지를 새로
+        #   빌드해도 사라지지 않는다. 재인덱싱을 잊으면 그 텍스트가
+        #   retrieved_context를 타고 그대로 나간다.
+        #   인제스트에서 쓰는 것과 **같은 함수**이므로 기준이 갈리지 않고,
+        #   이미 정리된 텍스트에는 아무 일도 하지 않는다(멱등).
+        #   ※ 교차 문서 복원은 여기서 하지 않는다 — 코퍼스 전체가 필요해
+        #     적재 시점에는 할 수 없다. 재인덱싱해야 복원까지 된다.
+        from app.ingest.ocr_repair import mask_unreadable
+        text, _ = mask_unreadable(d.get("text", ""))
         return cls(
-            chunk_id=d["chunk_id"], doc_id=d["doc_id"], text=d.get("text", ""),
+            chunk_id=d["chunk_id"], doc_id=d["doc_id"], text=text,
             ordinal=d.get("ordinal", 0), page_from=d.get("page_from", 0),
             page_to=d.get("page_to", 0), locator=d.get("locator"),
             is_table=bool(d.get("is_table")), entities=d.get("entities") or {},
@@ -51,6 +62,10 @@ class DocumentStore:
     bm25: BM25Index = field(default_factory=BM25Index)
     corpus_kind: str = "unknown"       # "real" | "mock" | "empty"
     skipped_files: list[str] = field(default_factory=list)  # 판독 실패 목록
+    # OCR 판독 실패 구간의 복원·격리 집계. 인덱스에 새겨 두지 않으면
+    # 빌드 로그를 놓친 순간 "원문이 얼마나 깨져 있었는지"를 알 방법이
+    # 없어진다. /health에서 확인할 수 있어야 한다.
+    ocr_repair: dict = field(default_factory=dict)
 
     # ── 조회 ────────────────────────────────────────────────
     @property
@@ -91,7 +106,8 @@ class DocumentStore:
             ensure_ascii=False), encoding="utf-8")
         (d / "docs.json").write_text(json.dumps(
             {"corpus_kind": self.corpus_kind, "docs": self.docs,
-             "skipped_files": self.skipped_files},
+             "skipped_files": self.skipped_files,
+             "ocr_repair": self.ocr_repair},
             ensure_ascii=False, indent=1), encoding="utf-8")
         (d / "bm25.json").write_text(json.dumps(
             self.bm25.to_dict(), ensure_ascii=False), encoding="utf-8")
@@ -112,6 +128,7 @@ class DocumentStore:
         store.docs = docs_blob.get("docs", {})
         store.corpus_kind = docs_blob.get("corpus_kind", "unknown")
         store.skipped_files = docs_blob.get("skipped_files", [])
+        store.ocr_repair = docs_blob.get("ocr_repair", {})
 
         store.bm25 = BM25Index.from_dict(
             json.loads((d / "bm25.json").read_text(encoding="utf-8")))

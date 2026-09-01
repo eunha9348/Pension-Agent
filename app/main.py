@@ -147,7 +147,12 @@ def ui() -> HTMLResponse:
 def health() -> dict:
     info = health_info()
     info["llm_usage"] = USAGE.as_dict()
-    info["index_ready"] = not get_store().is_empty
+    store = get_store()
+    info["index_ready"] = not store.is_empty
+    # 원문 OCR이 얼마나 깨져 있었고 그중 얼마를 복원했는지. 법령 상태를
+    # 노출하는 것과 같은 이유다 — 인덱스를 다시 만들지 않고는 확인할
+    # 방법이 없으면 "반영됐는지"를 추측으로 답하게 된다.
+    info["ocr_repair"] = store.ocr_repair or {"summary": "집계 없음 (인덱스 재빌드 필요)"}
     return info
 
 
