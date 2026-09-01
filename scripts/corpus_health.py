@@ -8,7 +8,9 @@
 mock 코퍼스는 우리가 만든 깨끗한 텍스트라, 실물 자료의 판독 결함이
 **하나도 재현되지 않는다.** 실제로 두 결함이 실물에서만 드러났다:
 
-  · OCR 판독 실패 '?'   — "납입금액부터 ?????????"
+  · OCR 판독 실패        — "납입금액부터 ?????????" 처럼 '?'로,
+                          doc55처럼 한글 한 음절 반복("퇴퇴 퇴 퇴퇴퇴퇴")
+                          으로도 나타난다(2026-09-02 후자 추가 확인)
   · 겹쳐 그려진 글자     — "퇴퇴퇴직직직연연연" (2배·3배)
 
 둘 다 자동 복원 로직이 있지만, **문턱을 넘지 못하면 조용히 통과한다.**
@@ -28,12 +30,15 @@ from pathlib import Path
 from app.config import REPO_ROOT
 from app.ingest.loader import (_REPEAT_DETECT, corpus_files, detect_fold,
                                iter_documents, repair_doubled_glyphs)
-from app.ingest.ocr_repair import looks_garbled
+from app.ingest.ocr_repair import _GARBLED_WEAK, looks_garbled
 
 # 문턱과 무관하게 "같은 한글이 k회 연속 반복되는 묶음이 n번 이어지는" 구간을
 # 전부 센다. 복원 문턱은 4회이므로, 2~3회 구간이 많으면 놓치고 있다는 뜻이다.
 _NEAR = {k: re.compile(rf'(?:({_REPEAT_DETECT})\1{{{k - 1}}}){{2,}}') for k in (3, 2)}
-_QMARK = re.compile(r'\?{2,}')
+# ⚠️ '?' 전용이 아니다(2026-09-02) — ocr_repair.py의 판정이 '?' 또는 반복된
+#    한글 음절로 일반화됐다(doc55 '퇴' 사례). 샘플 추출도 같은 정의를 써야
+#    한글 반복 오염일 때 "구간 0개"로 잘못 보고되지 않는다.
+_GARBLED_SAMPLE = _GARBLED_WEAK
 
 
 def _scan(label: str, text: str, acc: dict) -> None:
@@ -42,7 +47,7 @@ def _scan(label: str, text: str, acc: dict) -> None:
 
     if looks_garbled(text):
         acc["ocr_texts"] += 1
-        for m in _QMARK.finditer(text):
+        for m in _GARBLED_SAMPLE.finditer(text):
             acc["ocr_runs"] += 1
             if len(acc["ocr_samples"]) < 8:
                 s, e = m.start(), m.end()
@@ -84,7 +89,8 @@ def _report(acc: dict) -> None:
     print(f" 검사 대상 {acc['texts']}건 · 총 {acc['chars']:,}자")
     print("─" * 72)
 
-    print(f"\n[OCR 판독 실패 '?']  오염 {acc['ocr_texts']}건 · 구간 {acc['ocr_runs']}개")
+    print(f"\n[OCR 판독 실패 — '?' 또는 반복된 한글 음절]  "
+          f"오염 {acc['ocr_texts']}건 · 구간 {acc['ocr_runs']}개")
     for s in acc["ocr_samples"]:
         print(f"   · {s}")
 
