@@ -22,10 +22,10 @@ CLEAN_QUERIES = [
 ]
 
 
-def test_규칙이_27종이다():
+def test_규칙이_28종이다():
     # 2026-09-01 A9 추가 — 연금 외 수령 시 재원별 과세 구분
-    # (이연퇴직소득은 퇴직소득 과세기준 / 세액공제분·운용수익은 기타소득세)
-    assert len(TRAPS) == 27
+    #            E8 추가 — 연금 수령 시 이연퇴직소득세 감면 메커니즘
+    assert len(TRAPS) == 28
 
 
 def test_규칙_스키마가_온전하다():
@@ -458,16 +458,43 @@ def test_E6은_연말정산을_끌어오지_않는다(question):
 
 
 @pytest.mark.parametrize("question", [
-    "집 사려고 IRP에서 중도인출하면 세금이 어떻게 되나요?",
     "연금저축이랑 IRP 합쳐서 세액공제 얼마까지 받을 수 있나요?",
     "IRP 계좌를 새로 만들고 싶은데 어떻게 하나요?",
     "퇴직금을 IRP 말고 제 통장으로 바로 받을 수 있나요?",
+    # ★ 부분문자열 오탐 — '해지'를 맨몸으로 넣으면 전부 걸린다(실측)
+    "IRP 수수료는 어떻게 정해지는 건가요?",
+    "IRP 한도가 결정해지면 알려주세요",
+    "IRP 이해지원 프로그램이 있나요?",
 ])
-def test_A7은_부분인출_맥락이_없으면_걸리지_않는다(question):
+def test_A7은_인출_맥락이_없으면_걸리지_않는다(question):
     """IRP가 나왔다는 이유만으로 '전액 해지해야 합니다'를 붙이면 안 된다."""
     from app.core.trap_rules import detect_traps
 
     assert "A7" not in [t.id for t in detect_traps(question)], question
+
+
+@pytest.mark.parametrize("question", [
+    "집 사려고 IRP에서 중도인출하면 세금이 어떻게 되나요?",
+    "IRP를 중도해지하면 세금이 어떻게 되나요?",
+    "IRP를 해지하면 그동안 받은 세액공제를 다 토해내야 하나요?",
+    "IRP는 아무 때나 자유롭게 중도인출할 수 있죠?",
+    "DC형과 IRP는 운용 주체랑 인출 시점이 어떻게 다른가요?",
+])
+def test_A7은_인출_해지_질의에서_발화한다(question):
+    """★ 2026-09-01 확장 — 인출·해지를 묻는 IRP 질의에는 붙어야 한다.
+
+    예전에는 '일부·부분·N원만 빼' 같은 **부분인출을 명시한 표현**에서만
+    발화했다. 그래서 "DC형과 IRP는 인출 시점이 어떻게 다른가요?"에 A7이
+    불발했고, 답변이 "IRP는 횟수 제한 없이 중도인출 가능"이라고 서술했다 —
+    같은 시스템이 다른 질의에서는 doc55를 근거로 "부분인출 불가"라고 답한
+    사실과 정면으로 모순된다(내적 비일관성).
+
+    IRP 인출을 논하는 자리에서 "부분인출이 안 된다"는 항상 관련 정보다.
+    298건 실측: 1건 → 6건, 신규 5건 전부 참 양성.
+    """
+    from app.core.trap_rules import detect_traps
+
+    assert "A7" in [t.id for t in detect_traps(question)], question
 
 
 def test_평가셋_전문항의_기대_함정이_전부_감지된다():
