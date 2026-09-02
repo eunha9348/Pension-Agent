@@ -119,15 +119,44 @@ def test_구제재생성_생략도_기록으로_남는다(monkeypatch):
         "구제 재생성이 열리지 않은 사유가 기록되지 않았다")
 
 
-def test_재생성_예산_상수가_재감사_비용을_문서화한다():
-    """★ BUDGET_REGEN은 생성 호출만 덮는다 — 재감사는 게이트 밖에서 돈다.
+# ── 예산표가 실제 비용을 반영하는가 ──────────────────────────
+#
+# ⚠️ 게이트 값이 실제 소요보다 작으면 **게이트가 통과시켜 놓고 총 예산을
+#    넘긴다.** 그러면 예산표가 거짓이 되고, 그 상태로는 어떤 값을 조정해도
+#    근거가 없다. 예전 BUDGET_REGEN=10.0이 정확히 그랬다 — 재생성은
+#    생성 + 재검증 두 번을 호출하는데 생성 한 번 값만 잡혀 있었다.
 
-    이 사실이 주석에서 사라지면, 다음 사람이 "10초면 충분한데 왜 넘치지"
-    라고 잘못 진단한다.
+def test_재생성_예산이_재검증_비용을_포함한다():
+    """★ 재생성 = 생성 + 재검증(의미 감사). 재검증은 게이트 밖에서 무조건 돈다.
+
+    검증 없이 채택하면 감사를 우회하는 뒷문이 되므로 재검증은 뺄 수 없다.
+    따라서 게이트도 그 비용을 포함해야 한다.
     """
-    import inspect
+    assert P.BUDGET_REGEN > P.BUDGET_L6, (
+        "재생성 예산이 재검증(의미 감사) 비용조차 담지 못한다")
 
-    src = inspect.getsource(P)
-    idx = src.index("BUDGET_REGEN = ")
-    head = src[max(0, idx - 700):idx]
-    assert "재검증" in head and "BUDGET_L6" in head
+
+def test_구제재생성_예산도_재검증_비용을_포함한다():
+    assert P.BUDGET_SUBAGENT_REWRITE > P.BUDGET_L6
+
+
+def test_마지막_단계가_총_예산_안에서_닫힌다():
+    """★ 게이트는 중단 장치가 아니다 — 단계 예산이 총 예산을 넘으면 안 된다.
+
+    넘으면 그 단계는 영영 열리지 않거나(remaining이 그만큼 될 수 없다),
+    열리는 순간 총 예산 밖에서 끝난다. 어느 쪽이든 예산표가 거짓이 된다.
+    """
+    for name in ("BUDGET_L1", "BUDGET_L5", "BUDGET_L6", "BUDGET_REGEN",
+                 "BUDGET_SUBAGENT", "BUDGET_SUBAGENT_REWRITE"):
+        assert getattr(P, name) < P.TOTAL_BUDGET_SEC, name
+
+
+def test_총_예산은_허용_상한보다_여유를_둔다():
+    """★ 상한과 같은 값으로 두면 마지막 단계가 상한 밖에서 끝난다.
+
+    운영자가 확인해 준 상한은 60초다. 예산이 정직하면 어떤 단계든 늦어도
+    t≈TOTAL에 끝나므로, TOTAL은 상한보다 작아야 한다.
+    """
+    CEILING = 60.0
+    assert P.TOTAL_BUDGET_SEC < CEILING, (
+        "총 예산이 허용 상한 이상이다 — 마지막 단계가 상한 밖에서 끝난다")
