@@ -177,6 +177,36 @@ def _classify_key(key: str) -> Optional[str]:
     return None
 
 
+def _flatten_variants(results: Optional[list]) -> list[dict]:
+    """variants 구조를 펼쳐 실제 계산 dict만 돌려준다.
+
+    ━━ 왜 필요한가 (2026-09-03 실측) ━━
+    소득을 모르면 calc_params가 세율 구간별로 결과를 나눠 담는다
+    (`{"variants": [{"label": ..., "result": {...}}, ...]}`). 그런데
+    audit_anomaly는 최상위 키만 훑어서, **이 구조에서는 findings가
+    0건**이 됐다. 신규 판정뿐 아니라 기존 LIMIT_EXCEEDED·CREDIT_EXCEEDS·
+    LIMIT_RATIO까지 통째로 눈이 멀었다.
+
+    실측 대조: 같은 내용을 평면 구조로 주면 2건 발화, variants로 주면 0건.
+    소득을 밝히지 않는 질의는 흔하므로 파급이 크다.
+
+    `numeric_verifier._presence_targets`는 이미 variants를 재귀로 훑는다 —
+    같은 구조를 보는 두 계층이 서로 다른 기준을 쓰고 있었던 것이다.
+    """
+    out: list[dict] = []
+    for r in results or ():
+        if not isinstance(r, dict):
+            continue
+        if isinstance(r.get("variants"), list):
+            for v in r["variants"]:
+                inner = v.get("result") if isinstance(v, dict) else None
+                if isinstance(inner, dict):
+                    out.append(inner)
+            continue
+        out.append(r)
+    return out
+
+
 def audit_anomaly(calc_results: list[dict],
                    user_conditions: Optional[dict] = None) -> list[Finding]:
     """계산 이상치 감사.
@@ -187,7 +217,9 @@ def audit_anomaly(calc_results: list[dict],
     findings: list[Finding] = []
     user_conditions = user_conditions or {}
 
-    for r in calc_results:
+    # ⚠️ variants 를 펼쳐서 본다 — 안 펼치면 이 감사 전체가 불발한다
+    #    (_flatten_variants 주석 참조).
+    for r in _flatten_variants(calc_results):
         if not isinstance(r, dict):
             continue
 
@@ -263,7 +295,19 @@ def audit_anomaly(calc_results: list[dict],
                     "연차 입력값을 재확인할 것",
                 ))
 
-    return findings
+    # ⚠️ variants를 펼치면 세율 구간마다 같은 지적이 반복된다("소득 구간별로
+    #    나눠 계산했다"는 사정은 사용자 잘못이 아니고, 같은 말을 두 번 하면
+    #    시정 지시가 지저분해진다). 내용이 똑같은 것만 합친다 — 값이 달라
+    #    detail이 다른 지적은 각각 살려 둔다.
+    deduped: list[Finding] = []
+    seen: set[tuple[str, str]] = set()
+    for f in findings:
+        key = (f.code, f.detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+    return deduped
 
 
 # ════════════════════════════════════════════════════════════════

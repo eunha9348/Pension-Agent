@@ -429,8 +429,15 @@ def sanitize_spec(spec: dict, question: str) -> dict:
             fn = remap_function(str(item.get("calc_function") or ""))
             if fn not in CALC_REGISTRY:
                 # 미등록 함수 → 계산을 포기하고 사실 슬롯으로 강등
+                #
+                # ⚠️ 강등 사실을 description에 적지 말 것 (2026-09-04 실서버 확인).
+                #    description은 인용 라벨(retrieved_context의 supports)과
+                #    템플릿 답변에 **그대로 노출**된다. 실제로 평가 화면에
+                #    "원천징수세율 (등록된 계산함수 없음)"이 근거 문서 설명으로
+                #    찍혔다 — 채점자에게는 시스템 오류로 보인다.
+                #    강등은 내부 사정이므로 내부 키로만 남긴다.
                 entry["type"] = "fact"
-                entry["description"] += " (등록된 계산함수 없음)"
+                entry["calc_unavailable"] = True
             else:
                 entry["calc_function"] = fn
         cleaned.append(entry)

@@ -151,7 +151,21 @@ def make_verify_grounding(question: str,
         #   grounding : 답변의 수치 → 근거   (없는 숫자를 지어내는 것을 막음)
         #   presence  : 계산 결과 → 답변     (계산해 놓고 안 쓰는 것을 막음)
         # 후자가 없으면 "계산은 함수, 설명은 LLM" 원칙이 절반만 지켜진다.
-        numeric = verify_numeric_grounding(answer, calc_results, evidence_texts,
+        #
+        # ⚠️ 검증이 쓰는 근거는 **사용자에게 제시된 근거와 같아야 한다.**
+        #    (2026-09-04 실서버 확인) 예전에는 검색된 evidence 전체로 허용
+        #    집합을 만들었는데, retrieved_context는 인용된 것(used_evidence)
+        #    만 담는다. 두 집합이 어긋나 있어서 화면에는
+        #    "근거 문서: 해당 없음"이 뜨는데 동시에 "감독 검증을 통과했습니다"
+        #    가 떴다. 실물 코퍼스는 투자설명서라 숫자 밀도가 높아, LLM이
+        #    지어낸 400만원·300만원·7년이 검색된 청크 어딘가에 우연히
+        #    존재하기만 하면 통과했다.
+        #    인용이 하나도 없다는 것은 **뒷받침할 근거를 제시하지 못했다**는
+        #    뜻이므로, 그 상태에서 허용할 수 있는 수치는 계산 결과와 질의가
+        #    준 값뿐이다. mock 코퍼스(7문서)는 우연 일치가 없어 이 결함이
+        #    재현되지 않는다 — 실물에서만 보이는 계열이다.
+        numeric_texts = evidence_texts if citations else []
+        numeric = verify_numeric_grounding(answer, calc_results, numeric_texts,
                                            question=question)
         presence = verify_calc_presence(answer, calc_results)
         disclosure = verify_source_disclosure(answer, calc_results)
