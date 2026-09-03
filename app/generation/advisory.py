@@ -73,12 +73,20 @@ ADVISORY_SYSTEM_PROMPT = """당신은 연금 상담원입니다.
 def build_advisory_payload(query_spec: dict,
                            evidence: list[EvidenceChunk],
                            extra_conditions: Optional[dict] = None,
-                           route_reason: str = "") -> str:
+                           route_reason: str = "",
+                           trap_context: Optional[dict] = None) -> str:
     """L4-sub 프롬프트 페이로드.
 
     계산 결과가 없는 것이 정상이므로 넣지 않는다. 대신 사용자가 밝힌
     사정(정규 조건 + 자유 조건)을 온전히 전달한다 — 그것이 이 계층이
     답할 수 있는 유일한 재료다.
+
+    ⚠️ trap_context — 2026-09-03 추가. 예전에는 이 함수에 함정 교정
+    (correction_notes)이 전혀 전달되지 않았다. L2 함정 감지는 경로와
+    무관하게 돌므로 ADVISORY로 분류된 질의도 얼마든지 함정에 걸리는데,
+    L4-sub는 그걸 모른 채 초안을 썼다. L6 감사가 결국 TRAP_UNADDRESSED로
+    잡긴 하지만, 애초에 알려주지 않은 걸 잡는 것보다 처음부터 알려주는
+    게 낫다 — L5'(build_supervisor_payload)와 같은 블록을 그대로 쓴다.
     """
     from app.analysis.conditions import describe_conditions
 
@@ -104,6 +112,23 @@ def build_advisory_payload(query_spec: dict,
                      "일반적인 제도 설명도 하지 마십시오 — 무엇을 확인해야 "
                      "답변드릴 수 있는지만 알려 드리십시오.")
 
+    if trap_context and trap_context.get("correction_notes"):
+        # L5'의 build_supervisor_payload와 같은 형식 — 판정 기준(verify_any)
+        # 까지 함께 준다. 다른 말로 바꿔 쓰면 L6의 해소 판정을 못 만나
+        # 계속 REVISE가 뜨는 것을 방지한다.
+        parts.append("\n[주의할 혼동 — 항목마다 반드시 답변에 반영할 것]")
+        for c in (trap_context.get("checks") or [])[:4]:
+            note = c.get("correction") or c.get("title") or ""
+            if not note:
+                continue
+            line = f"· {note}"
+            if terms := c.get("verify_any"):
+                line += f"\n  (다음 중 하나는 반드시 답변에 등장해야 함: {', '.join(terms[:4])})"
+            parts.append(line)
+        if not trap_context.get("checks"):      # checks가 없는 예전 호출 경로
+            for note in trap_context["correction_notes"][:4]:
+                parts.append(f"· {note}")
+
     if route_reason:
         parts.append(f"\n[이 경로로 온 이유]\n{route_reason}")
 
@@ -113,7 +138,8 @@ def build_advisory_payload(query_spec: dict,
 def make_generate_advisory(client=None,
                            extra_conditions: Optional[dict] = None,
                            route_reason: str = "",
-                           trace_log: Optional[Callable[..., Any]] = None):
+                           trace_log: Optional[Callable[..., Any]] = None,
+                           trap_context: Optional[dict] = None):
     """(query_spec, evidence, slots) -> str.
 
     ⚠️ 시그니처를 L5'의 generate_answer와 **일부러 똑같이** 맞췄다.
@@ -128,7 +154,7 @@ def make_generate_advisory(client=None,
                           evidence: list[EvidenceChunk],
                           slots: list[RequirementSlot]) -> str:
         payload = build_advisory_payload(
-            query_spec, evidence, extra_conditions, route_reason)
+            query_spec, evidence, extra_conditions, route_reason, trap_context)
 
         try:
             draft = c.call(ADVISORY_SYSTEM_PROMPT, payload,
@@ -148,7 +174,7 @@ def make_generate_advisory(client=None,
                           f"확인 항목만 담은 결정론적 안내 사용")
             USAGE.record_degradation("l4sub_템플릿축퇴")
             return render_advisory_fallback(query_spec, evidence,
-                                            extra_conditions)
+                                            extra_conditions, trap_context)
         return draft.strip()
 
     return generate_advisory
@@ -156,12 +182,17 @@ def make_generate_advisory(client=None,
 
 def render_advisory_fallback(query_spec: dict,
                             evidence: list[EvidenceChunk],
-                            extra_conditions: Optional[dict] = None) -> str:
+                            extra_conditions: Optional[dict] = None,
+                            trap_context: Optional[dict] = None) -> str:
     """LLM 없이 만드는 상담 안내.
 
     예산 초과·호출 실패·mock에서 쓰인다. 지어낼 수 있는 것이 없으므로
     **무엇을 확인해야 하는지**만 정확히 말한다. 이것도 유효한 답변이다 —
     사용자는 다음에 무엇을 말해야 할지 알게 된다.
+
+    trap_context가 있으면 L5'의 render_template_answer와 같은 방식으로
+    "주의할 점" 문구를 덧붙인다 — LLM이 못 만든 답변이라도 함정 교정이
+    아예 안 실리는 것보다는 낫다.
     """
     from app.analysis.conditions import describe_conditions
 
@@ -191,5 +222,12 @@ def render_advisory_fallback(query_spec: dict,
         "다음 두 가지를 알려주시면 구체적인 금액까지 계산해 드릴 수 "
         "있습니다: 연금계좌 유형(연금저축 / IRP / DC), "
         "그리고 연간 납입 예정 금액 또는 총급여.")
+
+    if trap_context and trap_context.get("correction_notes"):
+        # "주의할 점"이라는 표현을 유지할 것 — L6 적합성 감사가 답변에
+        # 교정 취지가 담겼는지를 이런 표지어로 확인한다(render_template_answer
+        # 와 동일한 규약).
+        for note in trap_context["correction_notes"][:2]:
+            lines.append(f"주의할 점: {note}")
 
     return "\n\n".join(lines)

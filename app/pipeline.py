@@ -244,7 +244,34 @@ def _exploit(evidence: list[EvidenceChunk], query_spec: dict,
     #    그대로 되살아난다(함정 C5 재발). 완화해도 되는 건 점수 임계값뿐이고,
     #    구법 제외는 완화 대상이 아니다.
     after_legacy = list(kept)
-    kept = filter_irrelevant_evidence(kept, query_spec, trace=trace)
+
+    # ⚠️ 함정이 지목한 근거 문서(retrieval_steer)는 이 필터에서 면제한다.
+    #    L3가 이미 이 문서를 예약(pinned, score 0.9)해 순위 경쟁에서
+    #    보호했는데, 그 뒤 여기서 엔티티 충돌·점수 임계값으로 조용히
+    #    떨어뜨리면 인용까지 못 간다. _addressed_trap_docs는 evidence에
+    #    남은 것만 인용할 수 있어서, 여기서 탈락하면 답변이 함정을
+    #    정확히 교정해도 근거 문서가 안 실린다.
+    #    같은 계열 실패가 실측에서 3회 반복됐다(L-01/doc55·E-19/doc20·
+    #    E-26/doc40). 구법 배제(1단계)는 이미 이 청크에도 적용됐으므로
+    #    여기서 면제해도 구법 문서가 되살아나지는 않는다.
+    steered_docs = set(query_spec.get("_steered_docs") or ())
+    protected = [c for c in after_legacy if c.doc_id in steered_docs]
+    unprotected = [c for c in after_legacy if c.doc_id not in steered_docs]
+
+    filtered = filter_irrelevant_evidence(unprotected, query_spec, trace=trace)
+    if protected:
+        # 트레이스용 — 보호가 실제로 뭔가를 구했는지 알려준다(순수 조회,
+        # protected 자체는 건드리지 않는다).
+        would_survive = {id(c) for c in
+                         filter_irrelevant_evidence(protected, query_spec, trace=None)}
+        saved = [c for c in protected if id(c) not in would_survive]
+        if saved:
+            trace.log("L4_함정근거_보호",
+                      f"함정이 지목한 근거 {len(saved)}건이 일반 필터라면 "
+                      f"제외됐을 것이나 함정 근거이므로 유지",
+                      docs=sorted({c.doc_id for c in saved}))
+    kept = filtered + protected
+
     if not kept and after_legacy:
         kept = filter_irrelevant_evidence(
             after_legacy, query_spec, score_threshold=0.0, trace=None)[:3]
@@ -656,7 +683,8 @@ def _answer_question_impl(question_id: str, question: str,
     if route.is_advisory:
         generate = make_generate_advisory(
             client=client, extra_conditions=extra_conditions,
-            route_reason=route.reason, trace_log=trace.log)
+            route_reason=route.reason, trace_log=trace.log,
+            trap_context=trap_context)
         stage, fallback_note = "L4sub", "확인 항목 안내"
     else:
         generate = make_generate_answer(
@@ -670,7 +698,8 @@ def _answer_question_impl(question_id: str, question: str,
                   f"{'상담 위임' if route.is_advisory else '계산·근거 기반'} "
                   f"경로로 초안 생성")
     elif route.is_advisory:
-        draft = render_advisory_fallback(query_spec, evidence, extra_conditions)
+        draft = render_advisory_fallback(query_spec, evidence, extra_conditions,
+                                         trap_context)
         trace.log("L4sub_예산초과", f"남은 예산 부족 → {fallback_note}로 진행")
     else:
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
@@ -764,11 +793,24 @@ def _answer_question_impl(question_id: str, question: str,
         if deadline.allows(BUDGET_REGEN) and not getattr(client, "is_mock", False):
             remediation = build_remediation_prompt(supervision, draft)
             regen_count += 1
-            trace.log("L6_재생성", "REVISE 판정 — 시정 지시와 함께 L5'로 1회 되돌림 "
-                                "(재생성은 1회로 제한)")
+            regen_stage_name = "L4-sub" if route.is_advisory else "L5'"
+            trace.log("L6_재생성",
+                      f"REVISE 판정 — 시정 지시와 함께 {regen_stage_name}로 "
+                      f"1회 되돌림 (재생성은 1회로 제한)")
             try:
-                from app.generation.answer_prompt import SUPERVISOR_SYSTEM_PROMPT
-                revised = client.call(SUPERVISOR_SYSTEM_PROMPT, remediation,
+                # ⚠️ 경로에 맞는 프롬프트를 써야 한다. ADVISORY 답변이 REVISE를
+                #    맞았는데 여기서 SUPERVISOR_SYSTEM_PROMPT(L5' 전용, 계산
+                #    중심 어조)로 재생성하면, 두 생성기가 "이후 검증·인용·
+                #    감독은 한 벌로 공유한다"던 설계 의도가 재생성 단계에서만
+                #    깨진다 — 상담형 답변이 감사에 걸리는 순간 계산형 어조로
+                #    바뀐다(2026-09-03 코드 점검 F3).
+                if route.is_advisory:
+                    from app.generation.advisory import ADVISORY_SYSTEM_PROMPT
+                    regen_system_prompt = ADVISORY_SYSTEM_PROMPT
+                else:
+                    from app.generation.answer_prompt import SUPERVISOR_SYSTEM_PROMPT
+                    regen_system_prompt = SUPERVISOR_SYSTEM_PROMPT
+                revised = client.call(regen_system_prompt, remediation,
                                       purpose="l5_regenerate", max_tokens=1500)
             except Exception as e:
                 revised = ""
