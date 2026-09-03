@@ -718,6 +718,7 @@ def _answer_question_impl(question_id: str, question: str,
 
     # ── 요구사항 반영 검증 ────────────────────────────────────
     unmet = verify_requirement_coverage(draft, slots, answer_covers_slot, trace=trace)
+    unmet = _drop_covered_by_calc(unmet, slots, trace)
     if unmet:
         draft += ("\n\n※ " + ", ".join(s.description for s in unmet)
                   + " 관련 내용은 제공 자료로 확정하기 어려워 별도 확인이 필요합니다.")
@@ -1139,6 +1140,57 @@ def _answer_question_impl(question_id: str, question: str,
 # ════════════════════════════════════════════════════════════════
 # 보조
 # ════════════════════════════════════════════════════════════════
+
+def _drop_covered_by_calc(unmet: list, slots: list,
+                          trace: TraceLogger) -> list:
+    """같은 주제의 계산이 성공한 사실 슬롯은 '확정 불가' 고지에서 뺀다.
+
+    ━━ 왜 필요한가 (2026-09-04 실서버 확인) ━━
+    "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?"에
+    답변이 1,200만원을 정확히 산출·단정해 놓고 맨 아래에 이렇게 붙였다:
+
+        ※ 연금수령한도 **산정 방식** 관련 내용은 제공 자료로 확정하기
+          어려워 별도 확인이 필요합니다.
+
+    사실과 다르다. `연금수령한도_계산`이 limit=1200.0, denominator=10,
+    **source=doc39**을 냈다 — 산정 방식은 제공 자료에 근거해 이미 산출됐다.
+
+    원인은 `verify_requirement_coverage`가 "LLM 문장이 이 슬롯을 설명했는가"
+    만 보고, 같은 TopicRule에서 쌍으로 생긴 계산 슬롯이 이미 성공했는지는
+    보지 않는 것이다. 슬롯은 `{base}_fact` · `{base}_calc`로 만들어지므로
+    (query_spec.rule_based_spec), base가 같고 계산이 CALC_DONE이면 그
+    주제는 확정된 것이다.
+
+    ⚠️ 고지를 무르는 것이 아니다. 계산이 **실패했거나 없는** 주제의 고지는
+       그대로 남는다 — 없앤 것은 **사실이 아닌 고지**뿐이다. 나이·수령방식에
+       따라 과세율이 갈린다는 다른 고지들도 이 함수와 무관하게 유지된다.
+    """
+    if not unmet:
+        return unmet
+    done_bases = {
+        s.slot_id[:-len("_calc")]
+        for s in slots
+        if s.status == SlotStatus.CALC_DONE and s.slot_id.endswith("_calc")
+    }
+    if not done_bases:
+        return unmet
+
+    kept, dropped = [], []
+    for s in unmet:
+        base = (s.slot_id[:-len("_fact")]
+                if s.slot_id.endswith("_fact") else None)
+        if base and base in done_bases:
+            dropped.append(s)
+        else:
+            kept.append(s)
+
+    if dropped:
+        trace.log("한계고지_교정",
+                  f"계산이 성공한 주제 {len(dropped)}건을 '확정 불가' 고지에서 "
+                  f"제외 (계산 결과가 근거 문서를 출처로 이미 산출함)",
+                  slots=[s.slot_id for s in dropped])
+    return kept
+
 
 def _enforce_critical_traps(draft: str, trap_checks: Optional[list[dict]],
                             trace: TraceLogger) -> str:
