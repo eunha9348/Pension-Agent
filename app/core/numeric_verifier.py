@@ -254,6 +254,27 @@ _LIMIT_CONSTANTS = {"연금저축_단독_한도", "연금저축_IRP_합산_한�
 _COMPUTED_KEYS = {"A_tax_credit", "T_withholding", "limit", "difference",
                   "산출세액", "합계"}
 
+# 한도 상수 → 그 한도가 실제로 결과를 깎았음을 알리는 플래그 키.
+#
+# ━━ 왜 필요한가 (2026-09-03 실측 E-03) ━━
+# "연금저축에 900만원 넣으면 다 공제되나요?"는 계산값(A_tax_credit)이
+# 나오므로 위 규칙대로면 세 한도가 전부 면제된다. 그런데 이 질문은
+# **한도를 넘었는가를 묻는 전제 확인형**이라, 600만원(연금저축 단독
+# 한도)이 곧 답이다. 900은 1,800(연간 총납입한도)을 안 넘으므로
+# `IsLimitExceeded`는 False — 정작 걸린 단독 한도 초과를 알리는 신호가
+# 없어서 "다 공제됩니다"라는 오답이 걸러지지 않았다.
+#
+# computed라도 **그 한도가 실제로 결과를 깎았을 때만** 다시 요구한다 —
+# A08 결함(900·1,800이 무관한데도 강제돼 정답이 강등된 사례)을 되돌리지
+# 않기 위해서다. A08도 이 규칙으로 재확인했다: 1,200만원 단독 납입은
+# IsPensionSavingLimitExceeded만 True이므로 600만원만 요구되고, 그 답변은
+# 이미 600만원을 정확히 언급하고 있었다 — 회귀 없음.
+_LIMIT_BINDING_FLAG = {
+    "연금저축_단독_한도": "IsPensionSavingLimitExceeded",
+    "연금저축_IRP_합산_한도": "IsCombinedLimitExceeded",
+    "연간_총납입한도": "IsLimitExceeded",
+}
+
 
 def _presence_targets(result: Any, prefix: str = "") -> list[tuple[str, float, str]]:
     """계산 결과에서 (라벨, 값, 표기) 목록을 뽑는다. variants 구조도 훑는다."""
@@ -275,7 +296,9 @@ def _presence_targets(result: Any, prefix: str = "") -> list[tuple[str, float, s
 
     for key, value in result.items():
         if computed and key in _LIMIT_CONSTANTS:
-            continue
+            flag = _LIMIT_BINDING_FLAG.get(key)
+            if not (flag and result.get(flag) is True):
+                continue
         if key in _PRESENCE_SKIP or not isinstance(value, (int, float)):
             continue
         if isinstance(value, bool):

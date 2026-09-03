@@ -242,6 +242,49 @@ TOPIC_RULES: list[TopicRule] = [
               "myeongtoe", "명예퇴직급여 처리", None, "명예퇴직급여와 IRP 이전"),
 ]
 
+# 규칙 기반 정규 intent 값 — 긴 것부터 대조해야 부분집합 오매칭을 피한다
+# ('퇴직소득세_감면'을 '퇴직소득세'보다 먼저 봐야 '퇴직소득세'로 잘못
+# 잘리지 않는다).
+_CANONICAL_INTENTS: tuple[str, ...] = tuple(
+    sorted({r.intent for r in TOPIC_RULES}, key=len, reverse=True))
+
+
+def normalize_intent(raw: Optional[str]) -> str:
+    """L1이 낸 자유 서술 intent를 규칙 기반 정규값으로 정규화한다.
+
+    ━━ 왜 필요한가 (2026-09-03 실측) ━━
+    L1은 tools를 쓰지 않는 일반 채팅 호출이다(CLAUDE.md — HCX-005가 tools
+    페이로드를 간헐적으로 거부해서다). 그래서 intent가 '세액공제 한도 문의'·
+    'IRP_퇴직소득세'처럼 **자유 서술**로 나온다. 그런데 아래가 이 값을
+    규칙 추출기(TOPIC_RULES)가 내는 **정규값**과 정확 문자열로 비교한다:
+
+      · pipeline.py `_TAX_INTENTS`           — 세제 질의 구법 문서 배제
+      · reconcile_spec의 `misclassified` 판정 — 제도 오분류 교정(Q-001)
+      · slot_matching.py / coverage_pipeline.py `== "상품_비교"` — 비교 예외
+
+    자유 서술은 이 비교에 전부 걸리지 않아 조용히 False로 떨어진다.
+    역설적으로 **L1이 실패해 규칙으로 축퇴했을 때만** 이 안전장치들이
+    작동하고, L1이 정상 동작하는 평상시(정상 경로)에는 꺼져 있었다.
+    실서버에서 그 결과가 나타났다 — 세제 질의인데 구법 문서
+    (R2_KR514X450008)가 배제되지 않고 실제로 근거로 인용됐다(E-28).
+
+    ━━ 부분 문자열로 대조하는 이유 ━━
+    L1의 자유 서술은 대체로 정규값을 포함한다('세액공제 한도 문의' ⊃
+    '세액공제'). 매칭이 없으면 원문을 그대로 둔다 — 모르는 의도를 억지로
+    우겨넣지 않는다. 이 함수를 호출한 뒤에 도는 reconcile_spec의
+    misclassified 판정은 정규화된 값을 보므로, 여기서 한 번 고치면
+    그쪽 안전장치도 함께 살아난다(별도 수정 불필요).
+    """
+    if not raw:
+        return raw or ""
+    if raw in _CANONICAL_INTENTS:
+        return raw
+    for canon in _CANONICAL_INTENTS:
+        if canon in raw:
+            return canon
+    return raw
+
+
 # 주제를 못 잡았을 때 쓰는 일반 사실 슬롯
 _FALLBACK_SLOT = ("ilban", "질의 주제에 대한 제공 자료 근거")
 
@@ -661,6 +704,19 @@ def make_extract_query_spec(client=None,
 
         spec = sanitize_spec(args, question)
         spec["source"] = "llm"
+
+        # ⚠️ 소비처(pipeline.py _TAX_INTENTS · reconcile_spec의 misclassified ·
+        #    상품_비교 예외 처리)가 전부 이 값을 정규값과 정확 비교한다.
+        #    여기서 정규화하지 않으면 그 안전장치들이 정상 경로에서 조용히
+        #    불발한다 — 자세한 사정은 normalize_intent() 참조.
+        raw_intent = spec.get("intent")
+        spec["intent"] = normalize_intent(raw_intent)
+        if trace_log and spec["intent"] != raw_intent:
+            trace_log("질의분석_의도표준화",
+                      f"L1이 낸 의도 '{raw_intent}'를 규칙 기반 정규값 "
+                      f"'{spec['intent']}'로 표준화 (구법 배제·비교 예외 등 "
+                      f"정확 매칭 안전장치가 이 값을 봅니다)")
+
         # LLM이 슬롯을 하나도 못 뽑으면 규칙 결과로 보강한다
         if not spec.get("asked_for"):
             spec["asked_for"] = fallback["asked_for"]

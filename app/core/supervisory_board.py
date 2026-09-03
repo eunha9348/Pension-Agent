@@ -233,6 +233,25 @@ def audit_anomaly(calc_results: list[dict],
                 "납입한도 초과 상태가 계산에 반영됨",
                 "한도 초과분은 세액공제 대상이 아니라는 점을 답변에 명시할 것",
             ))
+        # ⚠️ 위와 별개 판정이다 — IsLimitExceeded는 연간 총납입한도(1,800만원)
+        #    만 본다. "연금저축에 900만원 넣으면 다 공제되나요?"는 900이
+        #    1,800을 안 넘으니 위 REVISE가 안 뜨지만, 실제로는 연금저축
+        #    단독 한도(600만원)를 넘겼다. 그 사실을 알리는 신호가 없으면
+        #    "다 공제됩니다"라는 오답이 그대로 나간다(2026-09-03 실측 E-03).
+        if r.get("IsPensionSavingLimitExceeded") is True:
+            findings.append(Finding(
+                "이상치", "PENSION_SAVING_LIMIT_EXCEEDED", Verdict.REVISE,
+                "연금저축 단독 세액공제 한도(600만원) 초과 상태가 계산에 반영됨",
+                "연금저축 단독으로는 600만원까지만 세액공제되고 초과분은 "
+                "대상이 아니라는 점을 답변에 명시할 것",
+            ))
+        if r.get("IsCombinedLimitExceeded") is True:
+            findings.append(Finding(
+                "이상치", "COMBINED_LIMIT_EXCEEDED", Verdict.REVISE,
+                "연금저축+IRP 합산 세액공제 한도(900만원) 초과 상태가 계산에 반영됨",
+                "연금저축과 IRP를 합쳐도 900만원까지만 세액공제되고 초과분은 "
+                "대상이 아니라는 점을 답변에 명시할 것",
+            ))
 
         limit = r.get("limit")
         if limit is not None and isinstance(limit, (int, float)):
