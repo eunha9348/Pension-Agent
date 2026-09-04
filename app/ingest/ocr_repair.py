@@ -192,16 +192,43 @@ def _candidates(haystack: str, left: str, right: str, max_gap: int) -> set[str]:
 
 
 def _repair_text(text: str, haystack: str, report: RepairReport) -> str:
-    """페이지 1건을 제자리 복원. haystack은 코퍼스 전체의 공백 제거본."""
+    """페이지 1건을 제자리 복원. haystack은 코퍼스 전체의 공백 제거본.
+
+    ━━ 앵커 오염 방지 (2026-09-04 실측) ━━
+    깨진 페이지는 평균 26.7건(5,279÷198)이 한 페이지에 몰려 있다. 앞뒤
+    ANCHOR_LEN자를 고정폭으로 그냥 잘라내면, 그 안에 **다른** 손상 구간이
+    함께 잘려 들어오는 경우가 매우 흔하다. 그러면 앵커 문자열 자체에
+    '?'나 반복 음절이 섞이는데, 그 오염은 이 페이지에만 있는 것이라
+    haystack 어디에도 글자 그대로 존재할 수 없다 — `find()`가 항상
+    실패한다. 합성 재현(밀도 27건/페이지)에서 인접 손상 4건 중 3건이
+    이렇게 앵커를 오염시켰다. **대조실패(no_match)의 압도적 다수가
+    "코퍼스에 그 구절이 없어서"가 아니라 "검색어 자체가 깨져 있어서"였다.**
+
+    그래서 앵커는 **이웃 손상 구간을 넘지 않는 만큼만** 가져온다. 이웃과의
+    간격이 MIN_ANCHOR보다 좁으면(공간이 정말 없으면) 정직하게 앵커부족으로
+    분류한다 — 억지로 이웃 손상까지 끌어와 채우지 않는다.
+    """
     sf, idx = _space_free(text)
+    spans = [(m.start(), m.end()) for m in _GARBLED_WEAK.finditer(sf)]
     edits: list[tuple[int, int, str]] = []
 
-    for m in _GARBLED_WEAK.finditer(sf):
-        a, b = m.start(), m.end()
+    for i, (a, b) in enumerate(spans):
         report.runs_found += 1
 
-        left = sf[max(0, a - ANCHOR_LEN):a]
-        right = sf[b:b + ANCHOR_LEN]
+        left_bound = max(0, a - ANCHOR_LEN)
+        if i > 0:
+            _prev_start, prev_end = spans[i - 1]
+            if prev_end > left_bound:
+                left_bound = prev_end
+        left = sf[left_bound:a]
+
+        right_bound = min(len(sf), b + ANCHOR_LEN)
+        if i + 1 < len(spans):
+            next_start, _next_end = spans[i + 1]
+            if next_start < right_bound:
+                right_bound = next_start
+        right = sf[b:right_bound]
+
         if len(left) < MIN_ANCHOR or len(right) < MIN_ANCHOR:
             report.runs_weak_anchor += 1
             continue
