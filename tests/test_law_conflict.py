@@ -335,6 +335,16 @@ def test_애매하면_내지_말라는_지시가_있다():
     assert "애매하면" in p and "빈 배열" in p
 
 
+def test_제공문서가_최종근거임을_명시한다():
+    """★ 과제 안내 6페이지: '외부 정보는 보조로만 쓰고 상충 시 제공자료
+    우선'. 조문(외부 수집)과 표현이 다르다는 이유만으로 제공 문서 기반
+    서술을 저촉으로 잘못 내지 않도록, 우선순위를 프롬프트에 명시한다."""
+    p = build_llm_audit_payload(
+        answer=_BAD_ANSWER, evidence_texts=[], calc_results=[],
+        question="질문", law_articles=[_ART_1500])
+    assert "제공 문서" in p and "최종 근거" in p
+
+
 def test_긴_조문은_답변_용어_주변을_실어_보낸다():
     """★ 함정이 없으면 verify_any가 비어 머리말만 실리던 자리."""
     long_art = LawArticle(
