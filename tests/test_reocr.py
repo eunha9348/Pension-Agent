@@ -183,3 +183,66 @@ def test_summary_문구가_상태를_반영한다(monkeypatch):
                          lambda: (None, None, "이유"))
     report = reocr.reocr_documents([])
     assert "엔진 없음" in report.summary()
+
+
+# ── PDF 경로 (2026-09-05, 실물 코퍼스가 zip이 아니라 PDF였다) ────────
+#
+# 임베디드 이미지를 추측하지 않고 페이지를 통째로 렌더링한다
+# (raster_pdf_page → pdftoppm). 여기서는 pdftoppm 실물 없이 그 함수
+# 자체를 바꿔치기해 "PDF 소스면 렌더 경로를 탄다"는 배선만 검증한다.
+
+def test_PDF_소스는_렌더_경로를_탄다(monkeypatch):
+    doc = ParsedDocument(
+        doc_id="pdf1", source_path="/무관/doc.pdf",
+        pages=[Page(1, "여여여 손상 ????")],
+    )
+
+    rendered = []
+
+    def _fake_raster(pdf_path, page_no, dpi=200):
+        rendered.append((pdf_path, page_no))
+        return b"fake-png-bytes"
+
+    class _FakePT:
+        def get_tesseract_version(self):
+            return "5.0"
+
+        def image_to_string(self, _img, lang="kor+eng"):
+            return "재OCR로 복원된 정상 문장입니다"
+
+    monkeypatch.setattr(reocr, "raster_pdf_page", _fake_raster)
+    monkeypatch.setattr(reocr, "_safe_import_ocr",
+                         lambda: (_FakePT(), _FakeImage(), ""))
+
+    report = reocr.reocr_documents([doc])
+
+    assert rendered == [("/무관/doc.pdf", 1)]
+    assert report.pages_adopted == 1
+    assert doc.pages[0].text == "재OCR로 복원된 정상 문장입니다"
+
+
+def test_PDF_렌더가_실패하면_이미지없음으로_집계된다(monkeypatch):
+    doc = ParsedDocument(
+        doc_id="pdf1", source_path="/무관/doc.pdf",
+        pages=[Page(1, "여여여 손상 ????")],
+    )
+
+    class _FakePT:
+        def get_tesseract_version(self):
+            return "5.0"
+
+        def image_to_string(self, _img, lang="kor+eng"):
+            raise AssertionError("렌더가 실패했으면 OCR을 호출하면 안 된다")
+
+    monkeypatch.setattr(reocr, "raster_pdf_page", lambda *a, **k: None)
+    monkeypatch.setattr(reocr, "_safe_import_ocr",
+                         lambda: (_FakePT(), _FakeImage(), ""))
+
+    report = reocr.reocr_documents([doc])
+    assert report.pages_no_image == 1
+    assert doc.pages[0].text == "여여여 손상 ????"
+
+
+def test_pdftoppm이_없으면_None을_반환한다(monkeypatch):
+    monkeypatch.setattr(reocr.shutil, "which", lambda _name: None)
+    assert reocr.raster_pdf_page("/무관/doc.pdf", 1) is None
