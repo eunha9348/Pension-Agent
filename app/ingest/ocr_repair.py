@@ -261,14 +261,13 @@ def _repair_text(text: str, haystack: str, report: RepairReport) -> str:
     return text
 
 
-def mask_unreadable(text: str) -> tuple[str, int]:
-    """복원하지 못한 판독 실패 런('?' 또는 반복된 한글 음절)을 (판독불가)로 격리한다.
+def _mask_weak(text: str) -> tuple[str, int]:
+    """WEAK(2회 이상) 패턴을 무조건 (판독불가)로 치환한다 — 게이팅 없음.
 
-    오염이 확인된 텍스트(같은 글자가 3회 이상 연속인 구간이 어딘가 있는)
-    에서만 동작하므로, 정상 문서의 물음표·짧은 반복 표현은 건드리지 않는다.
+    ⚠️ 이 함수를 페이지가 오염됐다는 판정 없이 임의 텍스트에 바로 쓰지 말 것.
+       게이팅은 `mask_unreadable`(공개 진입점)이 맡는다. `repair_documents`처럼
+       호출자가 **이미 STRONG 판정을 거친 페이지**에서만 직접 쓸 수 있다.
     """
-    if not looks_garbled(text):
-        return text, 0
     count = 0
 
     def _sub(_m: re.Match) -> str:
@@ -277,6 +276,24 @@ def mask_unreadable(text: str) -> tuple[str, int]:
         return UNREADABLE_MARK
 
     return _GARBLED_WEAK.sub(_sub, text), count
+
+
+def mask_unreadable(text: str) -> tuple[str, int]:
+    """복원하지 못한 판독 실패 런('?' 또는 반복된 한글 음절)을 (판독불가)로 격리한다.
+
+    오염이 확인된 텍스트(같은 글자가 3회 이상 연속인 구간이 어딘가 있는)
+    에서만 동작하므로, 정상 문서의 물음표·짧은 반복 표현은 건드리지 않는다.
+
+    ⚠️ **`repair_documents`에서는 이 함수를 쓰지 않는다.** 복원 전 텍스트로는
+       STRONG(3+) 판정을 통과했더라도, 복원이 그 3+런만 없애고 2글자짜리
+       WEAK 런을 남기면 이 함수의 게이트가 다시 닫혀 남은 손상을 그대로
+       흘려보낸다(2026-09-05 실측 재현) — 이 모듈 전체가 막으려던 바로 그
+       사고("?????????"가 청크에 그대로 실림)와 같은 종류다. `repair_documents`는
+       이미 STRONG 판정을 거친 페이지만 다루므로 `_mask_weak`를 직접 쓴다.
+    """
+    if not looks_garbled(text):
+        return text, 0
+    return _mask_weak(text)
 
 
 def repair_documents(docs) -> RepairReport:
@@ -299,7 +316,11 @@ def repair_documents(docs) -> RepairReport:
 
     for pg in garbled:
         pg.text = _repair_text(pg.text, haystack, report)
-        pg.text, masked = mask_unreadable(pg.text)
+        # ⚠️ mask_unreadable(공개 진입점)이 아니라 _mask_weak를 직접 쓴다 —
+        #    이 페이지는 이미 위에서 STRONG 판정(looks_garbled)을 거쳐
+        #    `garbled`에 들어왔다. 복원이 3+런만 없애고 2글자 WEAK런을
+        #    남기면 mask_unreadable의 재게이팅이 그 잔여 손상을 놓친다.
+        pg.text, masked = _mask_weak(pg.text)
         report.runs_masked += masked
 
     return report
