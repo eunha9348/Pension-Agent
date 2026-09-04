@@ -49,6 +49,8 @@ from typing import Any, Optional
 from app.analysis.bridge import find_bridge
 from app.analysis.calc_params import make_calc_params_builder
 from app.analysis.conditions import describe_conditions
+from app.analysis.product_facts import _fact_lines as _fact_lines_of
+from app.analysis.product_facts import collect_facts, fact_snippets
 from app.analysis.products import extract_class_expenses
 from app.analysis.query_spec import make_extract_query_spec
 from app.analysis.refusal import check_refusal, check_safety_refusal
@@ -621,6 +623,26 @@ def _answer_question_impl(question_id: str, question: str,
         trace.log("L4_상품후보", f"근거 문서에서 판매 클래스 {len(candidates)}건 확보 "
                               f"(barrier 통과분)")
 
+    # ── 상품 팩트 결합 (색인 시점 전수 파싱 결과) ──────────────
+    #
+    # 위험등급·상품분류·수익률·시장잔고는 **검색된 청크가 아니라 색인 시점에
+    # 문서 전문에서** 뽑아 doc_meta에 넣어 둔 값이다(ingest/metadata.py).
+    # 여기서는 근거로 채택된 문서의 것만 꺼내 쓴다 — 색인에는 전 문서의
+    # 팩트가 있지만, 검색이 고르지 않은 문서의 수치를 답변에 쓰면 그건
+    # 근거 없는 인용이다.
+    #
+    # query_spec에 실어 두면 L5'와 L4-sub가 **같은 값을 같은 방식으로** 본다.
+    # 생성기마다 따로 넘기면 경로별로 처리가 갈리고 반드시 어긋난다.
+    product_facts = collect_facts(
+        [c.doc_id for c in evidence], store.doc_meta)
+    if product_facts:
+        query_spec["_product_facts"] = product_facts
+        axes = sorted({a for f in product_facts
+                       for a, _l, _s in _fact_lines_of(f)})
+        trace.log("L4_상품팩트",
+                  f"근거 문서 {len(product_facts)}건에서 확정 팩트 확보 "
+                  f"({', '.join(axes)}) — 색인 시점 전수 파싱분")
+
     # ── 슬롯 매핑 ─────────────────────────────────────────────
     slots = extract_required_slots(query_spec)
     slots = map_evidence_to_slots(slots, evidence,
@@ -783,7 +805,8 @@ def _answer_question_impl(question_id: str, question: str,
         trap_ids=trap_context["detected"],
         trap_checks=trap_context.get("checks") or [],
         mentioned_products=mentioned,
-        partial_answer_possible=partial_possible)
+        partial_answer_possible=partial_possible,
+        fact_texts=fact_snippets(query_spec.get("_product_facts") or []))
 
     verdict = verify_grounding(draft, evidence)
     trace.log("L6_감독심사", verdict.as_trace() or "심사 완료")

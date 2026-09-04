@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from app.analysis.product_facts import extract_product_facts
 from app.core.citation_system import infer_doc_type
 from app.core.pension_calc_functions import (CLASS_ACCOUNT_REQUIREMENT,
                                              RESTRICTED_CLASSES,
@@ -86,11 +87,23 @@ def build_doc_metadata(doc: ParsedDocument, chunks: list[Chunk]) -> dict:
     entities = extract_entities(full, doc.doc_id)
     legacy = detect_legacy_tax_content(full, doc.doc_id)
 
+    # ── 상품 팩트 전수 파싱 ──────────────────────────────────
+    #
+    # ⚠️ 여기가 "딥크롤링"의 자리다. 검색된 청크가 아니라 **문서 전문**을
+    #    훑으므로, 검색이 표 청크를 못 건져도 위험등급·상품분류·수익률·
+    #    시장잔고가 사라지지 않는다. products.py::extract_class_expenses는
+    #    근거 청크만 보기 때문에 검색 순위에 사실의 존재 여부가 걸려 있었다.
+    #
+    #    투자설명서가 아닌 문서(제도안내·약관)에서는 빈 값이 정상이므로,
+    #    못 찾았다고 해서 오류가 아니다.
+    facts = extract_product_facts(full, doc.doc_id)
+
     return {
         "doc_id": doc.doc_id,
         "type": infer_doc_type(doc.doc_id, full),
         "title": guess_title(doc),
         "entities": entities,
+        "product_facts": facts.as_dict(),
         "sections": [{"locator": c.locator, "chunk_id": c.chunk_id}
                      for c in chunks if c.locator],
         "legacy": legacy,

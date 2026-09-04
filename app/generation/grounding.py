@@ -170,7 +170,8 @@ def make_verify_grounding(question: str,
                           trap_checks: Optional[list[dict]] = None,
                           mentioned_products: Optional[list[dict]] = None,
                           partial_answer_possible: bool = False,
-                          skip_semantic: bool = False):
+                          skip_semantic: bool = False,
+                          fact_texts: Optional[list[str]] = None):
     """(answer, evidence) -> GroundingVerdict 시그니처의 함수를 만든다."""
 
     def verify_grounding(answer: str, evidence: list[EvidenceChunk]) -> GroundingVerdict:
@@ -197,6 +198,17 @@ def make_verify_grounding(question: str,
         #    준 값뿐이다. mock 코퍼스(7문서)는 우연 일치가 없어 이 결함이
         #    재현되지 않는다 — 실물에서만 보이는 계열이다.
         numeric_texts = evidence_texts if citations else []
+        # ⚠️ 상품 팩트 스니펫은 citations 게이트 **밖**에서 더한다.
+        #    F8이 막은 것은 "검색된 근거 뭉치 전체를 허용 집합으로 쓰는 것"
+        #    이었다 — 투자설명서는 숫자 밀도가 높아 지어낸 값이 우연히
+        #    걸리기 때문이다. 팩트 스니펫은 성격이 다르다:
+        #      · 색인 시점에 **결정론적으로** 잘라 온 코퍼스 원문이고
+        #      · 근거로 채택된 문서의 것만 들어오며(collect_facts)
+        #      · 답변에 실제로 제시하는 바로 그 값이다.
+        #    이걸 빼면, 검색이 마침 표 청크를 못 건졌다는 이유로 **우리가
+        #    문서에서 확정한 위험등급·수익률이 '근거 없는 수치'로 잡혀**
+        #    답변이 통째로 템플릿으로 축퇴한다.
+        numeric_texts = numeric_texts + list(fact_texts or [])
         numeric = verify_numeric_grounding(answer, calc_results, numeric_texts,
                                            question=question)
         presence = verify_calc_presence(answer, calc_results)

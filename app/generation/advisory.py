@@ -89,6 +89,7 @@ def build_advisory_payload(query_spec: dict,
     게 낫다 — L5'(build_supervisor_payload)와 같은 블록을 그대로 쓴다.
     """
     from app.analysis.conditions import describe_conditions
+    from app.analysis.product_facts import render_facts_block
 
     parts = [f"[질문]\n{query_spec.get('query', '')}"]
 
@@ -102,6 +103,14 @@ def build_advisory_payload(query_spec: dict,
         # 계산에는 못 쓰지만 무엇을 안내할지 정하는 데는 결정적이다.
         lines = "\n".join(f"· {k}: {v}" for k, v in extra.items())
         parts.append(f"\n[사용자가 밝힌 그 밖의 사정]\n{lines}")
+
+    # L5'(build_supervisor_payload)와 **같은 블록을 같은 자리에** 싣는다.
+    # ADVISORY 경로에만 팩트가 빠지면 "상품 하나 추천해 주세요" 같은
+    # 상담형 질의에서 정작 위험등급·보수를 말하지 못한다 — F3에서 함정
+    # 교정이 이 경로에만 빠져 있던 것과 정확히 같은 계열의 사고다.
+    if facts_block := render_facts_block(
+            query_spec.get("_product_facts") or []):
+        parts.append(facts_block)
 
     if evidence:
         parts.append("\n[근거 문서 — 이 내용만 사실로 인용 가능]")
