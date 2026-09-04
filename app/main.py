@@ -64,6 +64,18 @@ def _startup() -> None:
     store = get_store(reload=True)
     client = get_client(force_reload=True)
 
+    # 법령 관련성 색인을 미리 만든다. 요청 중에 처음 만들면 그 요청 하나가
+    # 색인 구축 시간을 통째로 떠안는다 — 평가는 단일 GET이라 되돌릴 수 없다.
+    try:
+        from app.law.relevance import warm
+        if (n := warm()):
+            log.info("법령 관련성 색인 준비 완료: 조문 %d건", n)
+        else:
+            log.warning("★ 법령 수집본이 없습니다 — 답변–조문 저촉 검사가 "
+                        "비활성입니다 (python -m app.law.crawler 필요)")
+    except Exception as e:                                   # noqa: BLE001
+        log.warning("법령 관련성 색인 준비 실패 — 저촉 검사가 제한됩니다: %s", e)
+
     log.info("검색 인덱스: 문서 %d건 · 청크 %d건 (코퍼스: %s)",
              len(store.docs), len(store.chunks), store.corpus_kind)
     if store.is_empty:
@@ -176,6 +188,10 @@ def _law_status() -> dict:
             "anchored_traps": sorted(ANCHORS),
             "anchor_refs": sum(len(v) for v in ANCHORS.values()),
             "active": (not store.is_empty) and bool(ANCHORS),
+            # 답변–조문 저촉 검사는 앵커가 아니라 **수집본 자체**만 있으면
+            # 돈다(함정 게이팅이 없다). 두 기능의 가동 조건이 다르므로
+            # 따로 노출한다 — 하나로 합치면 저촉 검사가 죽어도 active=true다.
+            "conflict_check_active": not store.is_empty,
         }
     except Exception as e:                                   # noqa: BLE001
         log.warning("법령 상태 조회 실패: %s", e)

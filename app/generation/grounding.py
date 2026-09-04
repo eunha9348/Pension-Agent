@@ -127,6 +127,38 @@ def _law_context(trap_ids: Optional[list[str]],
         return [], [], f"법령 계층 오류로 조문 판정을 수행하지 못함: {e}"
 
 
+def _law_relevance(answer: str, question: str,
+                   exclude_refs: set) -> tuple[list, str]:
+    """답변과 관련된 조문을 **함정과 무관하게** 고른다. (조문, 사유)
+
+    ━━ 왜 _law_context와 따로 두는가 ━━
+    두 함수가 답하는 질문이 다르다.
+
+      _law_context   : "감지된 함정의 근거 조문은 무엇인가"
+                       → 함정이 없으면 대상도 없다. 게이팅이 옳다.
+      _law_relevance : "이 답변이 어긋날 수 있는 조문은 무엇인가"
+                       → 함정이 없어도 답변은 존재한다. 게이팅하면 안 된다.
+
+    예전에는 앞의 것만 있었고, 그래서 함정이 안 잡힌 질의에서는 조문이
+    한 줄도 실리지 않았다. 298건 실측으로 그 비율이 **55%**였다
+    (함정 0건 49.0% + 앵커 미등재 6.0%). 그 상태에서는 답변이 법령에
+    어긋나는 말을 해도 대조할 대상 자체가 없다.
+
+    ⚠️ 여기서 고른 조문은 사람이 확인한 앵커가 아니라 용어 겹침으로 고른
+       후보다. 신뢰도가 다르므로 앵커를 먼저 싣고 남는 자리만 채운다
+       (exclude_refs로 중복을 막는다).
+    """
+    try:
+        from app.law.relevance import select_relevant_articles
+        return select_relevant_articles(answer, question,
+                                        exclude_refs=frozenset(exclude_refs))
+    except Exception as e:                                   # noqa: BLE001
+        # 법령 계층이 없거나 깨져도 감사는 계속돼야 한다. 다만 조용히
+        # 넘어가면 "고를 조문이 없었다"와 "고르지 못했다"가 구별되지 않는다.
+        log.warning("관련 조문 선택 실패 — 앵커 조문만 사용: %s", e)
+        return [], f"관련 조문 선택 중 오류: {e}"
+
+
 def make_verify_grounding(question: str,
                           slots: list[RequirementSlot],
                           llm_call: Optional[Callable[[str, str], str]] = None,
@@ -196,10 +228,20 @@ def make_verify_grounding(question: str,
             # 없으므로, 등재되지 않은 규칙을 올려봐야 판정이 폐기될 뿐이다.
             law_articles, candidates, law_status = _law_context(
                 trap_ids, trap_checks)
+            # 앵커 조문(사람이 확인) 뒤에 관련 조문(용어 겹침)을 덧붙인다.
+            # 순서가 신뢰도 순이라 페이로드 상한에 걸려도 앵커가 먼저 남는다.
+            rel_articles, rel_status = _law_relevance(
+                answer, question, {a.ref for a in law_articles})
+            law_articles = law_articles + rel_articles
+            focus_terms: list[str] = []
+            if rel_articles:
+                from app.law.relevance import query_terms
+                focus_terms = sorted(query_terms(answer, question))
             supervision = supervise_hybrid(
                 answer=answer, question=question, llm_call=llm_call,
                 evidence_texts=evidence_texts,
                 law_articles=law_articles, candidate_traps=candidates,
+                law_focus_terms=focus_terms,
                 **det_kwargs)
             # ⚠️ 법령 판정을 **하지 못한 경우에도** 그 사실을 남긴다.
             #    바로 위 의미감사 NOT_RUN과 같은 이유다 — "판정 대상이
@@ -209,6 +251,14 @@ def make_verify_grounding(question: str,
             if not candidates:
                 supervision.findings.append(Finding(
                     "법령근거", "NOT_RUN", supervision.verdict, law_status, ""))
+            # 저촉 검사 쪽도 같은 이유로 남긴다 — 조문이 하나도 안 실리면
+            # 검사를 **할 수 없다**. 그 사실이 기록되지 않으면 "저촉 없음"과
+            # 구별되지 않는다 (CLAUDE.md: 못 한 것과 대상이 없던 것을 구별할 것).
+            if not law_articles:
+                supervision.findings.append(Finding(
+                    "법령저촉", "NOT_RUN", supervision.verdict,
+                    f"대조할 조문이 없어 답변–조문 저촉 검사를 수행하지 못함 "
+                    f"({rel_status})", ""))
         else:
             supervision = supervise(answer, **det_kwargs)
             # 감사자가 응답을 못 준 것과 '문제없음'은 다르다 —

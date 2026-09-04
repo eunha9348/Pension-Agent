@@ -32,6 +32,12 @@ _WS = re.compile(r'\s+')
 # "연금", "소득세" 같은 두세 글자는 어느 조문에나 있어서 항상 통과한다.
 MIN_QUOTE_CHARS = 12
 
+# 답변 쪽 인용(저촉으로 지목된 문장)의 최소 길이.
+# 조문 인용보다 짧게 잡는 이유는 답변 문장이 조문보다 짧기 때문이다.
+# 다만 "입니다", "600만원" 같은 조각은 답변 어디에나 있어 대조가
+# 무의미하므로 하한을 둔다.
+MIN_SPAN_CHARS = 10
+
 
 def normalize_for_match(text: str) -> str:
     """인용 대조 전용 정규화. 공백 통일과 유니코드 정준화까지만 한다.
@@ -170,3 +176,48 @@ class LawJudgement:
     # 검증 통과 후에만 채워진다
     verified: bool = False
     check: CitationCheck | None = field(default=None)
+
+
+@dataclass
+class LawConflict:
+    """HCX가 지목한 **답변–조문 저촉** (검증 전).
+
+    ━━ LawJudgement와 무엇이 다른가 ━━
+    LawJudgement는 "이 함정이 이 질의에 적용되는가"를 묻는다. 질의에 대한
+    판정이므로 답변 내용과는 무관하다. 그래서 답변이 조문에 어긋나는
+    말을 해도 그 판정으로는 잡히지 않는다 — 애초에 묻지 않기 때문이다.
+
+    이 구조체는 그 빈자리를 메운다. 묻는 것은 "**이 답변의 이 문장**이
+    이 조문에 저촉되는가"이며, 따라서 답변 쪽 지목 문장(answer_span)이
+    반드시 함께 온다.
+
+    ━━ 차단선이 두 겹인 이유 ━━
+    조문 인용만 대조하면, 모델이 실재하는 조문을 정확히 인용해 놓고
+    **답변이 하지도 않은 말**을 저촉이라고 지어낼 수 있다. 그러면 멀쩡한
+    답변이 강제로 재생성되고 강등 고지까지 붙는다 — 결정론 계층의 오탐은
+    되돌릴 수 없으므로(CLAUDE.md) 미탐보다 나쁘다. 그래서 답변 쪽도
+    글자 그대로 대조한다.
+
+      quote       → 조문 원문에 그대로 있어야 한다
+      answer_span → 답변 본문에 그대로 있어야 한다
+
+    둘 중 하나라도 실패하면 그 저촉 주장은 폐기된다.
+    """
+
+    law_ref: str
+    quote: str             # 조문 원문 그대로
+    answer_span: str       # 답변 본문 그대로
+    conflict: str = ""     # 무엇이 어떻게 어긋나는지
+    # 검증 통과 후에만 채워진다
+    verified: bool = False
+    check: CitationCheck | None = field(default=None)
+    span_ok: bool = False
+    reason: str = ""
+
+    def as_directive(self) -> str:
+        """재생성에 실을 시정 지시. 조문 근거를 함께 밝힌다."""
+        ref = self.check.article.ref if (self.check and self.check.article) \
+            else self.law_ref
+        return (f"답변의 \"{self.answer_span}\" 부분이 {ref}에 저촉됩니다. "
+                f"조문은 \"{self.quote}\"라고 정하고 있습니다. "
+                f"{self.conflict} 이 부분을 조문에 맞게 고쳐 쓰십시오.")

@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import logging
 
-from app.law.schema import (MIN_QUOTE_CHARS, CitationCheck, LawArticle,
-                            LawJudgement, normalize_for_match)
+from app.law.schema import (MIN_QUOTE_CHARS, MIN_SPAN_CHARS, CitationCheck,
+                            LawArticle, LawConflict, LawJudgement,
+                            normalize_for_match)
 from app.law.store import LawStore
 
 log = logging.getLogger(__name__)
@@ -125,6 +126,93 @@ def parse_law_judgements(data: object) -> list[LawJudgement]:
             rationale=str(item.get("rationale", "")).strip(),
         ))
     return out
+
+
+# ════════════════════════════════════════════════════════════════
+# 답변–조문 저촉 검증 — 차단선이 두 겹이다
+# ════════════════════════════════════════════════════════════════
+
+def parse_law_conflicts(data: object) -> list[LawConflict]:
+    """HCX 응답의 law_conflicts 배열을 구조체로. 형식 오류는 조용히 버린다."""
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        ref = str(item.get("law_ref", "")).strip()
+        quote = str(item.get("quote", "")).strip()
+        span = str(item.get("answer_span", "")).strip()
+        # 셋 중 하나라도 없으면 어차피 검증을 통과할 수 없다.
+        if not (ref and quote and span):
+            continue
+        out.append(LawConflict(
+            law_ref=ref, quote=quote, answer_span=span,
+            conflict=str(item.get("conflict", "")).strip(),
+        ))
+    return out
+
+
+def verify_conflicts(store: LawStore,
+                     answer: str,
+                     conflicts: list[LawConflict],
+                     ) -> tuple[list[LawConflict], list[str]]:
+    """저촉 주장을 검증해 (통과분, 감사기록)을 돌려준다.
+
+    ━━ 두 겹을 모두 통과해야 한다 ━━
+      ① 조문 인용(quote)이 실재 조문에 **글자 그대로** 있는가
+         — 지어낸 조문·의역한 조문을 막는다 (verify_citation 재사용)
+      ② 지목한 답변 문장(answer_span)이 답변에 **글자 그대로** 있는가
+         — 답변이 하지도 않은 말을 저촉이라고 지어내는 것을 막는다
+
+    ②가 없으면 어떻게 되는가: 모델이 실재 조문을 정확히 인용해 놓고
+    답변에 없는 주장을 지목할 수 있다. 그러면 멀쩡한 답변이 강제로
+    재생성되고 강등 고지까지 붙는다. 결정론 계층의 판정은 LLM이 완화하지
+    못하므로(단조성), 여기서의 오탐은 되돌릴 수 없다 — CLAUDE.md가 말하는
+    "오탐이 미탐보다 나쁘다"가 정확히 이 자리다.
+
+    폐기된 주장도 전부 기록에 남긴다. 조용히 버리면 "왜 저촉 판정이
+    반영되지 않았는가"를 나중에 추적할 수 없다.
+    """
+    if store.is_empty:
+        return [], ["법령 저장소가 비어 있어 답변–조문 저촉 검사를 수행하지 않음"]
+
+    norm_answer = normalize_for_match(answer)
+    kept: list[LawConflict] = []
+    trace: list[str] = []
+
+    for c in conflicts:
+        # ① 조문 쪽
+        check = verify_citation(store, c.law_ref, c.quote)
+        c.check = check
+        if not check.ok:
+            c.reason = f"조문 인용 실패 — {check.reason}"
+            trace.append(f"[저촉] 주장 폐기 — 근거 '{c.law_ref}' {check.reason}")
+            log.warning("저촉 주장 폐기(조문): ref=%r 사유=%s",
+                        c.law_ref, check.reason)
+            continue
+
+        # ② 답변 쪽
+        span = normalize_for_match(c.answer_span)
+        if len(span) < MIN_SPAN_CHARS:
+            c.reason = (f"지목한 답변 문장이 너무 짧아 대조 불가 "
+                        f"({len(span)}자 < {MIN_SPAN_CHARS}자)")
+            trace.append(f"[저촉] 주장 폐기 — {c.reason}")
+            continue
+        if span not in norm_answer:
+            c.reason = "지목한 문장이 답변에 그대로 존재하지 않음 (창작 의심)"
+            trace.append(f"[저촉] 주장 폐기 — {c.reason}: {c.answer_span[:40]!r}")
+            log.warning("저촉 주장 폐기(답변): span=%r", c.answer_span[:60])
+            continue
+
+        c.span_ok = True
+        c.verified = True
+        c.reason = "조문·답변 양쪽 인용 확인"
+        kept.append(c)
+        trace.append(f"[저촉] 주장 채택 — {check.article.ref}: "
+                     f"답변의 {c.answer_span[:40]!r} 부분")
+
+    return kept, trace
 
 
 def apply_to_traps(deterministic_ids: list[str],
