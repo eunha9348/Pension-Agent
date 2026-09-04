@@ -20,6 +20,7 @@ from app.ingest.chunker import chunk_document
 from app.ingest.metadata import apply_chunk_metadata, build_doc_metadata
 from app.ingest.loader import corpus_files, is_ingestible, iter_documents
 from app.ingest.ocr_repair import repair_documents
+from app.ingest.reocr import reocr_documents
 from app.ingest.store import DEFAULT_INDEX_DIR, ChunkRecord, DocumentStore
 from app.retrieval.bm25 import build_index as build_bm25
 
@@ -55,6 +56,20 @@ def ingest(corpus_dir: Path, corpus_kind: str) -> DocumentStore:
     #    메울 근거가 다른 문서에 있기 때문이다. 청킹 뒤로 미루면 청크 경계가
     #    앵커를 잘라 복원율이 떨어진다.
     documents = list(iter_documents(corpus_dir))
+
+    # 교차 문서 대조보다 먼저 재OCR을 돈다 — 손상이 촘촘한 페이지는 앵커
+    # 자체를 만들 공간이 없어(이웃 손상과 겹침) 대조가 구조적으로 불가능한
+    # 경우가 많다(`ocr_repair.py`의 "판독 실패 앵커가 이웃 손상을 물면
+    # 대조가 항상 실패한다" 참조). 재OCR은 그 페이지 자신의 원본 이미지를
+    # 다시 읽는 것이라 이 한계 밖이다(`reocr.py`). 재OCR로 정리된 뒤에도
+    # 남은 손상은 그대로 교차 문서 복원으로 넘어간다 — 이중 안전망이다.
+    reocr = reocr_documents(documents)
+    if reocr.pages_targeted or not reocr.engine_available:
+        print(f"\n[재OCR] {reocr.summary()}")
+        for s_ in reocr.samples:
+            print(f"    · {s_}")
+        print()
+
     repair = repair_documents(documents)
     if repair.runs_found:
         print(f"\n[OCR 복원] {repair.summary()}")
@@ -106,6 +121,15 @@ def ingest(corpus_dir: Path, corpus_kind: str) -> DocumentStore:
         "runs_masked": repair.runs_masked,
         "pages_garbled": repair.pages_garbled,
         "summary": repair.summary(),
+        "reocr": {
+            "pages_targeted": reocr.pages_targeted,
+            "pages_adopted": reocr.pages_adopted,
+            "pages_rejected": reocr.pages_rejected,
+            "pages_no_image": reocr.pages_no_image,
+            "pages_ocr_failed": reocr.pages_ocr_failed,
+            "engine_available": reocr.engine_available,
+            "summary": reocr.summary(),
+        },
     }
     return store
 

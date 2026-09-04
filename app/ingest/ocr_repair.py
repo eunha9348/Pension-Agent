@@ -192,16 +192,43 @@ def _candidates(haystack: str, left: str, right: str, max_gap: int) -> set[str]:
 
 
 def _repair_text(text: str, haystack: str, report: RepairReport) -> str:
-    """페이지 1건을 제자리 복원. haystack은 코퍼스 전체의 공백 제거본."""
+    """페이지 1건을 제자리 복원. haystack은 코퍼스 전체의 공백 제거본.
+
+    ━━ 앵커 오염 방지 (2026-09-04 실측) ━━
+    깨진 페이지는 평균 26.7건(5,279÷198)이 한 페이지에 몰려 있다. 앞뒤
+    ANCHOR_LEN자를 고정폭으로 그냥 잘라내면, 그 안에 **다른** 손상 구간이
+    함께 잘려 들어오는 경우가 매우 흔하다. 그러면 앵커 문자열 자체에
+    '?'나 반복 음절이 섞이는데, 그 오염은 이 페이지에만 있는 것이라
+    haystack 어디에도 글자 그대로 존재할 수 없다 — `find()`가 항상
+    실패한다. 합성 재현(밀도 27건/페이지)에서 인접 손상 4건 중 3건이
+    이렇게 앵커를 오염시켰다. **대조실패(no_match)의 압도적 다수가
+    "코퍼스에 그 구절이 없어서"가 아니라 "검색어 자체가 깨져 있어서"였다.**
+
+    그래서 앵커는 **이웃 손상 구간을 넘지 않는 만큼만** 가져온다. 이웃과의
+    간격이 MIN_ANCHOR보다 좁으면(공간이 정말 없으면) 정직하게 앵커부족으로
+    분류한다 — 억지로 이웃 손상까지 끌어와 채우지 않는다.
+    """
     sf, idx = _space_free(text)
+    spans = [(m.start(), m.end()) for m in _GARBLED_WEAK.finditer(sf)]
     edits: list[tuple[int, int, str]] = []
 
-    for m in _GARBLED_WEAK.finditer(sf):
-        a, b = m.start(), m.end()
+    for i, (a, b) in enumerate(spans):
         report.runs_found += 1
 
-        left = sf[max(0, a - ANCHOR_LEN):a]
-        right = sf[b:b + ANCHOR_LEN]
+        left_bound = max(0, a - ANCHOR_LEN)
+        if i > 0:
+            _prev_start, prev_end = spans[i - 1]
+            if prev_end > left_bound:
+                left_bound = prev_end
+        left = sf[left_bound:a]
+
+        right_bound = min(len(sf), b + ANCHOR_LEN)
+        if i + 1 < len(spans):
+            next_start, _next_end = spans[i + 1]
+            if next_start < right_bound:
+                right_bound = next_start
+        right = sf[b:right_bound]
+
         if len(left) < MIN_ANCHOR or len(right) < MIN_ANCHOR:
             report.runs_weak_anchor += 1
             continue
@@ -234,14 +261,13 @@ def _repair_text(text: str, haystack: str, report: RepairReport) -> str:
     return text
 
 
-def mask_unreadable(text: str) -> tuple[str, int]:
-    """복원하지 못한 판독 실패 런('?' 또는 반복된 한글 음절)을 (판독불가)로 격리한다.
+def _mask_weak(text: str) -> tuple[str, int]:
+    """WEAK(2회 이상) 패턴을 무조건 (판독불가)로 치환한다 — 게이팅 없음.
 
-    오염이 확인된 텍스트(같은 글자가 3회 이상 연속인 구간이 어딘가 있는)
-    에서만 동작하므로, 정상 문서의 물음표·짧은 반복 표현은 건드리지 않는다.
+    ⚠️ 이 함수를 페이지가 오염됐다는 판정 없이 임의 텍스트에 바로 쓰지 말 것.
+       게이팅은 `mask_unreadable`(공개 진입점)이 맡는다. `repair_documents`처럼
+       호출자가 **이미 STRONG 판정을 거친 페이지**에서만 직접 쓸 수 있다.
     """
-    if not looks_garbled(text):
-        return text, 0
     count = 0
 
     def _sub(_m: re.Match) -> str:
@@ -250,6 +276,24 @@ def mask_unreadable(text: str) -> tuple[str, int]:
         return UNREADABLE_MARK
 
     return _GARBLED_WEAK.sub(_sub, text), count
+
+
+def mask_unreadable(text: str) -> tuple[str, int]:
+    """복원하지 못한 판독 실패 런('?' 또는 반복된 한글 음절)을 (판독불가)로 격리한다.
+
+    오염이 확인된 텍스트(같은 글자가 3회 이상 연속인 구간이 어딘가 있는)
+    에서만 동작하므로, 정상 문서의 물음표·짧은 반복 표현은 건드리지 않는다.
+
+    ⚠️ **`repair_documents`에서는 이 함수를 쓰지 않는다.** 복원 전 텍스트로는
+       STRONG(3+) 판정을 통과했더라도, 복원이 그 3+런만 없애고 2글자짜리
+       WEAK 런을 남기면 이 함수의 게이트가 다시 닫혀 남은 손상을 그대로
+       흘려보낸다(2026-09-05 실측 재현) — 이 모듈 전체가 막으려던 바로 그
+       사고("?????????"가 청크에 그대로 실림)와 같은 종류다. `repair_documents`는
+       이미 STRONG 판정을 거친 페이지만 다루므로 `_mask_weak`를 직접 쓴다.
+    """
+    if not looks_garbled(text):
+        return text, 0
+    return _mask_weak(text)
 
 
 def repair_documents(docs) -> RepairReport:
@@ -272,7 +316,11 @@ def repair_documents(docs) -> RepairReport:
 
     for pg in garbled:
         pg.text = _repair_text(pg.text, haystack, report)
-        pg.text, masked = mask_unreadable(pg.text)
+        # ⚠️ mask_unreadable(공개 진입점)이 아니라 _mask_weak를 직접 쓴다 —
+        #    이 페이지는 이미 위에서 STRONG 판정(looks_garbled)을 거쳐
+        #    `garbled`에 들어왔다. 복원이 3+런만 없애고 2글자 WEAK런을
+        #    남기면 mask_unreadable의 재게이팅이 그 잔여 손상을 놓친다.
+        pg.text, masked = _mask_weak(pg.text)
         report.runs_masked += masked
 
     return report

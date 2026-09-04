@@ -132,9 +132,26 @@ def calc_private_contribution_limit(X_pension_saving=None, Y_irp_personal=None,
 
     x = X_pension_saving or 0.0
     y = Y_irp_personal or 0.0
-    A_eligible = min(min(x, LIMIT_PENSION_SAVING) + y, LIMIT_COMBINED)
-    out["IsLimitExceeded"] = (x + y) > LIMIT_ANNUAL_CONTRIB
+    capped_x = min(x, LIMIT_PENSION_SAVING)
+    combined_before_cap = capped_x + y
+    A_eligible = min(combined_before_cap, LIMIT_COMBINED)
     out["A_tax_credit"] = round(A_eligible * r_tax_credit, 4)
+    out["IsLimitExceeded"] = (x + y) > LIMIT_ANNUAL_CONTRIB
+
+    # ━━ 어느 한도가 결과를 갈랐는지 밝힌다 (2026-09-03 추가) ━━
+    # 예전에는 IsLimitExceeded 하나뿐이었는데, 이건 총납입한도(1,800만원)
+    # 초과만 본다. 그런데 실측 결함은 "연금저축에 900만원 넣으면 다
+    # 공제되나요?"였다 — 900은 1,800을 안 넘으니 IsLimitExceeded는
+    # False다. 정작 걸린 건 연금저축 **단독** 한도(600만원)인데, 이걸
+    # 알리는 신호가 어디에도 없었다. LLM이 "다 공제됩니다"라고 써도
+    # 아무 판정도 못 잡는다.
+    #
+    # 이 두 플래그는 numeric_verifier._presence_targets가 읽어서, 해당
+    # 한도가 실제로 결과를 깎았을 때는 계산값이 있어도 한도 상수를
+    # 답변에 강제로 싣는다. supervisory_board.audit_anomaly도 이걸 보고
+    # "한도를 넘었다는 사실을 답변에 명시했는가"를 REVISE 대상으로 삼는다.
+    out["IsPensionSavingLimitExceeded"] = x > LIMIT_PENSION_SAVING
+    out["IsCombinedLimitExceeded"] = combined_before_cap > LIMIT_COMBINED
     return out
 
 

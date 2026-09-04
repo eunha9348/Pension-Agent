@@ -158,6 +158,21 @@ def detect_anomalies(trace_entries: list[str],
                 SEVERITY_CRITICAL, "VERDICT_CONFLICT",
                 "감독이 BLOCK인데 답변 등급이 ANSWER로 남아 있다"))
 
+    # ── 중대 오류: 법령에 저촉되는 서술이 남아 있다 ──
+    #
+    # 이 지적은 조문 원문과 답변 문장을 **양쪽 다 글자 그대로** 대조해
+    # 통과한 것만 올라온다(law/citation_guard.verify_conflicts). 즉 여기
+    # 도달했다는 것은 "실재하는 조문이, 답변이 실제로 한 말과 어긋난다"는
+    # 뜻이므로, 축퇴나 예산 문제와 달리 **내용이 틀린** 상태다.
+    # 답변 품질 문제 중 가장 무겁게 다뤄야 하므로 critical로 둔다 —
+    # 구제 재생성까지 열어 본문을 고칠 기회를 만든다.
+    for f in (getattr(supervision, "findings", None) or []):
+        if getattr(f, "auditor", "") == "법령저촉" and \
+                getattr(f, "code", "") == "LAW_CONFLICT":
+            found.append(Anomaly(
+                SEVERITY_CRITICAL, "LAW_CONFLICT",
+                f"답변이 법령에 저촉된다: {getattr(f, 'detail', '')}"))
+
     return found
 
 
@@ -334,9 +349,26 @@ def build_rewrite_payload(question: str,
     parts = [f"[질문]\n{question}"]
 
     findings = list(getattr(supervision, "findings", []) or [])
-    if findings:
+
+    # 법령 저촉은 따로 먼저 싣는다. 다른 지적과 섞이면 목록 한가운데
+    # 파묻히는데, 이것은 **내용이 법에 어긋난다**는 지적이라 성격이 다르다.
+    # 조문 원문과 답변 문장을 양쪽 다 대조해 통과한 것만 여기 온다.
+    conflicts = [f for f in findings
+                 if getattr(f, "auditor", "") == "법령저촉"
+                 and getattr(f, "code", "") == "LAW_CONFLICT"]
+    if conflicts:
+        parts.append("\n[법령 저촉 — 반드시 먼저 해소해야 합니다]")
+        for f in conflicts:
+            parts.append(f"· {(getattr(f, 'directive', '') or getattr(f, 'detail', '')).strip()}")
+        parts.append("위 조문과 어긋나는 서술을 그대로 두면 이 답변은 다시 "
+                     "폐기됩니다. 조문에 맞게 고쳐 쓰십시오.")
+
+    # 동일 내용 지적이 둘 있을 수 있으므로 값이 아니라 **동일 객체**로 뺀다.
+    _seen = {id(f) for f in conflicts}
+    other = [f for f in findings if id(f) not in _seen]
+    if other:
         parts.append("\n[감사가 지적한 것 — 이것을 해소해야 합니다]")
-        for f in findings:
+        for f in other:
             detail = (getattr(f, "directive", "") or
                       getattr(f, "detail", "") or "").strip()
             if detail:

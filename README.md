@@ -3,8 +3,11 @@
 제10회 미래에셋증권 AI Festival · 연금 Agent 트랙 출품작.
 자연어 연금 질의를 **제공 문서 근거로만** 조회·분석·설명하는 AI 에이전트.
 
-> ✅ CLOVA Studio 실연동 확인 완료(2026-08-18) — 실제 코퍼스·API 키로 L1·L5'·L6
-> 전부 실호출 성공. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
+> ✅ **현재 상태: 실물 코퍼스 인덱싱 완료 (2026-09-04)**
+> 실제 코퍼스 **158문서 · 8,173청크**로 인덱스를 구성했고, CLOVA Studio
+> 실연동(HCX-005)으로 L1·L5'·L6 호출이 성공하는 것을 배포 환경에서
+> 확인했습니다. 검색은 BM25 + 벡터 RRF 하이브리드입니다.
+> 회귀 테스트 1,186건 통과. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
 
 ---
 
@@ -121,14 +124,50 @@ mock으로 동작 중이면 응답 `think_trace`와 서버 로그에 `[MOCK LLM]
 | 경로 분류 | GENERAL(계산) / ADVISORY(상담) 결정 | – | `analysis/routing.py` |
 | 1.5 | 계획 감사 — 화이트리스트 검증 | – | `core/supervisory_board.py` |
 | L2 | 함정 감지 (28종) | – | `core/trap_rules.py` |
-| L3 ∥ L4 | 하이브리드 검색 ∥ 가입자격 판정 (병렬, barrier 합류) | – | `retrieval/hybrid.py` |
+| L3 ∥ L4 | 하이브리드 검색 ∥ 가입자격 판정 (ThreadPoolExecutor 병렬) | – | `retrieval/hybrid.py` |
+| 합류 barrier | 자격 미달 후보만 제외, 미상은 통과 | – | `pipeline._eligibility_barrier()` |
 | L5 | 계산 (15종, CALC_REGISTRY) | – | `core/pension_calc_functions.py` |
 | L5' / L4-sub | 조건부 설명 생성 / 상담 답변 | HyperCLOVA X | `generation/answer_prompt.py`, `advisory.py` |
-| L6 | 감독 이사회 — 결정론 5대 감사 + 의미 감사 | HyperCLOVA X | `core/supervisory_board.py` |
+| L6 | 감독 이사회 — 결정론 5대 감사 + 의미 감사 + 답변–조문 저촉 판정 | HyperCLOVA X | `core/supervisory_board.py` |
 | Sub-Agent | 전 구간 이상 감지, 트리거 시에만 구제 재작성 | 이상 시만 | `core/sub_agent.py` |
 
-L6 권한 계층(LLM은 심각도만 올릴 수 있음, 단조성)은 `merge_supervision()`에서 리팩터링
-시에도 반드시 보존합니다. 전체 설계 원칙은 [CLAUDE.md](CLAUDE.md) 참고.
+L5'와 L4-sub는 배타적이라 경로가 늘어도 호출 횟수는 늘지 않습니다. L6 권한 계층
+(LLM은 심각도만 올릴 수 있음, 단조성)은 `merge_supervision()`에서 리팩터링 시에도
+반드시 보존합니다. 전체 설계 원칙은 [CLAUDE.md](CLAUDE.md) 참고.
+
+### 상품 팩트 6축
+
+과제가 정의한 실적배당형 상품 데이터의 축은 여섯입니다. 두 곳에서 나눠
+뽑되 답변에는 한 벌로 실립니다.
+
+| 축 | 추출 위치 | 시점 |
+|---|---|---|
+| 판매클래스 · 총보수 | `analysis/products.py` | 검색 후 (근거 청크) |
+| 상품분류 · 위험등급 · 수익률 · 시장잔고 | `analysis/product_facts.py` | **색인 시점 (문서 전문)** |
+
+색인 시점에 뽑는 이유는 **검색이 표 청크를 놓쳐도 사실이 사라지지 않게**
+하기 위해서입니다. 값마다 원문 스니펫을 함께 보관해 인용과 수치 검증에
+그대로 씁니다. 진단은 `python -m scripts.corpus_facts`.
+
+⚠️ **위험등급은 1등급이 가장 위험합니다.** 숫자만 쓰면 정반대 서술이
+나오므로 원문 표기(`4등급(보통 위험)`)를 함께 싣습니다.
+
+### 법령 계층 — 외부 자료는 보조입니다
+
+법제처 OPEN API로 조문을 수집해 **내부 검증에만** 씁니다
+(`retrieved_context`에 넣지 않습니다). 두 가지를 판정합니다.
+
+| 갈래 | 묻는 것 | 반영 |
+|---|---|---|
+| 함정 판정 | 이 **함정**이 이 질의에 적용되는가 | `trap_ids` 조정 후 감사 재실행 |
+| 저촉 판정 | 이 **답변**이 조문에 어긋나는가 | 검증 통과분을 REVISE로 상향만 |
+
+⚠️ **제공 문서가 최종 근거이고 법령은 보조입니다**(과제 안내). 저촉 판정은
+세 겹으로 막습니다 — 조문 인용 verbatim · 답변 문장 verbatim ·
+**제공 문서가 그 문장을 뒷받침하지 않을 것**. 즉 저촉으로 채택되는 경우는
+**제공 문서와도 맞지 않고 법령과도 맞지 않을 때뿐**입니다.
+
+가동 여부는 `/health`의 `law.conflict_check_active`로 확인합니다.
 
 ---
 
@@ -156,19 +195,40 @@ python -m app.ingest.build_embeddings
 
 ```bash
 mkdir -p data/corpus && cp <제공 문서> data/corpus/
-python -m app.ingest.check_corpus     # 판독 확인 (필수 — 건너뛰지 말 것)
-python -m app.ingest.build_index
+python -m app.ingest.check_corpus          # ① 판독 확인 (필수 — 건너뛰지 말 것)
+python -m app.ingest.build_index           # ② 인덱스 생성
+python -m app.ingest.build_embeddings      # ③ 청크 벡터 (②를 다시 돌렸으면 ③도 다시)
 ```
 
-| 형식 | 지원 |
-|---|---|
-| `.zip`(JPEG+OCR), `.txt/.md/.csv/.tsv/.json/.html` | ✅ |
-| `.xlsx` | ✅ (`openpyxl`) |
-| `.pdf` | ✅ (`pypdf`, 스캔본은 텍스트 레이어 필요) |
-| `.hwp/.docx/.pptx` | ❌ 변환 후 투입 |
+`data/corpus/`에 파일이 있으면 mock 코퍼스는 쓰이지 않습니다. 판독 가능한 파일이
+하나도 없으면 인덱스를 만들지 않고 실패합니다(지어낸 문서로 답변하는 사고 방지).
 
-`data/corpus/`에 파일이 있으면 mock 코퍼스는 쓰이지 않습니다. 판독 실패 파일은
-`GET /health`의 `corpus.skipped_files`에 남습니다.
+| 형식 | 지원 | 비고 |
+|---|---|---|
+| `.zip`(JPEG+OCR) | ✅ | 레이아웃 4종 자동 인식 |
+| `.txt/.md/.csv/.tsv/.json/.html` | ✅ | 표준 라이브러리만 사용 |
+| `.xlsx` | ✅ | `openpyxl` 필요 |
+| `.pdf` | ✅ | `pypdf` 필요, 스캔본은 텍스트 레이어 별도 필요 |
+| `.hwp/.docx/.pptx` | ❌ | 변환 후 투입 |
+
+판독 실패 파일은 `GET /health`의 `corpus.skipped_files`에 남습니다.
+
+### OCR 판독 실패 복원
+
+제공 OCR 텍스트의 판독 실패 구간은 `?????????`이거나 **같은 한글 음절이 반복**됩니다
+(`퇴퇴 퇴 퇴퇴퇴퇴`). 재OCR 대신 **코퍼스 자체의 중복**으로 복원합니다 —
+투자설명서들이 같은 표를 거의 그대로 싣기 때문에, 깨진 자리의 앞뒤 문맥을
+앵커로 다른 문서에서 같은 구절을 찾아 메웁니다(`ingest/ocr_repair.py`, 지어내지
+않고 코퍼스 안의 실재 텍스트만 사용). 복원 못 한 구간은 `(판독불가)`로 격리합니다.
+
+`GET /health`의 `ocr_repair`에서 확인: `runs_found`(판독 실패 구간) ·
+`runs_repaired`(교차 문서 복원) · `runs_masked`(격리). 진단은
+`python -m scripts.corpus_health`(문턱 미달로 놓친 구간까지 보고).
+
+⚠️ 인덱스는 호스트 볼륨에 남아 재사용되므로, 복원을 반영하려면 재인덱싱이
+필요합니다(`FORCE_REINDEX=true` 또는 `docker compose run --rm reindex`).
+
+개발용 mock 코퍼스는 `python -m app.ingest.make_mock_corpus`로 만듭니다.
 
 ---
 
@@ -187,7 +247,7 @@ app/
   pipeline.py     L0~L6 통합
   main.py         GET /answer · GET /health
 sql/schema.sql    PostgreSQL 스키마 (선택)
-tests/            회귀 테스트 1,023건 + 자체 평가셋 42문항
+tests/            회귀 테스트 1,186건 + 자체 평가셋 42문항
 ```
 
 ## 의존성

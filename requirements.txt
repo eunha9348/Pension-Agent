@@ -21,5 +21,11 @@ pgvector==0.3.6
 pypdf==5.1.0
 openpyxl==3.1.5
 
+# 선택 의존성 — 판독 실패 페이지 재OCR(app/ingest/reocr.py)에 쓴다.
+# 시스템 tesseract-ocr(+ tesseract-ocr-kor) 바이너리가 별도로 필요하다
+# (Dockerfile에 이미 설치돼 있다). 바이너리가 없으면 재OCR만 건너뛴다.
+pytesseract==0.3.13
+Pillow==10.4.0
+
 # 테스트
 pytest==8.3.4

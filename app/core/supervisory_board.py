@@ -177,6 +177,36 @@ def _classify_key(key: str) -> Optional[str]:
     return None
 
 
+def _flatten_variants(results: Optional[list]) -> list[dict]:
+    """variants 구조를 펼쳐 실제 계산 dict만 돌려준다.
+
+    ━━ 왜 필요한가 (2026-09-03 실측) ━━
+    소득을 모르면 calc_params가 세율 구간별로 결과를 나눠 담는다
+    (`{"variants": [{"label": ..., "result": {...}}, ...]}`). 그런데
+    audit_anomaly는 최상위 키만 훑어서, **이 구조에서는 findings가
+    0건**이 됐다. 신규 판정뿐 아니라 기존 LIMIT_EXCEEDED·CREDIT_EXCEEDS·
+    LIMIT_RATIO까지 통째로 눈이 멀었다.
+
+    실측 대조: 같은 내용을 평면 구조로 주면 2건 발화, variants로 주면 0건.
+    소득을 밝히지 않는 질의는 흔하므로 파급이 크다.
+
+    `numeric_verifier._presence_targets`는 이미 variants를 재귀로 훑는다 —
+    같은 구조를 보는 두 계층이 서로 다른 기준을 쓰고 있었던 것이다.
+    """
+    out: list[dict] = []
+    for r in results or ():
+        if not isinstance(r, dict):
+            continue
+        if isinstance(r.get("variants"), list):
+            for v in r["variants"]:
+                inner = v.get("result") if isinstance(v, dict) else None
+                if isinstance(inner, dict):
+                    out.append(inner)
+            continue
+        out.append(r)
+    return out
+
+
 def audit_anomaly(calc_results: list[dict],
                    user_conditions: Optional[dict] = None) -> list[Finding]:
     """계산 이상치 감사.
@@ -187,7 +217,9 @@ def audit_anomaly(calc_results: list[dict],
     findings: list[Finding] = []
     user_conditions = user_conditions or {}
 
-    for r in calc_results:
+    # ⚠️ variants 를 펼쳐서 본다 — 안 펼치면 이 감사 전체가 불발한다
+    #    (_flatten_variants 주석 참조).
+    for r in _flatten_variants(calc_results):
         if not isinstance(r, dict):
             continue
 
@@ -233,6 +265,25 @@ def audit_anomaly(calc_results: list[dict],
                 "납입한도 초과 상태가 계산에 반영됨",
                 "한도 초과분은 세액공제 대상이 아니라는 점을 답변에 명시할 것",
             ))
+        # ⚠️ 위와 별개 판정이다 — IsLimitExceeded는 연간 총납입한도(1,800만원)
+        #    만 본다. "연금저축에 900만원 넣으면 다 공제되나요?"는 900이
+        #    1,800을 안 넘으니 위 REVISE가 안 뜨지만, 실제로는 연금저축
+        #    단독 한도(600만원)를 넘겼다. 그 사실을 알리는 신호가 없으면
+        #    "다 공제됩니다"라는 오답이 그대로 나간다(2026-09-03 실측 E-03).
+        if r.get("IsPensionSavingLimitExceeded") is True:
+            findings.append(Finding(
+                "이상치", "PENSION_SAVING_LIMIT_EXCEEDED", Verdict.REVISE,
+                "연금저축 단독 세액공제 한도(600만원) 초과 상태가 계산에 반영됨",
+                "연금저축 단독으로는 600만원까지만 세액공제되고 초과분은 "
+                "대상이 아니라는 점을 답변에 명시할 것",
+            ))
+        if r.get("IsCombinedLimitExceeded") is True:
+            findings.append(Finding(
+                "이상치", "COMBINED_LIMIT_EXCEEDED", Verdict.REVISE,
+                "연금저축+IRP 합산 세액공제 한도(900만원) 초과 상태가 계산에 반영됨",
+                "연금저축과 IRP를 합쳐도 900만원까지만 세액공제되고 초과분은 "
+                "대상이 아니라는 점을 답변에 명시할 것",
+            ))
 
         limit = r.get("limit")
         if limit is not None and isinstance(limit, (int, float)):
@@ -244,7 +295,19 @@ def audit_anomaly(calc_results: list[dict],
                     "연차 입력값을 재확인할 것",
                 ))
 
-    return findings
+    # ⚠️ variants를 펼치면 세율 구간마다 같은 지적이 반복된다("소득 구간별로
+    #    나눠 계산했다"는 사정은 사용자 잘못이 아니고, 같은 말을 두 번 하면
+    #    시정 지시가 지저분해진다). 내용이 똑같은 것만 합친다 — 값이 달라
+    #    detail이 다른 지적은 각각 살려 둔다.
+    deduped: list[Finding] = []
+    seen: set[tuple[str, str]] = set()
+    for f in findings:
+        key = (f.code, f.detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+    return deduped
 
 
 # ════════════════════════════════════════════════════════════════
@@ -871,7 +934,8 @@ def build_llm_audit_payload(answer: str,
                             question: str,
                             ask_back_items: Optional[list[str]] = None,
                             law_articles: Optional[list] = None,
-                            candidate_traps: Optional[list[dict]] = None) -> str:
+                            candidate_traps: Optional[list[dict]] = None,
+                            focus_terms: Optional[list[str]] = None) -> str:
     """의미 감사용 입력 구성.
 
     생성 과정(프롬프트·추론)은 의도적으로 제외한다 — 감사 독립성.
@@ -906,8 +970,12 @@ def build_llm_audit_payload(answer: str,
         #    1,500만원 기준은 여덟 개 호를 지나 제9호 다목에 있다.
         #    감사자가 인용할 문장을 못 보면 검증도 통과할 수 없으므로,
         #    함정의 검증 용어 주변을 잘라 넣는다.
+        #    함정이 없어 verify_any가 비는 경우(관련성으로만 고른 조문)에는
+        #    답변에서 뽑은 용어를 초점으로 쓴다. 초점이 아예 없으면 머리말만
+        #    실려, 감사자가 인용할 문장을 못 보는 그 상황으로 되돌아간다.
         focus = [t for c in (candidate_traps or [])
                  for t in (c.get("verify_any") or [])]
+        focus += list(focus_terms or [])
         for a in law_articles[:_MAX_LAW_ARTICLES]:
             body = a.text
             if len(body) > _MAX_LAW_CHARS:
@@ -929,6 +997,34 @@ def build_llm_audit_payload(answer: str,
             "quote는 위 조문 원문에서 그대로 옮긴 12자 이상의 문장이어야 한다. "
             "근거가 될 조문을 찾지 못하면 그 항목은 아예 내지 말 것 — "
             "지어낸 인용은 폐기되고 기록에 남는다.")
+
+    # ── 답변–조문 저촉 판정 ──────────────────────────────────
+    #
+    # ⚠️ 위의 law_judgements와 **묻는 것이 다르다.** 그쪽은 "이 함정이 이
+    #    질의에 적용되는가"(질의에 대한 판정)이고, 이쪽은 "이 답변이 조문에
+    #    어긋나는 말을 했는가"(답변에 대한 판정)다. 예전에는 앞의 것만
+    #    물었기 때문에, 최종 출력 답변을 법령과 대조하는 검사가 아예
+    #    없었다(2026-09-04 확인).
+    if law_articles:
+        parts.append(
+            "\n[답변–법령 저촉 판정]\n"
+            "위 [심사 대상 답변]이 위 조문에 어긋나는 서술을 하고 있는지 "
+            "판정하십시오. 어긋남을 찾으면 law_conflicts 배열로 내십시오. "
+            "각 항목은 {law_ref, quote, answer_span, conflict} 입니다.\n"
+            "  · quote       — 조문 원문에서 그대로 옮긴 12자 이상의 문장\n"
+            "  · answer_span — 문제가 되는 **답변 본문의 문장을 그대로** 옮긴 것\n"
+            "  · conflict    — 그 문장이 조문과 어떻게 어긋나는지\n"
+            "두 인용 모두 원문과 글자 단위로 대조됩니다. 요약하거나 바꿔 쓰면 "
+            "폐기됩니다. 답변에 없는 문장을 지어내 지목해도 폐기됩니다.\n"
+            "확실한 저촉만 내십시오. 조문이 다루지 않는 사항이거나 판단이 "
+            "애매하면 내지 마십시오 — 어긋남이 없으면 law_conflicts를 "
+            "빈 배열로 두십시오. 답변이 조문보다 조심스럽게 서술한 것은 "
+            "저촉이 아닙니다. **제공 문서(근거 문서·계산 결과)가 최종 근거이고 "
+            "조문은 판정 보조 자료입니다.** 답변이 제공 문서 내용을 그대로 "
+            "옮긴 것이라면(지어낸 서술이 아니라면), 조문과 표현이 다르다는 "
+            "이유만으로 저촉으로 내지 마십시오 — 제공 문서가 더 구체적이거나 "
+            "다른 시점 기준일 수 있습니다. 숫자 자체가 명백히 틀린 경우"
+            "(예: 개정 전 한도·세율을 현행처럼 서술)에만 저촉으로 내십시오.")
 
     return "\n".join(parts)
 
@@ -963,6 +1059,20 @@ def law_judgements_from_audit(raw: str) -> list:
     if not data:
         return []
     return parse_law_judgements(data.get("law_judgements"))
+
+
+def law_conflicts_from_audit(raw: str) -> list:
+    """감사 응답에 실린 답변–조문 저촉 주장(law_conflicts)을 꺼낸다.
+
+    ⚠️ 여기서 나온 주장은 **아직 검증되지 않았다.** 반드시
+    citation_guard.verify_conflicts()를 통과시킨 뒤에 쓸 것.
+    """
+    from app.law.citation_guard import parse_law_conflicts
+
+    data = _load_audit_json(raw)
+    if not data:
+        return []
+    return parse_law_conflicts(data.get("law_conflicts"))
 
 
 def parse_llm_audit(raw: str) -> tuple[Verdict, list[Finding], list[str]]:
@@ -1085,6 +1195,68 @@ def _apply_law_judgements(raw: str,
         return det, trace
 
 
+def _apply_law_conflicts(raw: str,
+                         answer: str,
+                         det: SupervisionResult,
+                         evidence_texts: Optional[list[str]] = None,
+                         ) -> tuple[SupervisionResult, list[str], list]:
+    """답변–조문 저촉 주장을 검증해 반영한다. (판정, 기록, 채택된 저촉)
+
+    ━━ 왜 '상향 전용'인가 ━━
+    함정 판정(_apply_law_judgements)은 결정론적 감사의 **입력**(trap_ids)을
+    바꾸므로 추가·제거가 모두 가능했다 — 바꾸는 것이 '무엇을 판단할
+    것인가'(사실)였기 때문이다. 저촉 판정은 다르다. 이것은 판정 자체이므로
+    LLM이 여기서 심각도를 내릴 수 있으면 단조성이 무너진다.
+
+    그래서 규칙은 하나다: **검증을 통과한 저촉은 REVISE로 올린다. 저촉이
+    없다는 판정은 아무것도 하지 않는다.** "조문상 문제없음"은 결정론적
+    감사가 이미 내린 어떤 지적도 무르지 못한다.
+
+    ━━ 왜 REVISE이고 BLOCK이 아닌가 ━━
+    REVISE라야 파이프라인의 기존 재생성 경로를 탄다(CLAUDE.md: "DOWNGRADE는
+    재생성을 타지 않는다 — 시정 지시를 만들었으면 REVISE로 낼 것"). 저촉
+    지적은 조문 인용이 붙은 구체적 시정 지시를 만들 수 있으므로, 그것을
+    버린 채 등급만 낮추는 것은 틀린 처리다.
+    """
+    from app.law.citation_guard import verify_conflicts
+    from app.law.store import get_store
+
+    trace: list[str] = []
+    try:
+        claims = law_conflicts_from_audit(raw)
+        if not claims:
+            return det, trace, []
+
+        kept, verify_trace = verify_conflicts(get_store(), answer, claims,
+                                              evidence_texts=evidence_texts)
+        trace += verify_trace
+        if not kept:
+            return det, trace, []
+
+        for c in kept:
+            ref = c.check.article.ref if (c.check and c.check.article) \
+                else c.law_ref
+            det.findings.append(Finding(
+                "법령저촉", "LAW_CONFLICT", Verdict.REVISE,
+                f"{ref}에 저촉 — 답변의 {c.answer_span[:60]!r} 부분: "
+                f"{c.conflict}",
+                c.as_directive()))
+            det.directives.append(c.as_directive())
+
+        # 상향만 한다. 이미 BLOCK이면 그대로 둔다.
+        if _SEVERITY_ORDER[Verdict.REVISE] > _SEVERITY_ORDER[det.verdict]:
+            det.verdict = Verdict.REVISE
+        trace.append(f"조문 저촉 {len(kept)}건 확인 — 판정을 "
+                     f"{det.verdict.value}로 유지·상향")
+        return det, trace, kept
+    except Exception as e:                                   # noqa: BLE001
+        # 저촉 검사의 사고가 감사 전체를 죽이면 안 된다. 다만 조용히
+        # 넘어가면 "검사를 못 한 것"과 "저촉이 없던 것"을 구별할 수 없다.
+        log.warning("답변–조문 저촉 검사 실패 — 기존 판정 유지: %s", e)
+        trace.append(f"답변–조문 저촉 검사 실패(무시하고 진행): {e}")
+        return det, trace, []
+
+
 def supervise_hybrid(answer: str,
                      question: str,
                      llm_call,
@@ -1092,6 +1264,7 @@ def supervise_hybrid(answer: str,
                      skip_llm_on_block: bool = True,
                      law_articles: Optional[list] = None,
                      candidate_traps: Optional[list[dict]] = None,
+                     law_focus_terms: Optional[list[str]] = None,
                      **deterministic_kwargs) -> SupervisionResult:
     """결정론적 감사 + HyperCLOVA X 의미 감사를 함께 수행.
 
@@ -1121,6 +1294,7 @@ def supervise_hybrid(answer: str,
         ask_back_items=deterministic_kwargs.get("ask_back_items"),
         law_articles=law_articles,
         candidate_traps=candidate_traps,
+        focus_terms=law_focus_terms,
     )
 
     try:
@@ -1139,6 +1313,22 @@ def supervise_hybrid(answer: str,
         for line in law_trace:
             det.findings.append(Finding("법령근거", "TRACE", det.verdict,
                                         line, ""))
+
+    # 답변–조문 저촉은 **함정 유무와 무관하게** 조문만 있으면 검사한다.
+    # 이 검사를 candidate_traps로 게이팅하면, 함정이 안 잡힌 질의(실측 55%)
+    # 에서 답변이 법령에 어긋나도 아무도 보지 않는 상태로 되돌아간다.
+    if law_articles:
+        det, conflict_trace, kept_conflicts = _apply_law_conflicts(
+            raw, answer, det, evidence_texts=evidence_texts)
+        for line in conflict_trace:
+            det.findings.append(Finding("법령저촉", "TRACE", det.verdict,
+                                        line, ""))
+        if not kept_conflicts and not conflict_trace:
+            # "검사했고 저촉이 없었다"를 명시한다. 아무 기록도 없으면
+            # 검사를 못 한 것과 구별되지 않는다.
+            det.findings.append(Finding(
+                "법령저촉", "NONE", det.verdict,
+                f"조문 {len(law_articles)}건과 대조했으나 저촉 지적 없음", ""))
 
     llm_verdict, llm_findings, llm_questions = parse_llm_audit(raw)
     return merge_supervision(det, llm_verdict, llm_findings, llm_questions,

@@ -49,6 +49,8 @@ from typing import Any, Optional
 from app.analysis.bridge import find_bridge
 from app.analysis.calc_params import make_calc_params_builder
 from app.analysis.conditions import describe_conditions
+from app.analysis.product_facts import _fact_lines as _fact_lines_of
+from app.analysis.product_facts import collect_facts, fact_snippets
 from app.analysis.products import extract_class_expenses
 from app.analysis.query_spec import make_extract_query_spec
 from app.analysis.refusal import check_refusal, check_safety_refusal
@@ -162,7 +164,17 @@ TOTAL_BUDGET_SEC = _budget_sec("PIPELINE_BUDGET_SEC", 55.0)
 #      그건 예산이 아니라 CLOVA_TIMEOUT_SEC/CLOVA_MAX_RETRY의 영역이다.
 BUDGET_L1 = 8.0             # 질의 분석 1회
 BUDGET_L5 = 10.0            # 답변 생성 1회 (본문이라 길다)
-BUDGET_L6 = 8.0             # 의미 감사 1회
+# ⚠️ 의미 감사 1회. 8.0 → 10.0 (2026-09-04, 답변–조문 저촉 검사 추가)
+#    같은 호출 안에서 조문까지 대조하므로 페이로드가 커진다. 실측으로
+#    조문 4건이 실릴 때 페이로드가 697자 → 3,772자였다(+3,075자).
+#    게이트 값이 실제 소요보다 작으면 **통과시켜 놓고 총 예산을 넘긴다** —
+#    BUDGET_REGEN이 10.0이던 시절에 정확히 그 일이 있었다(위 주석).
+#    ⚠️ 이 +2.0은 페이로드 증가분에서 잡은 보수적 추정이지 지연 실측이
+#       아니다. T2(실 HCX 백테스트)에서 L6 소요를 재고 확정할 것.
+#    법령 수집본이 없는 서버에서는 페이로드가 커지지 않으므로 이 값이
+#    2초 보수적으로 동작할 뿐이다(뒤 단계가 조금 덜 열린다). 상한 60초를
+#    넘기는 것보다는 그쪽이 낫다.
+BUDGET_L6 = 10.0
 # ⚠️ 재생성은 **두 번** 호출한다 — 생성 + 재검증(의미 감사)이다.
 #    재검증은 이 게이트와 무관하게 무조건 수행된다. 검증 없이 채택하면
 #    감사를 우회하는 뒷문이 되기 때문이다(CLAUDE.md). 예전에는 이 값이
@@ -244,7 +256,34 @@ def _exploit(evidence: list[EvidenceChunk], query_spec: dict,
     #    그대로 되살아난다(함정 C5 재발). 완화해도 되는 건 점수 임계값뿐이고,
     #    구법 제외는 완화 대상이 아니다.
     after_legacy = list(kept)
-    kept = filter_irrelevant_evidence(kept, query_spec, trace=trace)
+
+    # ⚠️ 함정이 지목한 근거 문서(retrieval_steer)는 이 필터에서 면제한다.
+    #    L3가 이미 이 문서를 예약(pinned, score 0.9)해 순위 경쟁에서
+    #    보호했는데, 그 뒤 여기서 엔티티 충돌·점수 임계값으로 조용히
+    #    떨어뜨리면 인용까지 못 간다. _addressed_trap_docs는 evidence에
+    #    남은 것만 인용할 수 있어서, 여기서 탈락하면 답변이 함정을
+    #    정확히 교정해도 근거 문서가 안 실린다.
+    #    같은 계열 실패가 실측에서 3회 반복됐다(L-01/doc55·E-19/doc20·
+    #    E-26/doc40). 구법 배제(1단계)는 이미 이 청크에도 적용됐으므로
+    #    여기서 면제해도 구법 문서가 되살아나지는 않는다.
+    steered_docs = set(query_spec.get("_steered_docs") or ())
+    protected = [c for c in after_legacy if c.doc_id in steered_docs]
+    unprotected = [c for c in after_legacy if c.doc_id not in steered_docs]
+
+    filtered = filter_irrelevant_evidence(unprotected, query_spec, trace=trace)
+    if protected:
+        # 트레이스용 — 보호가 실제로 뭔가를 구했는지 알려준다(순수 조회,
+        # protected 자체는 건드리지 않는다).
+        would_survive = {id(c) for c in
+                         filter_irrelevant_evidence(protected, query_spec, trace=None)}
+        saved = [c for c in protected if id(c) not in would_survive]
+        if saved:
+            trace.log("L4_함정근거_보호",
+                      f"함정이 지목한 근거 {len(saved)}건이 일반 필터라면 "
+                      f"제외됐을 것이나 함정 근거이므로 유지",
+                      docs=sorted({c.doc_id for c in saved}))
+    kept = filtered + protected
+
     if not kept and after_legacy:
         kept = filter_irrelevant_evidence(
             after_legacy, query_spec, score_threshold=0.0, trace=None)[:3]
@@ -584,6 +623,26 @@ def _answer_question_impl(question_id: str, question: str,
         trace.log("L4_상품후보", f"근거 문서에서 판매 클래스 {len(candidates)}건 확보 "
                               f"(barrier 통과분)")
 
+    # ── 상품 팩트 결합 (색인 시점 전수 파싱 결과) ──────────────
+    #
+    # 위험등급·상품분류·수익률·시장잔고는 **검색된 청크가 아니라 색인 시점에
+    # 문서 전문에서** 뽑아 doc_meta에 넣어 둔 값이다(ingest/metadata.py).
+    # 여기서는 근거로 채택된 문서의 것만 꺼내 쓴다 — 색인에는 전 문서의
+    # 팩트가 있지만, 검색이 고르지 않은 문서의 수치를 답변에 쓰면 그건
+    # 근거 없는 인용이다.
+    #
+    # query_spec에 실어 두면 L5'와 L4-sub가 **같은 값을 같은 방식으로** 본다.
+    # 생성기마다 따로 넘기면 경로별로 처리가 갈리고 반드시 어긋난다.
+    product_facts = collect_facts(
+        [c.doc_id for c in evidence], store.doc_meta)
+    if product_facts:
+        query_spec["_product_facts"] = product_facts
+        axes = sorted({a for f in product_facts
+                       for a, _l, _s in _fact_lines_of(f)})
+        trace.log("L4_상품팩트",
+                  f"근거 문서 {len(product_facts)}건에서 확정 팩트 확보 "
+                  f"({', '.join(axes)}) — 색인 시점 전수 파싱분")
+
     # ── 슬롯 매핑 ─────────────────────────────────────────────
     slots = extract_required_slots(query_spec)
     slots = map_evidence_to_slots(slots, evidence,
@@ -656,7 +715,8 @@ def _answer_question_impl(question_id: str, question: str,
     if route.is_advisory:
         generate = make_generate_advisory(
             client=client, extra_conditions=extra_conditions,
-            route_reason=route.reason, trace_log=trace.log)
+            route_reason=route.reason, trace_log=trace.log,
+            trap_context=trap_context)
         stage, fallback_note = "L4sub", "확인 항목 안내"
     else:
         generate = make_generate_answer(
@@ -670,7 +730,8 @@ def _answer_question_impl(question_id: str, question: str,
                   f"{'상담 위임' if route.is_advisory else '계산·근거 기반'} "
                   f"경로로 초안 생성")
     elif route.is_advisory:
-        draft = render_advisory_fallback(query_spec, evidence, extra_conditions)
+        draft = render_advisory_fallback(query_spec, evidence, extra_conditions,
+                                         trap_context)
         trace.log("L4sub_예산초과", f"남은 예산 부족 → {fallback_note}로 진행")
     else:
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
@@ -689,6 +750,7 @@ def _answer_question_impl(question_id: str, question: str,
 
     # ── 요구사항 반영 검증 ────────────────────────────────────
     unmet = verify_requirement_coverage(draft, slots, answer_covers_slot, trace=trace)
+    unmet = _drop_covered_by_calc(unmet, slots, trace)
     if unmet:
         draft += ("\n\n※ " + ", ".join(s.description for s in unmet)
                   + " 관련 내용은 제공 자료로 확정하기 어려워 별도 확인이 필요합니다.")
@@ -743,7 +805,8 @@ def _answer_question_impl(question_id: str, question: str,
         trap_ids=trap_context["detected"],
         trap_checks=trap_context.get("checks") or [],
         mentioned_products=mentioned,
-        partial_answer_possible=partial_possible)
+        partial_answer_possible=partial_possible,
+        fact_texts=fact_snippets(query_spec.get("_product_facts") or []))
 
     verdict = verify_grounding(draft, evidence)
     trace.log("L6_감독심사", verdict.as_trace() or "심사 완료")
@@ -764,11 +827,24 @@ def _answer_question_impl(question_id: str, question: str,
         if deadline.allows(BUDGET_REGEN) and not getattr(client, "is_mock", False):
             remediation = build_remediation_prompt(supervision, draft)
             regen_count += 1
-            trace.log("L6_재생성", "REVISE 판정 — 시정 지시와 함께 L5'로 1회 되돌림 "
-                                "(재생성은 1회로 제한)")
+            regen_stage_name = "L4-sub" if route.is_advisory else "L5'"
+            trace.log("L6_재생성",
+                      f"REVISE 판정 — 시정 지시와 함께 {regen_stage_name}로 "
+                      f"1회 되돌림 (재생성은 1회로 제한)")
             try:
-                from app.generation.answer_prompt import SUPERVISOR_SYSTEM_PROMPT
-                revised = client.call(SUPERVISOR_SYSTEM_PROMPT, remediation,
+                # ⚠️ 경로에 맞는 프롬프트를 써야 한다. ADVISORY 답변이 REVISE를
+                #    맞았는데 여기서 SUPERVISOR_SYSTEM_PROMPT(L5' 전용, 계산
+                #    중심 어조)로 재생성하면, 두 생성기가 "이후 검증·인용·
+                #    감독은 한 벌로 공유한다"던 설계 의도가 재생성 단계에서만
+                #    깨진다 — 상담형 답변이 감사에 걸리는 순간 계산형 어조로
+                #    바뀐다(2026-09-03 코드 점검 F3).
+                if route.is_advisory:
+                    from app.generation.advisory import ADVISORY_SYSTEM_PROMPT
+                    regen_system_prompt = ADVISORY_SYSTEM_PROMPT
+                else:
+                    from app.generation.answer_prompt import SUPERVISOR_SYSTEM_PROMPT
+                    regen_system_prompt = SUPERVISOR_SYSTEM_PROMPT
+                revised = client.call(regen_system_prompt, remediation,
                                       purpose="l5_regenerate", max_tokens=1500)
             except Exception as e:
                 revised = ""
@@ -1097,6 +1173,57 @@ def _answer_question_impl(question_id: str, question: str,
 # ════════════════════════════════════════════════════════════════
 # 보조
 # ════════════════════════════════════════════════════════════════
+
+def _drop_covered_by_calc(unmet: list, slots: list,
+                          trace: TraceLogger) -> list:
+    """같은 주제의 계산이 성공한 사실 슬롯은 '확정 불가' 고지에서 뺀다.
+
+    ━━ 왜 필요한가 (2026-09-04 실서버 확인) ━━
+    "계좌에 1억원 있고 연금수령 1년차인데 얼마까지 인출할 수 있나요?"에
+    답변이 1,200만원을 정확히 산출·단정해 놓고 맨 아래에 이렇게 붙였다:
+
+        ※ 연금수령한도 **산정 방식** 관련 내용은 제공 자료로 확정하기
+          어려워 별도 확인이 필요합니다.
+
+    사실과 다르다. `연금수령한도_계산`이 limit=1200.0, denominator=10,
+    **source=doc39**을 냈다 — 산정 방식은 제공 자료에 근거해 이미 산출됐다.
+
+    원인은 `verify_requirement_coverage`가 "LLM 문장이 이 슬롯을 설명했는가"
+    만 보고, 같은 TopicRule에서 쌍으로 생긴 계산 슬롯이 이미 성공했는지는
+    보지 않는 것이다. 슬롯은 `{base}_fact` · `{base}_calc`로 만들어지므로
+    (query_spec.rule_based_spec), base가 같고 계산이 CALC_DONE이면 그
+    주제는 확정된 것이다.
+
+    ⚠️ 고지를 무르는 것이 아니다. 계산이 **실패했거나 없는** 주제의 고지는
+       그대로 남는다 — 없앤 것은 **사실이 아닌 고지**뿐이다. 나이·수령방식에
+       따라 과세율이 갈린다는 다른 고지들도 이 함수와 무관하게 유지된다.
+    """
+    if not unmet:
+        return unmet
+    done_bases = {
+        s.slot_id[:-len("_calc")]
+        for s in slots
+        if s.status == SlotStatus.CALC_DONE and s.slot_id.endswith("_calc")
+    }
+    if not done_bases:
+        return unmet
+
+    kept, dropped = [], []
+    for s in unmet:
+        base = (s.slot_id[:-len("_fact")]
+                if s.slot_id.endswith("_fact") else None)
+        if base and base in done_bases:
+            dropped.append(s)
+        else:
+            kept.append(s)
+
+    if dropped:
+        trace.log("한계고지_교정",
+                  f"계산이 성공한 주제 {len(dropped)}건을 '확정 불가' 고지에서 "
+                  f"제외 (계산 결과가 근거 문서를 출처로 이미 산출함)",
+                  slots=[s.slot_id for s in dropped])
+    return kept
+
 
 def _enforce_critical_traps(draft: str, trap_checks: Optional[list[dict]],
                             trace: TraceLogger) -> str:

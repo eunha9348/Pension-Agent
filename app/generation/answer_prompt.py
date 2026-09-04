@@ -24,6 +24,7 @@ import re
 from typing import Any, Callable, Optional
 
 from app.analysis.conditions import describe_conditions
+from app.analysis.product_facts import render_facts_block
 from app.core.coverage_pipeline import EvidenceChunk, RequirementSlot, SlotStatus
 from app.generation.render import render_calc_result
 
@@ -110,6 +111,13 @@ def build_supervisor_payload(query_spec: dict,
         for s in calc_slots:
             parts.append(f"· {s.description}")
             parts.append(render_calc_result(s.calc_result))
+
+    # 상품 팩트는 근거 문서보다 **먼저** 싣는다. 색인 시점에 문서 전문에서
+    # 결정론적으로 확정한 값이라 신뢰도가 근거 청크보다 높고, 뒤에 두면
+    # 긴 근거 뭉치에 파묻혀 모델이 청크 본문에서 다시 주워 읽는다.
+    if facts_block := render_facts_block(
+            query_spec.get("_product_facts") or []):
+        parts.append(facts_block)
 
     if evidence:
         parts.append("\n[근거 문서 — 이 내용만 사실로 인용 가능]")

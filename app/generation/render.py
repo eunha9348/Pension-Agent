@@ -19,6 +19,8 @@ _LABELS = {
     "special_rule_applied": "2013.3.1 이전 가입 특례 적용",
     "A_tax_credit": "세액공제액",
     "IsLimitExceeded": "연간 납입한도(1,800만원) 초과",
+    "IsPensionSavingLimitExceeded": "연금저축 단독 세액공제 한도(600만원) 초과",
+    "IsCombinedLimitExceeded": "연금저축+IRP 합산 세액공제 한도(900만원) 초과",
     "연금저축_단독_한도": "연금저축 단독 세액공제 한도",
     "연금저축_IRP_합산_한도": "연금저축+IRP 합산 세액공제 한도",
     "연간_총납입한도": "연간 총 납입한도",
@@ -79,7 +81,8 @@ _SKIP_KEYS = {"source", "rate_source", "DEPRECATED", "note", "⚠️", "기준",
 #    "연간 납입한도를 초과했습니다"라고 쓴 사례가 있다(300건 감사 A03).
 #    ⚠️ eligible(가입 가능)처럼 **False가 곧 결론인 키는 넣지 말 것.**
 #    "가입 가능 = 아니오"는 반드시 답변에 실려야 한다.
-_SKIP_IF_FALSE = {"IsLimitExceeded", "special_rule_applied"}
+_SKIP_IF_FALSE = {"IsLimitExceeded", "special_rule_applied",
+                  "IsPensionSavingLimitExceeded", "IsCombinedLimitExceeded"}
 
 
 def _is_rate(key: str, value: float) -> bool:
