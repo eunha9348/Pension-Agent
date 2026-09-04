@@ -1,74 +1,80 @@
 # 연금 Agent
 
 제10회 미래에셋증권 AI Festival · 연금 Agent 트랙 출품작.
-자연어 연금 질의에 대해 **제공 문서 근거로만** 조회·분석·설명하는 AI 에이전트.
+자연어 연금 질의를 **제공 문서 근거로만** 조회·분석·설명하는 AI 에이전트.
 
-> ✅ **현재 상태: CLOVA Studio 실연동 확인 완료 (2026-08-18)**
-> 실제 코퍼스(158문서)·실제 API 키로 L1·L5'·L6 세 곳 모두 HyperCLOVA X
-> 실호출이 성공하는 것을 배포 환경에서 확인했습니다. 자세한 내용은
-> [PROGRESS.md](PROGRESS.md).
+> ✅ CLOVA Studio 실연동 확인 완료(2026-08-18) — 실제 코퍼스·API 키로 L1·L5'·L6
+> 전부 실호출 성공. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
 
 ---
 
-## 0. 평가용 API End-point (필수 제출 정보)
+## 제출 정보
 
-> ⚠️ **09.07~09.20 운영 기간 시작 전, 서버를 배포한 뒤 아래 주소를 실제
-> 값으로 반드시 교체할 것.** 주최측 공지("평가용 API End-point 제출 관련")에
-> 따라 이 값이 곧 제출물이다 — 비워 두거나 localhost로 남겨 두면 평가
-> 담당자가 접근할 수 없다.
+| 항목 | 내용 |
+|---|---|
+| 제출 채널 | 주최 측 GitHub Organization 내 Private Repository Push |
+| 제출물 | ① 소스코드 + Dockerfile/requirements.txt + 본 README &nbsp;·&nbsp; ② 기술제안서 &nbsp;·&nbsp; ③ 평가용 API 서버 정보(End-point + API 명세) |
+| **API End-point** | `http://<배포 서버 공인 IP 또는 도메인>/answer` ← **배포 후 실제 값으로 교체 필수** |
+| 서버 운영 기간 | 09.07 ~ 09.20 (변경 시 공지) — 기간 중 API 상시 활성화 유지 |
+| **제출 마감** | **09.06** — 이후 커밋·push·서버 배포 등 변경 시 **실격** |
 
-```
-GET http://<배포 서버의 공인 IP 또는 도메인>/answer?question_id={id}&question={질의}
-```
-
-- 경로는 `/answer` 고정 (변경 금지)
-- 요청 헤더 없음(인증 헤더 포함 일체 불필요) — 코드도 헤더를 요구하지 않는다
-- 기본 포트: HTTP 80 (`docker-compose.yml`의 `HOST_PORT` 기본값이 80으로
-  맞춰져 있다 — `docker compose up -d`만으로 표준 포트 요건을 충족한다)
-- HTTPS로 구성 시 443 + 자체 서명 인증서 가능(주최측 안내대로 허용됨).
-  이 경우 위 주소를 `https://...`로 바꿔 적을 것
-- 응답 지연: 파이프라인 예산 상한 `PIPELINE_BUDGET_SEC`(기본 55초)이
-  주최측 타임아웃(300초)에 여유 있게 들어온다
-- 주최측 발신 IP 대역이 공지되면, 필요 시 방화벽에서 해당 대역만
-  허용하도록 구성 가능(선택 사항 — 코드 변경 불필요)
+- 경로 `/answer` 고정, 요청 헤더(인증 포함) 불필요
+- 표준 포트: HTTP 80 / HTTPS 443(자체 서명 인증서 가능) — `docker compose up -d`만으로 80 포트 충족(`HOST_PORT`로 변경 가능)
 
 ---
 
-## 1. 빠른 시작
+## API 명세
+
+```
+GET /answer?question_id={id}&question={질의}
+```
+
+```bash
+curl -G "http://<end-point>/answer" \
+  --data-urlencode "question_id=Q-001" \
+  --data-urlencode "question=연금저축과 IRP 합쳐서 세액공제 얼마까지 되나요"
+```
+
+응답 (200 · `application/json` · 5필드 전부 문자열):
+
+```json
+{
+  "question_id": "Q-001",
+  "question": "평가 질의 원문",
+  "retrieved_context": "답변 생성에 참고한 검색 문서",
+  "think_trace": "사고·추론·도구 사용 과정",
+  "answer": "최종 생성 답변"
+}
+```
+
+내부에서 어떤 예외가 나도 이 스키마와 200 OK는 깨지지 않습니다.
+
+---
+
+## 빠른 시작
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env        # ← CLOVA_API_KEY 를 여기에 넣으세요
-
-python -m app.ingest.build_index      # 문서 인제스트 + 검색 인덱스 생성
+cp .env.example .env                  # CLOVA_API_KEY 입력
+python -m app.ingest.build_index      # 인덱스 생성
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
-
-평가 API 호출:
-
-```bash
-curl "http://localhost:8000/answer?question_id=Q-001&question=연금저축과 IRP 합쳐서 세액공제 얼마까지 되나요"
-```
-
-응답은 항상 5필드 JSON입니다 — `question_id`, `question`, `retrieved_context`,
-`think_trace`, `answer`. 내부에서 어떤 예외가 나도 이 스키마는 깨지지 않습니다.
 
 ### Docker (권장)
 
 ```bash
-cp .env.example .env                              # CLOVA_API_KEY 입력
+cp .env.example .env
 mkdir -p data/corpus && cp <제공 문서> data/corpus/
 
-docker compose --profile tools run --rm smoke     # ① 키 검증
-docker compose --profile tools run --rm check     # ② 문서 판독 확인
-docker compose up -d --build                      # ③ 구동
+docker compose --profile tools run --rm smoke   # ① 키 검증 — 건너뛰지 말 것
+docker compose --profile tools run --rm check   # ② 문서 판독 확인
+docker compose up -d --build                    # ③ 구동 (컨테이너 8000 → 호스트 80)
 ```
 
-문서는 볼륨으로 마운트되므로, 문서를 바꿔도 이미지를 다시 빌드할 필요가 없습니다
-(`... run --rm reindex` 후 `docker compose restart`).
-자세한 내용은 [docs/DEPLOY.md](docs/DEPLOY.md).
+문서는 볼륨 마운트라 교체해도 이미지 재빌드 불필요(`run --rm reindex` 후 재시작).
+전체 배포 절차는 [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ### 테스트
 
@@ -78,182 +84,116 @@ python -m pytest -q
 
 ---
 
-## 2. CLOVA API 키 넣는 자리 (단 한 곳)
+## CLOVA API 키
 
-> **키는 GitHub에 올리지 않습니다.** `.env`는 `.gitignore`에 있어 추적되지 않고,
-> 저장소에는 값이 빈 `.env.example`만 있습니다. 키는 **서버에서 직접** 넣습니다.
+`.env`의 `CLOVA_API_KEY` **한 곳만** 채우면 됩니다. 키는 저장소에 올라가지 않습니다
+(`.env`는 `.gitignore`, 저장소엔 빈 `.env.example`만 존재).
 
-`.env` 파일의 `CLOVA_API_KEY` **한 곳만** 채우면 됩니다.
-
-```
-CLOVA_API_KEY=<여기에 발급받은 키>
-CLOVA_ENDPOINT=https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005
-LLM_MODE=auto
-```
-
-엔드포인트는 v3가 기본값입니다. v1(`/testapp/v1/...`)을 쓰면 요청 파라미터
-이름이 다른데, **코드가 URL을 보고 자동으로 맞춥니다** — 경로만 바꾸면 됩니다.
-
-### 키가 두 종류입니다 — `nv-`로 시작하지 않으면 엔드포인트도 바꿔야 합니다
-
-CLOVA Studio 키는 발급 시기/방식에 따라 형식이 다릅니다.
-
-| 키 형식 | 인증 방식 | 쓸 수 있는 엔드포인트 |
+| 키 형식 | 인증 방식 | 엔드포인트 |
 |---|---|---|
-| `nv-`로 시작 | `Authorization: Bearer` | v3 (`/v3/chat-completions/HCX-005`) |
-| 그 외 (구형 콘솔 키) | `X-NCP-CLOVASTUDIO-API-KEY` 헤더 | v1 — 콘솔에서 발급받은 **그 테스트앱/서비스앱의 실제 호출 URL** (`/testapp/v1/...` 또는 `/serviceapp/v1/...`) |
+| `nv-`로 시작 (신형) | `Authorization: Bearer` | v3 `.../v3/chat-completions/HCX-005` (기본값) |
+| 그 외 (구형 콘솔 키) | `X-NCP-CLOVASTUDIO-API-KEY` | v1 — 콘솔에 표시된 테스트앱/서비스앱 실제 URL |
 
-`app/llm/clova.py`가 키 접두사를 보고 인증 헤더를 자동으로 고릅니다 — 코드를
-고칠 필요는 없습니다. 다만 **엔드포인트는 자동으로 못 바꿔줍니다.** v3는
-Bearer(`nv-`) 키만 받기 때문에, 구형 키로 v3 URL을 그대로 두면 헤더를 아무리
-맞춰도 401(`Invalid Key`)이 납니다 — 이 조합이면 클라이언트 생성 시점에
-바로 에러 메시지로 알려줍니다. 이 경우 `CLOVA_ENDPOINT`를 콘솔에 표시된
-해당 앱의 실제 요청 URL로 바꾸십시오. 콘솔에 `API Gateway Key`가 API Key와
-별도로 함께 발급돼 있다면 `CLOVA_APIGW_KEY`에도 넣으십시오(신형 키에는 필요
-없습니다).
+`app/llm/clova.py`가 키 접두사로 인증 헤더를 자동 판별합니다. 엔드포인트만 키
+형식에 맞게 `.env`에서 바꾸면 됩니다(구형 키로 v3 URL을 두면 기동 시 즉시 에러).
 
-배포(로컬·NCP 서버·Docker) 전체 절차는 **[docs/DEPLOY.md](docs/DEPLOY.md)** 참고.
-
-- `LLM_MODE=auto`(기본) — 키가 있으면 실제 호출, 없으면 자동으로 mock
-- 키를 넣은 뒤 **가장 먼저** 스모크 테스트로 응답 형식과 지연시간을 측정하세요:
+키를 넣은 뒤 가장 먼저 실행:
 
 ```bash
 python -m app.llm.smoke_test
 ```
 
-이 스크립트는 요청/응답 원문과 지연시간을 출력하고, 측정된 지연을 근거로
-단계별 타임아웃을 어떻게 재배분해야 하는지 함께 제안합니다.
-
-mock 모드로 동작 중일 때는 API 응답의 `think_trace` 서두와 서버 기동 로그에
-`[MOCK LLM]` 배너가 찍히므로, 실연동 여부를 눈으로 바로 확인할 수 있습니다.
+mock으로 동작 중이면 응답 `think_trace`와 서버 로그에 `[MOCK LLM]` 배너가 찍힙니다.
+`LLM_MODE=auto`(기본)는 키가 없으면 조용히 mock으로 전환 — 운영 배포(`docker-compose.yml`)는
+`LLM_MODE=real`로 고정해 이 경로를 막아 둡니다.
 
 ---
 
-## 3. 아키텍처
+## 아키텍처
 
-```
-L0  사전 검색      app/retrieval/coarse.py + core/grounding_retrieval.py   LLM 없음
-L1  질의 분석      app/analysis/query_spec.py                              HyperCLOVA X
-1.5 계획 감사      core/supervisory_board.supervise_plan()                 LLM 없음
-L2  함정 감지      core/trap_rules.py (26종)                               LLM 없음
-L3  Exploration    app/retrieval/hybrid.py + rerank.py (BM25+벡터 RRF)     LLM 없음
-L4  Exploitation   app/pipeline.py _exploit()                              LLM 없음
-L5  Prediction     core/pension_calc_functions.py (15종)                   LLM 없음
-L5' Supervisor     app/generation/answer_prompt.py                         HyperCLOVA X
-L6  감독 이사회    core/supervisory_board.supervise_hybrid()               HyperCLOVA X
-```
+정상 경로 LLM 호출은 **L1 · 생성(L5'/L4-sub) · L6 세 곳뿐**. 나머지는 결정론적 코드입니다.
 
-LLM 호출은 **L1 · L5' · L6 세 곳뿐**입니다. 나머지는 전부 결정론적 코드입니다.
+| 계층 | 역할 | LLM | 구현 |
+|---|---|---|---|
+| L0 | 사전 분류 — 영역·용어 수집, 거절 권한 없음 | – | `core/grounding_retrieval.py` |
+| 안전 게이트 | 빈 질의·개인정보조회·프롬프트 인젝션만 차단 | – | `analysis/refusal.py` |
+| L1 | 질의 분석 | HyperCLOVA X | `analysis/query_spec.py` |
+| 경로 분류 | GENERAL(계산) / ADVISORY(상담) 결정 | – | `analysis/routing.py` |
+| 1.5 | 계획 감사 — 화이트리스트 검증 | – | `core/supervisory_board.py` |
+| L2 | 함정 감지 (28종) | – | `core/trap_rules.py` |
+| L3 ∥ L4 | 하이브리드 검색 ∥ 가입자격 판정 (병렬, barrier 합류) | – | `retrieval/hybrid.py` |
+| L5 | 계산 (15종, CALC_REGISTRY) | – | `core/pension_calc_functions.py` |
+| L5' / L4-sub | 조건부 설명 생성 / 상담 답변 | HyperCLOVA X | `generation/answer_prompt.py`, `advisory.py` |
+| L6 | 감독 이사회 — 결정론 5대 감사 + 의미 감사 | HyperCLOVA X | `core/supervisory_board.py` |
+| Sub-Agent | 전 구간 이상 감지, 트리거 시에만 구제 재작성 | 이상 시만 | `core/sub_agent.py` |
 
-원칙 5가지는 [CLAUDE.md](CLAUDE.md)에 있으며, 구현 시 위반 금지입니다.
-특히 **L6의 권한 계층**(LLM은 심각도를 올릴 수만 있음)은 리팩터링 시에도
-`merge_supervision()`에서 반드시 보존해야 합니다.
+L6 권한 계층(LLM은 심각도만 올릴 수 있음, 단조성)은 `merge_supervision()`에서 리팩터링
+시에도 반드시 보존합니다. 전체 설계 원칙은 [CLAUDE.md](CLAUDE.md) 참고.
 
 ---
 
-## 4. 검색 백엔드
+## 검색 백엔드
 
-기본은 **파일 기반 인덱스 + 순수 파이썬 BM25**입니다. 외부 DB가 필요 없습니다.
+기본은 **파일 인덱스 + 순수 파이썬 BM25**(외부 DB 불필요). 재빌드는
+`python -m app.ingest.build_index`.
 
-- 인덱스 위치: `data/index/`
-- 재빌드: `python -m app.ingest.build_index`
-
-PostgreSQL(pgvector/tsvector)로 전환하려면 `sql/schema.sql`로 초기화하고
-`.env`의 `DATABASE_URL`을 채우십시오. 검색 인터페이스가 동일하므로
-`app/retrieval/hybrid.py`의 백엔드만 교체하면 됩니다.
-
-### 임베딩 (타사 모델 사용 허용 · 2026-08-19 확인)
-
-임베딩은 **검색 순위용 벡터**일 뿐 답변 문장을 만들지 않으므로 대회 제약
-밖입니다. ⚠️ 답변을 만드는 **L1·L5'·L6 세 호출만은 HyperCLOVA X 전용**입니다.
+임베딩(타사 모델 허용 · 답변 생성엔 미사용이라 제약 밖)을 켜면 BM25+벡터 RRF로 융합됩니다:
 
 ```bash
-python -m app.ingest.build_index        # ① 인덱스
-python -m app.ingest.build_embeddings   # ② 청크 벡터
+python -m app.ingest.build_embeddings
 ```
 
-백엔드는 두 가지입니다(`EMBEDDING_BACKEND`):
-
-| | 소요 | 제약 |
-|---|---|---|
-| **local** (기본) | 8천 청크 **몇 분** | 라이브러리 설치 필요(`requirements-embedding.txt`), 모델 ~470MB |
-| clova | **2시간+** | 건당 1회 호출 + 속도 제한(429)으로 자주 끊김 |
-
-청크 본문 해시가 같으면 다시 만들지 않으므로, 문서를 일부만 바꿔도 그 부분만
-갱신됩니다. 벡터는 `data/index/vectors.bin`에 float32로 저장됩니다(numpy 불필요).
-
-**벡터가 없으면 자동으로 BM25 단독으로 돌아갑니다** — 에러가 아니므로
-급하면 임베딩 없이 먼저 띄워도 됩니다. 현재 상태는 `GET /health`의
-`retrieval` 항목에서 확인하십시오.
-
-### 검색 후처리
-
-BM25/벡터 순위를 그대로 근거로 쓰지 않습니다(`app/retrieval/rerank.py`):
-
-- **중복 제거** — 투자설명서 158건에 같은 조항이 반복돼, 안 하면 근거 8칸을
-  한 문장이 독점합니다
-- **문서 다양성** — 한 문서에서 최대 2청크 (후보가 모자라면 완화)
-- **연혁·목차 강등** — 제거가 아니라 강등입니다. "언제 신설됐나요" 같은
-  질의에서는 연혁이 정답이기 때문입니다
-- **함정 유도 검색** — L2가 감지한 함정의 근거 문서를 별도로 훑어 슬롯을
-  예약합니다. 함정 규칙은 자기 근거 문서를 알고 있고(`TrapRule.source`),
-  L2가 L3보다 먼저 돌기 때문에 가능합니다
+- 로컬 백엔드(기본): `requirements-embedding.txt` 필요. Docker는
+  `WITH_EMBEDDING=true docker compose build agent embed`로 이미지에 포함
+- 벡터가 없으면 자동으로 BM25 단독 축퇴(에러 아님) — `GET /health`의 `retrieval`에서 확인
+- PostgreSQL/pgvector 전환 시 `sql/schema.sql` + `.env`의 `DATABASE_URL`
 
 ---
 
-## 5. 문서 인제스트
+## 문서 인제스트
 
-제공 문서의 기본 형태는 **PDF가 아니라 페이지별 JPEG + OCR 텍스트가 담긴 zip**입니다.
-일반 PDF 라이브러리로 열면 안 됩니다 — `zipfile`로 구조를 먼저 확인합니다.
-
-### 실제 문서를 넣는 순서
+제공 문서 기본형은 **페이지별 JPEG + OCR 텍스트 zip**입니다.
 
 ```bash
-mkdir -p data/corpus
-cp <제공받은 파일들> data/corpus/          # 하위 디렉터리 그대로 넣어도 됩니다
-
-python -m app.ingest.check_corpus          # ① 무엇이 읽히는지 먼저 확인 (필수)
-python -m app.ingest.build_index           # ② 인덱스 생성
+mkdir -p data/corpus && cp <제공 문서> data/corpus/
+python -m app.ingest.check_corpus     # 판독 확인 (필수 — 건너뛰지 말 것)
+python -m app.ingest.build_index
 ```
 
-**`check_corpus`를 건너뛰지 마십시오.** 파일을 넣었다는 것과 그 내용이
-검색된다는 것은 다릅니다. 스캔본 PDF처럼 텍스트 레이어가 없는 파일은
-넣어도 0자로 읽히고, 그 상태로 평가를 받으면 근거 없이 거절만 하게 됩니다.
+| 형식 | 지원 |
+|---|---|
+| `.zip`(JPEG+OCR), `.txt/.md/.csv/.tsv/.json/.html` | ✅ |
+| `.xlsx` | ✅ (`openpyxl`) |
+| `.pdf` | ✅ (`pypdf`, 스캔본은 텍스트 레이어 필요) |
+| `.hwp/.docx/.pptx` | ❌ 변환 후 투입 |
 
-`data/corpus/`에 파일이 하나라도 있으면 **mock 코퍼스는 절대 사용되지 않습니다.**
-판독 가능한 파일이 하나도 없으면 인덱스를 만들지 않고 실패합니다
-(지어낸 문서로 답변하는 사고를 막기 위해서입니다).
-
-### 형식별 지원
-
-| 형식 | 지원 | 비고 |
-|---|---|---|
-| `.zip` (JPEG+OCR) | ✅ | 레이아웃 4종 자동 인식 |
-| `.txt` `.md` `.csv` `.tsv` `.json` `.html` | ✅ | 표준 라이브러리만 사용 |
-| `.xlsx` | ✅ | `openpyxl` 필요 (requirements에 포함) |
-| `.pdf` | ✅ | `pypdf` 필요. **스캔본은 텍스트가 없어 OCR 결과가 별도로 필요** |
-| `.hwp` `.docx` `.pptx` | ❌ | PDF/텍스트로 변환 후 넣으십시오 |
-
-판독하지 못한 파일은 조용히 넘어가지 않고 빌드 로그와 `GET /health`의
-`corpus.skipped_files`에 남습니다.
-
-개발용 mock 코퍼스는 `python -m app.ingest.make_mock_corpus`로 만듭니다.
+`data/corpus/`에 파일이 있으면 mock 코퍼스는 쓰이지 않습니다. 판독 실패 파일은
+`GET /health`의 `corpus.skipped_files`에 남습니다.
 
 ---
 
-## 6. 디렉터리
+## 디렉터리
 
 ```
 app/
-  config.py            환경 설정
-  core/                이미 검증된 7개 모듈 (계산·함정·검증·감독·인용·L0·커버리지)
-  llm/clova.py         CLOVA Studio 클라이언트 + mock 폴백
-  ingest/              zip 파서 · 청킹 · 메타데이터 · 인덱스 빌드
-  retrieval/           BM25 · L0 개략검색 · L3 하이브리드 검색
-  analysis/            L1 질의 분석 · 슬롯 매칭 · 계산 인자 조립
-  generation/          L5' 답변 프롬프트 · 근거 검증 래퍼
-  pipeline.py          6계층 통합
-  main.py              GET /answer · GET /health
-sql/schema.sql         PostgreSQL 스키마 (선택)
-tests/                 회귀 테스트
+  config.py       환경 설정 (.env 로더)
+  core/           계산·함정·검증·감독·인용·L0·Sub-Agent (8개 모듈)
+  llm/clova.py    CLOVA Studio 클라이언트 + mock 폴백
+  ingest/         zip 파서 · 청킹 · 메타데이터 · 인덱스 빌드
+  retrieval/      BM25 · L0 개략검색 · L3 하이브리드 검색
+  analysis/       L1 질의분석 · 라우팅 · 슬롯 매칭 · 계산 인자 조립
+  generation/     L5'/L4-sub 답변 생성 · 근거 검증 래퍼
+  law/            법령 수집 · 앵커 · 인용 검증
+  pipeline.py     L0~L6 통합
+  main.py         GET /answer · GET /health
+sql/schema.sql    PostgreSQL 스키마 (선택)
+tests/            회귀 테스트 1,023건 + 자체 평가셋 42문항
 ```
+
+## 의존성
+
+- 런타임(`requirements.txt`): fastapi, uvicorn, pydantic, httpx — 검증·검색 계층은
+  외부 모델 의존 없음(대회 제약)
+- 선택: `pypdf`/`openpyxl`(문서 판독), `psycopg`/`pgvector`(PostgreSQL 백엔드),
+  `pytest`(테스트)
+- 로컬 임베딩(선택, `requirements-embedding.txt`): `sentence-transformers`, `torch`(CPU 휠)
