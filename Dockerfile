@@ -6,6 +6,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# 재OCR 엔진(app/ingest/reocr.py) — 교차 문서 대조로 못 메운 판독 실패
+# 페이지를 원본 이미지에서 다시 읽을 때 쓴다. 없어도 기동은 되고 재OCR만
+# 건너뛴다(pytesseract가 정직하게 "엔진 없음"으로 보고한다) — apt 설치가
+# 막힌 환경에서도 서비스 전체가 죽지 않게 하기 위해서다.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tesseract-ocr tesseract-ocr-kor \
+    && rm -rf /var/lib/apt/lists/*
+
 # 의존성 레이어 분리 — 소스만 바뀌면 재설치하지 않는다
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
