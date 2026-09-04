@@ -182,6 +182,92 @@ def test_저장소가_비면_저촉_검사를_하지_않는다():
     assert any("비어 있어" in t for t in trace)
 
 
+# ── 제공 문서 우선 (과제 안내 6페이지) ──────────────────────
+#
+# "기본 연금제도 자료에 한해 외부데이터 수집이 가능합니다. 단, **제공자료가
+#  최종근거이며, 외부정보는 보조로만 쓰고 상충 시 제공자료 우선**"
+#
+# 법령은 법제처에서 수집한 외부 자료다. 조문과 제공 문서가 어긋날 때
+# 조문을 이유로 답변을 고치라고 하면 이 규칙을 정면으로 위반한다.
+#
+# 저촉을 채택하는 경우는 하나뿐이다:
+#   **제공 문서와도 맞지 않고 법령과도 맞지 않을 때.**
+
+def test_제공문서가_뒷받침하면_저촉을_폐기한다(store):
+    """★ 이 검사의 핵심 — 외부 법령이 제공 자료를 뒤집지 못한다."""
+    evidence = ["연간 연금소득이 1,500만원을 넘으면 초과분에 대해서만 "
+                "종합과세됩니다. 나머지는 그대로 분리과세됩니다."]
+    kept, trace = verify_conflicts(store, _BAD_ANSWER, _claim(),
+                                   evidence_texts=evidence)
+    assert kept == [], "제공 문서가 뒷받침하는 서술을 조문으로 뒤집었다"
+    assert any("제공 문서 우선" in t for t in trace), trace
+
+
+def test_제공문서와도_법령과도_안_맞으면_채택한다(store):
+    """★ 사용자 지정 규칙의 나머지 절반 — 이때는 명확히 수정한다."""
+    evidence = ["연금저축 가입자격은 제한이 없습니다."]   # 전혀 다른 주제
+    kept, trace = verify_conflicts(store, _BAD_ANSWER, _claim(),
+                                   evidence_texts=evidence)
+    assert len(kept) == 1, trace
+    assert "제공 문서와도 어긋남" in " ".join(trace)
+
+
+def test_근거가_0건이면_저촉을_그대로_본다(store):
+    """뒷받침할 제공 문서 자체가 없으면 우선순위를 적용할 대상이 없다."""
+    kept, _ = verify_conflicts(store, _BAD_ANSWER, _claim(), evidence_texts=[])
+    assert len(kept) == 1
+
+
+def test_지목문장이_근거에_그대로_있으면_폐기한다(store):
+    """가장 강한 뒷받침 신호 — 원문 그대로 존재."""
+    evidence = ["안내드립니다. 초과분에 대해서만 종합과세됩니다. 참고하십시오."]
+    kept, trace = verify_conflicts(store, _BAD_ANSWER, _claim(),
+                                   evidence_texts=evidence)
+    assert kept == []
+    assert any("그대로 존재" in t for t in trace)
+
+
+def test_수치가_근거에_없으면_제공문서_미뒷받침이다(store):
+    """지목 문장의 수치가 제공 문서에 없으면 제공 문서와도 어긋난 것이다."""
+    from app.law.citation_guard import corpus_supports_span
+
+    ok, why = corpus_supports_span(
+        "연금소득 3,700만원까지 분리과세됩니다",
+        ["연간 연금소득 1,500만원 이하는 분리과세 대상입니다."])
+    assert not ok
+    assert "3700" in why.replace(",", "") or "3700.0" in why
+
+
+def test_수치가_전부_근거에_있으면_뒷받침이다():
+    from app.law.citation_guard import corpus_supports_span
+
+    ok, _ = corpus_supports_span(
+        "연금소득 1,500만원까지 분리과세됩니다",
+        ["연간 연금소득 1,500만원 이하인 경우 분리과세 대상입니다."])
+    assert ok
+
+
+def test_수치_주장이_없으면_같은_주제_근거로_판단한다():
+    """★ 수치가 없으면 조문과의 어긋남을 결정론적으로 말할 수 없다.
+    그 판단은 의미 감사와 함정 규칙의 몫이다."""
+    from app.law.citation_guard import corpus_supports_span
+
+    ok, why = corpus_supports_span(
+        "연금소득은 분리과세를 선택할 수 있습니다",
+        ["연금소득의 분리과세 선택에 관한 안내입니다. 연금수령 시 적용됩니다."])
+    assert ok
+    assert "결정론적으로 판정할 수 없음" in why
+
+
+def test_무관한_근거만_있으면_뒷받침이_아니다():
+    from app.law.citation_guard import corpus_supports_span
+
+    ok, _ = corpus_supports_span(
+        "연금소득은 분리과세를 선택할 수 있습니다",
+        ["도로관리청은 도로의 구조를 보전하여야 합니다."])
+    assert not ok
+
+
 def test_필수_필드가_빠진_주장은_파싱에서_버려진다():
     assert parse_law_conflicts([{"law_ref": "x", "quote": "y"}]) == []
     assert parse_law_conflicts([{"answer_span": "z"}]) == []

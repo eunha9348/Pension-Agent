@@ -155,6 +155,42 @@ def test_지어낸_저촉은_등급을_바꾸지_못한다():
         "답변에 없는 문장을 지목한 저촉이 채택됐다"
 
 
+def test_제공문서_우선이_공개진입점까지_배선돼_있다():
+    """★ 과제 안내 6페이지 — 외부 법령이 제공 자료를 뒤집지 못한다.
+
+    부품(verify_conflicts)만 고쳐 두고 호출자가 evidence를 안 넘기면
+    이 규칙은 실제로는 꺼져 있다. 배선을 지나가는 테스트로 고정한다.
+    """
+    a = _Auditor(conflicts=[{
+        "law_ref": "시험소득세법 제14조 제3항", "quote": _QUOTE,
+        "answer_span": _SPAN, "conflict": "조문은 합계액 전체를 대상으로 한다"}])
+
+    # 근거 문서가 답변과 같은 말을 하고 있다 → 제공 문서 우선으로 폐기돼야 한다
+    backing = [EvidenceChunk(doc_id="doc1", score=0.9, text=_ANSWER)]
+    vg = make_verify_grounding(question=_QUESTION, slots=[], llm_call=a,
+                               citations=["근거1"], trap_ids=[], trap_checks=[])
+    v = vg(_ANSWER, backing)
+
+    codes = [(f.auditor, f.code) for f in v.supervision.findings]
+    assert ("법령저촉", "LAW_CONFLICT") not in codes, (
+        f"제공 문서가 뒷받침하는 답변을 외부 조문으로 뒤집었다: {codes}")
+    assert any("제공 문서 우선" in f.detail
+               for f in v.supervision.findings), (
+        "폐기 사유가 기록되지 않았다 — 조용히 사라지면 추적할 수 없다")
+
+
+def test_제공문서와도_어긋나면_공개진입점에서도_채택된다():
+    """★ 나머지 절반 — 이때는 명확한 수정이 일어나야 한다."""
+    a = _Auditor(conflicts=[{
+        "law_ref": "시험소득세법 제14조 제3항", "quote": _QUOTE,
+        "answer_span": _SPAN, "conflict": "조문은 합계액 전체를 대상으로 한다"}])
+    v = _verify(a, trap_ids=[])      # _EVIDENCE 는 답변과 무관한 내용
+
+    codes = [(f.auditor, f.code) for f in v.supervision.findings]
+    assert ("법령저촉", "LAW_CONFLICT") in codes, codes
+    assert v.supervision.verdict == Verdict.REVISE
+
+
 def test_LLM_호출은_여전히_1회다():
     """★ 저촉 검사를 별도 호출로 만들면 단일 GET의 예산이 무너진다."""
     a = _Auditor(conflicts=[{

@@ -1198,6 +1198,7 @@ def _apply_law_judgements(raw: str,
 def _apply_law_conflicts(raw: str,
                          answer: str,
                          det: SupervisionResult,
+                         evidence_texts: Optional[list[str]] = None,
                          ) -> tuple[SupervisionResult, list[str], list]:
     """답변–조문 저촉 주장을 검증해 반영한다. (판정, 기록, 채택된 저촉)
 
@@ -1226,7 +1227,8 @@ def _apply_law_conflicts(raw: str,
         if not claims:
             return det, trace, []
 
-        kept, verify_trace = verify_conflicts(get_store(), answer, claims)
+        kept, verify_trace = verify_conflicts(get_store(), answer, claims,
+                                              evidence_texts=evidence_texts)
         trace += verify_trace
         if not kept:
             return det, trace, []
@@ -1317,7 +1319,7 @@ def supervise_hybrid(answer: str,
     # 에서 답변이 법령에 어긋나도 아무도 보지 않는 상태로 되돌아간다.
     if law_articles:
         det, conflict_trace, kept_conflicts = _apply_law_conflicts(
-            raw, answer, det)
+            raw, answer, det, evidence_texts=evidence_texts)
         for line in conflict_trace:
             det.findings.append(Finding("법령저촉", "TRACE", det.verdict,
                                         line, ""))

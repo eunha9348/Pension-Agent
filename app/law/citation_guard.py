@@ -26,6 +26,7 @@ HCX에게 "이 함정이 이 질의에 적용되는가"를 조문을 보고 판�
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from app.law.schema import (MIN_QUOTE_CHARS, MIN_SPAN_CHARS, CitationCheck,
                             LawArticle, LawConflict, LawJudgement,
@@ -153,9 +154,80 @@ def parse_law_conflicts(data: object) -> list[LawConflict]:
     return out
 
 
+def corpus_supports_span(span: str,
+                         evidence_texts: list[str]) -> tuple[bool, str]:
+    """이 답변 문장이 **제공 문서**로 뒷받침되는가. (뒷받침 여부, 사유)
+
+    ━━ 왜 필요한가 (과제 안내 6페이지) ━━
+    "기본 연금제도 자료에 한해 외부데이터 수집이 가능합니다. 단, **제공자료가
+    최종근거이며, 외부정보는 보조로만 쓰고 상충 시 제공자료 우선**"
+
+    법령은 법제처에서 수집한 **외부** 자료다. 따라서 조문과 제공 문서가
+    어긋날 때 조문을 이유로 답변을 뜯어고치면 이 규칙을 정면으로 위반한다.
+    제공 문서가 더 구체적이거나 다른 시점 기준일 수 있고, 무엇보다
+    **평가의 최종 근거는 제공 자료**다.
+
+    ━━ 판정을 코드가 한다 ━━
+    프롬프트로 "제공 문서를 우선하라"고 적는 것만으로는 부족하다. 그건
+    LLM 재량에 판정을 맡기는 것이고, 이 프로젝트의 "판단은 코드, 문장은
+    LLM" 원칙에 어긋난다. 그래서 여기서 결정론적으로 거른다.
+
+    ━━ 세 단계로 본다 (느슨한 쪽이 안전하다) ━━
+    ① 정규화 후 근거에 그대로 있으면          → 뒷받침 (가장 강한 신호)
+    ② 문장의 수치가 **전부** 근거에 있고
+       도메인 용어도 겹치면                    → 뒷받침
+    ③ 수치 주장이 없고 같은 주제의 근거가 있으면 → 뒷받침
+       (수치가 없으면 조문과 '어긋난다'를 결정론적으로 말할 수 없다.
+        그 판단은 의미 감사와 함정 규칙의 몫이다.)
+
+    판정이 애매하면 **뒷받침으로 본다.** 저촉 오탐은 강제 재생성 + 강등을
+    부르는데 결정론 계층의 판정은 되돌릴 수 없기 때문이다(단조성).
+    """
+    from app.analysis.vocab import domain_hits, key_terms
+    from app.core.numeric_verifier import _matches, extract_numbers
+
+    if not evidence_texts:
+        # 근거가 하나도 없으면 뒷받침할 제공 문서 자체가 없다.
+        # 이 경우는 "제공 문서와도 안 맞고 법령과도 안 맞는" 상태이므로
+        # 저촉 판정을 통과시킨다 — 사용자가 지시한 바로 그 경우다.
+        return False, "제공 근거가 0건이라 뒷받침할 문서가 없음"
+
+    norm_span = normalize_for_match(span)
+    norm_ev = [normalize_for_match(t) for t in evidence_texts]
+
+    # ① 그대로 존재하는가
+    for i, ev in enumerate(norm_ev):
+        if norm_span and norm_span in ev:
+            return True, "지목된 문장이 근거 문서에 그대로 존재"
+
+    span_terms = domain_hits(key_terms(span))
+    ev_terms = [domain_hits(key_terms(t)) for t in evidence_texts]
+
+    # ② 수치 주장이 근거로 뒷받침되는가
+    span_nums = extract_numbers(span)
+    if span_nums:
+        allowed: set[float] = set()
+        for t in evidence_texts:
+            allowed |= extract_numbers(t, include_trivial=True)
+        ungrounded = [n for n in span_nums if not _matches(n, allowed)]
+        if ungrounded:
+            return False, (f"지목된 문장의 수치 {ungrounded} 가 제공 문서에 없음 "
+                           f"— 제공 문서와도 어긋남")
+        if any(span_terms & et for et in ev_terms):
+            return True, "지목된 문장의 수치가 전부 근거 문서에 존재"
+        return False, "수치는 근거에 있으나 같은 주제의 근거가 아님"
+
+    # ③ 수치 주장이 없는 경우
+    if any(len(span_terms & et) >= 2 for et in ev_terms):
+        return True, ("수치 주장이 없고 같은 주제의 근거가 존재 — "
+                      "조문과의 어긋남을 결정론적으로 판정할 수 없음")
+    return False, "같은 주제의 근거 문서를 찾지 못함"
+
+
 def verify_conflicts(store: LawStore,
                      answer: str,
                      conflicts: list[LawConflict],
+                     evidence_texts: Optional[list[str]] = None,
                      ) -> tuple[list[LawConflict], list[str]]:
     """저촉 주장을 검증해 (통과분, 감사기록)을 돌려준다.
 
@@ -206,11 +278,32 @@ def verify_conflicts(store: LawStore,
             continue
 
         c.span_ok = True
+
+        # ③ **제공 문서 우선** (과제 안내 6페이지)
+        #
+        # 법령은 외부 수집 자료이고 제공 문서가 최종 근거다. 지목된 답변
+        # 문장이 제공 문서로 뒷받침된다면, 조문과 다르다는 이유로 그 답변을
+        # 고치라고 할 수 없다 — 그건 외부 자료로 제공 자료를 뒤집는 것이다.
+        #
+        # 저촉을 채택하는 경우는 하나뿐이다:
+        #   **제공 문서와도 맞지 않고 법령과도 맞지 않을 때.**
+        supported, why = corpus_supports_span(c.answer_span,
+                                              evidence_texts or [])
+        if supported:
+            c.verified = False
+            c.reason = f"제공 문서 우선 — {why}"
+            trace.append(
+                f"[저촉] 주장 폐기(제공 문서 우선) — {check.article.ref}와 "
+                f"어긋난다고 지목했으나 {why}. 외부 법령보다 제공 자료가 "
+                f"최종 근거이므로 판정하지 않음")
+            continue
+
         c.verified = True
-        c.reason = "조문·답변 양쪽 인용 확인"
+        c.reason = f"조문·답변 양쪽 인용 확인 + 제공 문서 미뒷받침({why})"
         kept.append(c)
         trace.append(f"[저촉] 주장 채택 — {check.article.ref}: "
-                     f"답변의 {c.answer_span[:40]!r} 부분")
+                     f"답변의 {c.answer_span[:40]!r} 부분 "
+                     f"(제공 문서와도 어긋남: {why})")
 
     return kept, trace
 
