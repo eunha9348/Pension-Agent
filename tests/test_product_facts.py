@@ -245,6 +245,17 @@ def test_이율로_오인하기_쉬운_것을_거부한다(label, text):
     assert extract_product_facts(text, "x").guaranteed_rate is None, label
 
 
+@pytest.mark.parametrize("text", [
+    # ★ 실물 158문서에서 '약정이율' 25회가 전부 이 형태였다 —
+    #    위험 고지문이고 수치가 없다. 이 코퍼스에 원리금보장형 상품
+    #    문서가 없다는 뜻이므로 0건이 올바른 동작이다.
+    "자산의 경우 시장매각이 제한되고, 중도해지 시 약정이율의 축소 적용 등 불이익이 발생",
+    "약정이율 축소 적용 등으로 당초 기대했던 수익 보다 적어질 위험이 있습니다.",
+])
+def test_실물_약정이율_고지문에서_값을_지어내지_않는다(text):
+    assert extract_product_facts(text, "x").guaranteed_rate is None
+
+
 def test_확정금리와_수익률을_구분하라고_프롬프트에_명시한다():
     """★ 사용자가 가장 오해하기 쉬운 자리다."""
     f = extract_product_facts("약정이율 연 3.50%", "d1")
