@@ -90,6 +90,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sample", type=int, default=0, metavar="N",
                     help="문서 앞부분 N자를 그대로 출력한다. 패턴이 실물 표기와 "
                          "어긋났을 때 **실제 형태를 눈으로 보기 위한** 것이다.")
+    ap.add_argument("--grep", nargs="+", default=[], metavar="용어",
+                    help="이 말이 든 줄을 실물 그대로 출력한다. 어느 축의 "
+                         "정규식을 고쳐야 할 때, 그 축의 표기가 실제로 어떤 "
+                         "모양인지 보는 것이 유일한 근거다. "
+                         "예: --grep 총보수 --grep-lines 40")
+    ap.add_argument("--grep-lines", type=int, default=25, metavar="N",
+                    help="--grep 으로 출력할 최대 줄 수 (기본 25)")
+    ap.add_argument("--grep-docs", type=int, default=6, metavar="N",
+                    help="--grep 으로 훑을 최대 문서 수 (기본 6)")
     a = ap.parse_args(argv)
 
     docs = (list(_iter_index(a.doc)) if a.index
@@ -183,6 +192,28 @@ def main(argv: list[str] | None = None) -> int:
         mark = "  " if cnt else "❌"
         print(f"  {mark} {kw:10s} {cnt:6,}회  ({ndocs}/{n} 문서)")
     print()
+
+    if a.grep:
+        # 정규식을 고칠 유일한 근거는 **실물 표기**다. 추측으로 패턴을
+        # 넓히면 오탐이 늘고, 결정론 계층의 오탐은 되돌릴 수 없다.
+        print(f"── '{' / '.join(a.grep)}' 이(가) 든 줄 (실물 그대로) ────────")
+        shown = 0
+        for doc_id, text in docs[:a.grep_docs]:
+            hits = [ln.strip() for ln in text.splitlines()
+                    if any(k in ln for k in a.grep) and ln.strip()]
+            if not hits:
+                continue
+            print(f"\n  [{doc_id}] {len(hits)}줄 중 앞 5줄")
+            for ln in hits[:5]:
+                print(f"    | {ln[:170]}")
+                shown += 1
+                if shown >= a.grep_lines:
+                    break
+            if shown >= a.grep_lines:
+                break
+        if not shown:
+            print("  (해당 문서들에서 찾지 못했습니다 — --grep-docs 를 늘려 보십시오)")
+        print()
 
     if a.sample:
         print("── 원문 표본 (패턴을 실물에 맞추기 위한 것) ───────────")

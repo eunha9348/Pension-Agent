@@ -25,6 +25,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.analysis.product_facts import (AXIS_AUM, AXIS_RETURNS,
                                         AXIS_RISK_GRADE, collect_facts,
                                         extract_product_facts, fact_snippets,
@@ -119,6 +121,93 @@ def test_라벨_없는_등급은_표제어가_있어야_잡는다():
     assert extract_product_facts("본 채권은 제2등급입니다.", "x").risk_grade is None
     ok = extract_product_facts("제2등급(높은 위험)에 해당합니다.", "x")
     assert ok.risk_grade.value == 2
+
+
+# ════════════════════════════════════════════════════════════
+# 2-b. 실물 코퍼스 실측으로 드러난 것 (2026-09-04, 158문서)
+# ════════════════════════════════════════════════════════════
+#
+# 아래 문형은 전부 서버에서 `python -m scripts.corpus_facts --index`를
+# 돌려 얻은 **실제 출력**에서 그대로 옮긴 것이다. 추측으로 만든 표본이
+# 아니다 — 패턴을 실물에 맞추는 유일한 근거다.
+
+_REAL_SELF_CLASSIFY = """미래에셋자산운용㈜는 이 집합투자기구의 실제 수익률 변동성을 감안
+하여 1등급으로 분류하였습니다. 펀드의 위험 등급은 운용실적, 시장 상
+투자위험등급
+1등급[매우 높은 위험]
+[투자위험등급 분류 기준]
+1등급[매우 높은 위험]
+2등급[높은 위험]
+3등급[다소 높은 위험]
+4등급[보통 위험]
+5등급[낮은 위험]
+6등급[매우 낮은 위험]
+"""
+
+
+def test_등급체계_설명표가_있어도_자기_등급을_확정한다():
+    """★ 실측에서 35건이 이것 때문에 '충돌'로 버려졌다.
+
+    투자설명서에는 1~6등급을 전부 나열한 **등급 체계 설명표**가 함께
+    실린다. 그것까지 긁으면 서로 다른 값이 잡혀 확정을 포기하게 된다.
+    'N등급으로 분류하였습니다'는 그 펀드 자신의 등급만 말하므로,
+    이 문형을 최우선으로 봐야 한다.
+    """
+    f = extract_product_facts(_REAL_SELF_CLASSIFY, "R2_KR510902511M")
+    assert f.risk_grade is not None, f"등급 체계표 때문에 확정을 포기했다: {f.conflicts}"
+    assert f.risk_grade.value == 1
+    assert f.risk_grade.pattern == "자기분류"
+
+
+def test_자기분류가_등급체계표보다_우선한다():
+    """★ 실측 R2_KR5110501016 — ['4','5','6'] 충돌로 버려졌던 문서."""
+    text = ("하여 6등급으로 분류하였습니다.\n투자위험등급\n6등급[매우 낮은 위험]\n"
+            "등급체계: 4등급[보통 위험] 5등급[낮은 위험] 6등급[매우 낮은 위험]\n")
+    f = extract_product_facts(text, "R2_KR5110501016")
+    assert f.risk_grade.value == 6, f.conflicts
+
+
+def test_표제_다음줄에_등급이_와도_잡는다():
+    """실물은 '투자위험등급' 다음 **줄**에 등급이 온다.
+    [^\\n]으로 막으면 이 형태를 통째로 놓친다."""
+    f = extract_product_facts("투자위험등급\n2등급[높은 위험]\n", "x")
+    assert f.risk_grade.value == 2
+
+
+@pytest.mark.parametrize("label,text", [
+    ("위험등급 산정 설명",
+     "실제 수익률 변동성을 감안하여 3등급으로 분류하였습니다"),
+    ("보수 예시용 가정치",
+     "총보수비용은 일정하고, 연간 투자수익률은 5%로 가정하였습니다."),
+    ("지수 추종 서술", "수익률 추종을 목표로 하는 3.554"),
+])
+def test_수익률로_오인하기_쉬운_문맥을_거부한다(label, text):
+    """★ 실측에서 '수익률'은 6,972회 나오지만 대부분 실적이 아니다.
+
+    특히 '연간 투자수익률 5% 가정'은 **보수 예시를 위한 가정치**다.
+    이걸 그 펀드의 실적으로 답하면 명백한 오답이므로, 억지로 넓혀
+    잡는 것보다 0건이 낫다.
+    """
+    assert extract_product_facts(text, "x").returns == [], label
+
+
+@pytest.mark.parametrize("label,text", [
+    ("소규모 해지 기준", "설정액 50억원 미만인 소규모 집합투자기구는 해지될 수 있습니다."),
+    ("유지 요건", "순자산총액 15억원 이상을 유지하여야 합니다."),
+])
+def test_규제_기준선을_시장잔고로_잡지_않는다(label, text):
+    """★ 실측에서 여러 문서가 똑같이 ['15.0','50.0']억으로 충돌했다.
+
+    서로 다른 펀드가 같은 값을 갖는 건 우연이 아니다 — 제도상 기준선을
+    긁고 있었다는 뜻이다. 기준선을 그 펀드의 잔고로 답하면 오답이다.
+    """
+    assert extract_product_facts(text, "x").aum is None, label
+
+
+def test_실제_잔고는_여전히_잡는다():
+    """대조군 — 차단어가 정상 값까지 막으면 안 된다."""
+    f = extract_product_facts("순자산총액 2,450억원\n", "x")
+    assert f.aum is not None and f.aum.value == 2450.0
 
 
 # ════════════════════════════════════════════════════════════
