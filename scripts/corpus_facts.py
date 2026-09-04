@@ -87,6 +87,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="문서당 출력할 놓친 줄 수 (기본 3)")
     ap.add_argument("--corpus", default="",
                     help="원문 디렉터리 (기본 data/corpus)")
+    ap.add_argument("--sample", type=int, default=0, metavar="N",
+                    help="문서 앞부분 N자를 그대로 출력한다. 패턴이 실물 표기와 "
+                         "어긋났을 때 **실제 형태를 눈으로 보기 위한** 것이다.")
     a = ap.parse_args(argv)
 
     docs = (list(_iter_index(a.doc)) if a.index
@@ -146,6 +149,49 @@ def main(argv: list[str] | None = None) -> int:
           f"({'인덱스' if a.index else '원문'})")
     print(f"{'=' * 66}\n")
 
+    # ── 0. 텍스트가 도달하긴 했는가 ──────────────────────────
+    #
+    # ⚠️ 이 블록이 없으면 "패턴이 틀렸다"와 "텍스트가 아예 없다"를 구별할 수
+    #    없다. 실제로 첫 실전 진단에서 전 축 0/158이 나왔는데, 원인이 둘 중
+    #    무엇인지 알 수 없어 한 번을 헛돌았다. 진단 도구가 원인을 좁히지
+    #    못하면 그건 진단이 아니다.
+    lengths = [len(t) for _d, t in docs]
+    empty = [d for d, t in docs if len(t) < 50]
+    total_chars = sum(lengths)
+    print("── 텍스트 도달 확인 ──────────────────────────────────")
+    print(f"  총 {total_chars:,}자 · 문서당 평균 {total_chars // max(n, 1):,}자 "
+          f"· 최소 {min(lengths) if lengths else 0:,} / 최대 "
+          f"{max(lengths) if lengths else 0:,}")
+    if empty:
+        print(f"  ⚠️ 본문이 50자 미만인 문서 {len(empty)}건: "
+              f"{', '.join(empty[:5])}{' …' if len(empty) > 5 else ''}")
+        print("     → 추출 이전에 **판독 단계**를 먼저 확인하십시오 "
+              "(python -m app.ingest.check_corpus)")
+    print()
+
+    # ── 0-b. 축 키워드가 코퍼스에 실재하는가 ─────────────────
+    #
+    # 값이 안 뽑힌 이유가 "패턴이 틀림"인지 "그 말 자체가 문서에 없음"인지
+    # 가른다. 키워드가 0건이면 정규식을 아무리 고쳐도 소용없다.
+    probe = ["총보수", "보수", "수수료", "위험등급", "등급", "수익률",
+             "설정액", "순자산", "시장잔고", "집합투자기구", "종류", "클래스"]
+    joined = "\n".join(t for _d, t in docs)
+    print("── 축 키워드 실재 여부 (코퍼스 전체 등장 횟수) ────────")
+    for kw in probe:
+        cnt = joined.count(kw)
+        ndocs = sum(1 for _d, t in docs if kw in t)
+        mark = "  " if cnt else "❌"
+        print(f"  {mark} {kw:10s} {cnt:6,}회  ({ndocs}/{n} 문서)")
+    print()
+
+    if a.sample:
+        print("── 원문 표본 (패턴을 실물에 맞추기 위한 것) ───────────")
+        for doc_id, text in docs[:3]:
+            print(f"\n  [{doc_id}] {len(text):,}자")
+            for line in text[:a.sample].splitlines():
+                print(f"    | {line[:150]}")
+        print()
+
     print("── 축별 커버리지 ──────────────────────────────────────")
     for axis in ALL_AXES:
         c = axis_cov[axis]
@@ -181,7 +227,16 @@ def main(argv: list[str] | None = None) -> int:
     print("── ★ 놓친 줄 (키워드는 있는데 값이 안 뽑힘) ────────────")
     print("   이 줄들이 패턴을 고칠 근거입니다. 형태를 보고 정규식을 맞춥니다.\n")
     if not miss_lines:
-        print("  없음 — 키워드가 있는 문서에서는 전부 값을 뽑았습니다.\n")
+        # ⚠️ "놓친 줄이 없다"에는 정반대의 두 사연이 있다. 하나로 뭉뚱그리면
+        #    진단이 거짓말을 한다 — 실제로 전 축 0건인 상태에서 "전부 값을
+        #    뽑았습니다"라고 출력해 원인 파악을 한 번 헛돌게 만들었다.
+        if any(axis_cov[x] for x in ALL_AXES):
+            print("  없음 — 키워드가 있는 문서에서는 전부 값을 뽑았습니다.\n")
+        else:
+            print("  없음. 다만 **뽑힌 값도 0건**입니다 — 놓친 줄이 없는 것이\n"
+                  "  아니라 **축 키워드 자체가 문서에 없는** 것입니다.\n"
+                  "  위 '축 키워드 실재 여부'를 보십시오. 전부 0회라면 정규식을\n"
+                  "  고쳐도 소용없고, 판독 단계나 대상 문서를 의심해야 합니다.\n")
     else:
         shown = 0
         for doc_id, misses in miss_lines.items():
