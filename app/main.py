@@ -165,6 +165,11 @@ def health() -> dict:
     # 노출하는 것과 같은 이유다 — 인덱스를 다시 만들지 않고는 확인할
     # 방법이 없으면 "반영됐는지"를 추측으로 답하게 된다.
     info["ocr_repair"] = store.ocr_repair or {"summary": "집계 없음 (인덱스 재빌드 필요)"}
+    # ⚠️ law는 예전에 root("/")에만 있었다. 운영 확인은 전부 /health 하나로
+    #    모으는 게 맞다 — 실제로 이 세션에서만 "/health의 law 필드를
+    #    보라"는 안내가 여러 번 나갔는데 그 필드가 root에만 있어 매번
+    #    null이 떴다. 두 자리에 흩어 두면 이런 사고가 반복된다.
+    info["law"] = _law_status()
     return info
 
 

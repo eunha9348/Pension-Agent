@@ -98,6 +98,18 @@ def test_health가_mock_여부를_드러낸다():
     assert "kind" in body["corpus"]
 
 
+def test_health에_law_필드가_있다():
+    """★ 배선 사고 재현 (2026-09-04) — law는 root("/")에만 있고 /health에는
+    없었다. README·CLAUDE.md는 처음부터 "/health의 law.conflict_check_active"
+    로 문서화돼 있었는데 코드가 그 계약을 지키지 못하고 있었다 — 운영 중
+    실제로 이 필드를 보라는 안내를 따라간 사용자가 매번 null을 받았다.
+    운영 확인 지점은 /health 하나로 모은다."""
+    body = client.get("/health").json()
+    assert "law" in body, "/health에 law 필드가 없다 — root(\"/\")에만 있을 수 있다"
+    assert "conflict_check_active" in body["law"]
+    assert "active" in body["law"]
+
+
 @pytest.mark.parametrize("q", [
     "연금저축이랑 IRP 합쳐서 세액공제 얼마나 되나요",
     "2013년 이전에 가입했고 4년 지났으면 연금수령연차가 몇 년차인가요",
