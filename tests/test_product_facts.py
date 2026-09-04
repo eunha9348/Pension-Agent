@@ -261,6 +261,70 @@ def test_실적배당형_수익률은_여전히_확정하지_않는다():
 
 
 # ════════════════════════════════════════════════════════════
+# 2-d. 과거 운용실적 표 — 파싱하지 않고 원문 인용
+# ════════════════════════════════════════════════════════════
+#
+# 과제 안내 5페이지가 수익률을 6축에 넣었으므로 빼지 않는다. 다만 실물은
+# 헤더와 값이 다른 줄에 있는 **다단 표**이고 OCR이 깨져 있어, 컬럼을
+# 정렬해 파싱하면 엉뚱한 펀드에 엉뚱한 값이 붙는다. 그래서 표를 잘라서
+# **그대로 보여주고**, 우리가 숫자를 재구성하지는 않는다.
+
+_REAL_TABLE = """미래에셋퇴직연금증권자투자신탁
+투자위험등급
+3등급[다소 높은 위험]
+기구 수 운용규모 최근1년 최근2년 최근1년 최근2년
+12 | 3,450억원 | 5.23% | 8.11% | 4.90% | 7.80%
+비교지수 | - | 4.80% | 7.20% | - | -
+"""
+
+
+def test_실적표를_원문_그대로_인용한다():
+    """★ 실측에서 잡힌 '최근1년 최근2년' 헤더 형태."""
+    f = extract_product_facts(_REAL_TABLE, "d1")
+    assert f.return_table is not None, "실적표를 못 찾았다"
+    assert "최근1년" in str(f.return_table.value)
+    assert "5.23%" in str(f.return_table.value)
+
+
+def test_실적표의_컬럼을_파싱하지_않는다():
+    """★ 핵심 안전판 — 컬럼을 재구성하면 오정렬로 오답이 난다.
+
+    표가 있어도 개별 수익률 '값'으로는 확정하지 않는다. 표는 참고용
+    원문으로만 제시한다.
+    """
+    f = extract_product_facts(_REAL_TABLE, "d1")
+    assert f.returns == [], f"표에서 값을 파싱했다: {[h.label for h in f.returns]}"
+
+
+def test_실적표가_있으면_수익률_축이_채워진_것으로_본다():
+    from app.analysis.product_facts import AXIS_RETURNS
+    f = extract_product_facts(_REAL_TABLE, "d1")
+    assert AXIS_RETURNS in f.found_axes
+
+
+def test_명시적_문장은_값으로_확정한다():
+    """표와 달리 한 줄에 기간과 수치가 함께 있으면 모호하지 않다."""
+    f = extract_product_facts("최근 1년 수익률 3.87%", "x")
+    assert [h.value for h in f.returns] == [3.87]
+
+
+def test_실적표_제시에_과거실적_고지가_붙는다():
+    """★ '예상 수익률'로 읽히면 안 된다 — 준법 감사도 그 표현을 막는다."""
+    f = extract_product_facts(_REAL_TABLE, "d1")
+    block = render_facts_block([f.as_dict()])
+    assert "과거 운용실적" in block
+    assert "보장하지 않습니다" in block
+    assert "임의로 값을 골라" in block
+
+
+def test_프롬프트_지시문에_마크다운을_쓰지_않는다():
+    """★ HCX가 지시문의 마크다운을 그대로 따라 쓴다 (CLAUDE.md 실연동 확인)."""
+    f = extract_product_facts(_REAL_TABLE, "d1")
+    block = render_facts_block([f.as_dict()])
+    assert "**" not in block, "지시문에 마크다운이 섞였다"
+
+
+# ════════════════════════════════════════════════════════════
 # 3. 값이 갈리면 확정하지 않는다
 # ════════════════════════════════════════════════════════════
 

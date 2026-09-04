@@ -102,6 +102,7 @@ class ProductFacts:
     risk_grade: Optional[FactHit] = None
     aum: Optional[FactHit] = None
     returns: list[FactHit] = field(default_factory=list)
+    return_table: Optional[FactHit] = None
     guaranteed_rate: Optional[FactHit] = None
     # 값이 갈려서 채우지 못한 축과 그 사유. 조용히 비우면 "문서에 없음"과
     # "여러 값이 충돌함"을 구별할 수 없다.
@@ -117,6 +118,8 @@ class ProductFacts:
                 out[key] = hit.as_dict()
         if self.returns:
             out["returns"] = [h.as_dict() for h in self.returns]
+        if self.return_table is not None:
+            out["return_table"] = self.return_table.as_dict()
         if self.conflicts:
             out["conflicts"] = dict(self.conflicts)
         return out
@@ -126,7 +129,8 @@ class ProductFacts:
         axes = []
         if self.asset_class:     axes.append(AXIS_ASSET_CLASS)
         if self.risk_grade:      axes.append(AXIS_RISK_GRADE)
-        if self.returns:         axes.append(AXIS_RETURNS)
+        if self.returns or self.return_table:
+            axes.append(AXIS_RETURNS)
         if self.aum:             axes.append(AXIS_AUM)
         if self.guaranteed_rate: axes.append(AXIS_GUARANTEED_RATE)
         return axes
@@ -291,7 +295,31 @@ _RETURN_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     # "수익률 | 1년 | 5.23%"  (표에서 기간이 앞에 오는 형태)
     ("수익률_표", re.compile(
         rf'수익률[^\n]{{0,10}}[|｜]\s*{_PERIOD}\s*[|｜]\s*(-?\d+\.\d+)\s*%')),
+    # "연평균 수익률 3.52%" — 투자설명서의 표준 표기 중 하나
+    ("연평균", re.compile(
+        r'연\s*평균\s*수익률[^\n\d%-]{0,12}(-?\d+\.\d+)\s*%()')),
 )
+
+# ── 과거 운용실적 표 — 값을 파싱하지 않고 **원문 그대로 인용**한다 ──
+#
+# ━━ 왜 파싱하지 않는가 ━━
+# 실측(158문서)에서 실적표는 헤더와 값이 다른 줄에 있는 **다단 표**다:
+#     기구 수 운용규모 최근1년 최근2년 최근1년 최근2년
+#     <값들이 다음 줄들에>
+# 컬럼을 정렬해 파싱하려면 표 구조를 복원해야 하는데, 이 코퍼스는 OCR이
+# 깨져 있어(`3.554 | 080 | 0.0303`) 정렬이 어긋나기 쉽다. 어긋나면
+# **엉뚱한 펀드에 엉뚱한 수익률**이 붙는다 — 누락보다 나쁜 실패다.
+#
+# 그래서 표는 **잘라서 그대로 보여준다.** 과제 안내가 수익률을 6축에
+# 넣었으므로 빼지 않되, 우리가 숫자를 재구성하지는 않는다. 사용자는
+# 원문 표를 참고 자료로 보고, 시스템은 없는 값을 만들지 않는다.
+_RETURN_TABLE_HEADER = re.compile(
+    r'^[^\n]{0,40}(?:최근\s*\d\s*년[^\n]{0,30}최근\s*\d\s*년|'
+    r'기간별\s*수익률|연평균\s*수익률|운용\s*실적)[^\n]{0,60}$', re.M)
+
+# 표 블록으로 실어 보낼 최대 줄 수·글자 수. 무제한이면 프롬프트가 터진다.
+_TABLE_LINES = 6
+_TABLE_CHARS = 400
 
 # 수익률로 오인하기 쉬운 문맥 — 이 말이 같은 줄에 있으면 담지 않는다.
 #
@@ -310,6 +338,25 @@ _RETURN_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
 #    처리되지만, 잘못 뽑은 것은 사용자가 그대로 믿는다.
 _RETURN_BLOCKLIST = ("보수", "수수료", "세율", "과세", "공제", "한도",
                      "가정", "변동성", "추종", "목표", "등급")
+
+
+def extract_return_table(text: str) -> Optional[FactHit]:
+    """과거 운용실적 표를 **원문 그대로** 잘라 온다 (파싱하지 않는다).
+
+    반환값의 value는 표 블록 문자열이다. 숫자를 재구성하지 않으므로
+    컬럼 오정렬로 인한 오답이 구조적으로 발생할 수 없다.
+    """
+    m = _RETURN_TABLE_HEADER.search(text)
+    if not m:
+        return None
+    start = m.start()
+    lines = text[start:].splitlines()[:_TABLE_LINES]
+    block = "\n".join(ln.strip() for ln in lines if ln.strip())[:_TABLE_CHARS]
+    if len(block) < 20:
+        return None
+    return FactHit(axis=AXIS_RETURNS, value=block,
+                   label="과거 운용실적 표(원문 인용)",
+                   snippet=block, pattern="실적표_원문")
 
 
 def extract_returns(text: str) -> list[FactHit]:
@@ -465,6 +512,7 @@ def extract_product_facts(text: str, doc_id: str = "") -> ProductFacts:
     facts.asset_class = extract_asset_class(text, facts)
     facts.aum = extract_aum(text, facts)
     facts.returns = extract_returns(text)
+    facts.return_table = extract_return_table(text)
     facts.guaranteed_rate = extract_guaranteed_rate(text, facts)
     return facts
 
@@ -497,6 +545,8 @@ def _fact_lines(raw: dict) -> list[tuple[str, str, str]]:
                         hit.get("snippet", "")))
     for hit in (raw.get("returns") or [])[:4]:
         out.append((AXIS_RETURNS, hit.get("label", ""), hit.get("snippet", "")))
+    if tbl := raw.get("return_table"):
+        out.append((AXIS_RETURNS, tbl.get("label", ""), tbl.get("snippet", "")))
     return out
 
 
@@ -551,6 +601,21 @@ def render_facts_block(facts: list[dict], limit: int = 4) -> str:
     lines.append(
         "  ※ 위험등급은 숫자가 작을수록 위험이 큽니다(1등급이 가장 높은 위험). "
         "숫자만 쓰지 말고 위 표기를 그대로 옮기십시오.")
+    if any(f.get("returns") or f.get("return_table") for f in facts[:limit]):
+        # ⚠️ 과제 안내가 수익률을 6축에 넣었으므로 빼지 않는다. 다만
+        #    **과거 실적**임을 못박는다. 투자설명서 자신이 "과거 수익률이
+        #    미래를 보장하지 않는다"고 쓰고 있고, 준법 감사도 '예상·전망·
+        #    기대 수익률' 표현을 차단한다(supervisory_board._ASSERTIVE_PATTERNS).
+        #    표는 우리가 컬럼을 재구성하지 않고 원문 그대로 실은 것이므로,
+        #    표에서 특정 값을 골라 단정하지 말라고 함께 지시한다.
+        # ⚠️ 이 지시문에 마크다운을 쓰지 말 것 — HCX가 그대로 따라 쓴다
+        #    (CLAUDE.md의 실연동 확인 사례). 강조는 말로 한다.
+        lines.append(
+            "  ※ 수익률은 과거 운용실적이며 미래 수익을 보장하지 않습니다. "
+            "'예상 수익률'이나 '기대 수익률'로 쓰지 말고, 어느 기간의 "
+            "실적인지 반드시 함께 밝혀 참고 정보로만 제시하십시오. 표는 "
+            "원문 그대로 실은 것이므로 표에서 임의로 값을 골라 "
+            "단정하지 마십시오.")
     if any(f.get("guaranteed_rate") for f in facts[:limit]):
         # 확정금리와 실적 수익률을 같은 말로 쓰면 안 된다 — 전자는 계약상
         # 보장된 값이고 후자는 지나간 실적이다. 사용자가 가장 오해하기
