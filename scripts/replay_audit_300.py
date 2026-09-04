@@ -25,6 +25,17 @@
 
 300건을 동시 6건 기준으로 돌리면 대략 10~20분 걸린다(원본 리포트가 말한
 "2분"은 미완성 스크립트의 낙관적 추정치일 뿐 실측이 아니다).
+
+━━ 429 페이싱 (2026-09-05 실측 후 추가) ━━
+텀 없이 298건을 쏘면 tests/eval_set.py가 42문항에서 이미 겪은 사고
+("E-15부터 끝까지 전부 429로 결정론적 폴백만 돌았다")가 그대로 재현된다 —
+실측: degradation_total 420건(L1 규칙축퇴 207 · L5' 템플릿축퇴 212),
+failures 857건. 이 스크립트는 서버와 별도 프로세스(HTTP로만 통신)라
+app.llm.clova.rate_limit_seen()을 직접 부를 수 없다 — 대신 서버가 429를
+겪으면 think_trace에 예외 메시지를 그대로 남기므로(query_spec.py의
+trace_log), 응답에 실려 오는 그 "429" 문자열로 같은 신호를 재현한다.
+문항 사이 기본 0.5초를 쉬고, 429를 겪으면 다음 요청부터 자동으로 더
+쉰다(eval_set.py와 같은 PACING_SEC/GROWTH/MAX).
 """
 
 from __future__ import annotations
@@ -32,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -40,6 +52,32 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# eval_set.py와 값을 맞춘다 — 같은 원인·같은 해법이므로 상수가 갈릴 이유가 없다.
+PACING_SEC = 0.5
+PACING_GROWTH = 1.8
+PACING_MAX = 8.0
+
+_pace_lock = threading.Lock()
+_pace_state = {"sec": PACING_SEC}
+
+
+def _wait_pace() -> None:
+    with _pace_lock:
+        sec = _pace_state["sec"]
+    if sec > 0:
+        time.sleep(sec)
+
+
+def _note_response(think_trace: str) -> None:
+    if "429" not in (think_trace or ""):
+        return
+    with _pace_lock:
+        new = min(_pace_state["sec"] * PACING_GROWTH, PACING_MAX)
+        grew = new > _pace_state["sec"]
+        _pace_state["sec"] = new
+    if grew:
+        print(f"  ⏱  429 감지 — 문항 간 대기를 {new:.1f}초로 늘립니다")
 
 CAT_NAMES = {
     "A": "세액공제", "B": "수령요건·개시", "C": "연금소득세율", "D": "중도인출·해지",
@@ -382,6 +420,7 @@ def _includes(answer: str, term: str) -> bool:
 
 
 def ask(base_url: str, qid: str, question: str, timeout: float) -> dict:
+    _wait_pace()
     url = f"{base_url}/answer?" + urllib.parse.urlencode(
         {"question_id": qid, "question": question})
     t0 = time.time()
@@ -394,6 +433,7 @@ def ask(base_url: str, qid: str, question: str, timeout: float) -> dict:
         body = {"question_id": qid, "question": question, "answer": "",
                 "retrieved_context": "", "think_trace": "",
                 "_elapsed": round(time.time() - t0, 2), "_http_error": str(e)}
+    _note_response(body.get("think_trace", ""))
     return body
 
 
@@ -405,7 +445,16 @@ def main() -> None:
     ap.add_argument("--only", default="", help="카테고리 접두어(쉼표구분), 예: A,L")
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--out", default="")
+    ap.add_argument("--pace", type=float, default=PACING_SEC,
+                    help=f"문항 사이 기본 대기(초). 429가 잦으면 자동으로 "
+                         f"늘어난다 (기본 {PACING_SEC}, 상한 {PACING_MAX})")
     args = ap.parse_args()
+
+    _pace_state["sec"] = max(args.pace, 0.0)
+    if args.concurrency > 1:
+        print(f"⚠️  concurrency={args.concurrency} — 페이싱은 각 워커가 개별로 "
+              f"쉬므로 동시 요청 자체는 막지 못한다. 429를 안정적으로 피하려면 "
+              f"--concurrency 1을 권장.")
 
     cases = [c for c in CASES if c[0] not in DESCRIPTIVE]
     if args.only:
