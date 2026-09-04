@@ -193,12 +193,31 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {mark} {kw:10s} {cnt:6,}회  ({ndocs}/{n} 문서)")
     print()
 
+    # --grep 은 nargs="+" 라 뒤에 붙인 옵션을 **조용히 검색어로 삼킨다.**
+    # 실제로 `--grep 총보수--grep-lines 40` 이 하나의 검색어가 돼 엉뚱한
+    # 결과가 나왔다. 조용한 오작동보다 즉시 실패가 낫다
+    # (app/law/anchors.py 가 같은 이유로 같은 가드를 두고 있다).
+    if dashy := [t for t in (a.grep or [])
+                 if t.startswith(("-", "–", "—", "―")) or "--" in t]:
+        print(f"검색어에 옵션처럼 보이는 값이 섞였습니다: {dashy}")
+        print("  --grep 은 뒤따르는 값을 전부 받습니다. **띄어쓰기를 확인**하고")
+        print("  옵션은 앞에 두십시오:")
+        print("      python3 -m scripts.corpus_facts --index "
+              "--grep-lines 40 --grep 총보수")
+        return 2
+
     if a.grep:
         # 정규식을 고칠 유일한 근거는 **실물 표기**다. 추측으로 패턴을
         # 넓히면 오탐이 늘고, 결정론 계층의 오탐은 되돌릴 수 없다.
         print(f"── '{' / '.join(a.grep)}' 이(가) 든 줄 (실물 그대로) ────────")
         shown = 0
-        for doc_id, text in docs[:a.grep_docs]:
+        # ⚠️ 앞에서부터 N개 문서를 훑으면 안 된다 — 본문이 1자인 문서가
+        #    앞에 오면 그것만 보고 "없다"고 결론짓게 된다. **실제로 그 말이
+        #    든 문서**만 골라서 훑는다.
+        having = [(d, t) for d, t in docs if any(k in t for k in a.grep)]
+        print(f"   (해당 용어가 든 문서 {len(having)}/{len(docs)}건 중 "
+              f"앞 {min(a.grep_docs, len(having))}건)\n")
+        for doc_id, text in having[:a.grep_docs]:
             hits = [ln.strip() for ln in text.splitlines()
                     if any(k in ln for k in a.grep) and ln.strip()]
             if not hits:
