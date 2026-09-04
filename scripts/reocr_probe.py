@@ -30,7 +30,7 @@ from pathlib import Path
 from app.config import REPO_ROOT
 from app.ingest.loader import iter_documents
 from app.ingest.ocr_repair import looks_garbled
-from app.ingest.reocr import _safe_import_ocr, raster_pdf_page
+from app.ingest.reocr import _safe_import_ocr, _tesseract_config, raster_pdf_page
 
 DEFAULT_CORPUS = REPO_ROOT / "data" / "corpus"
 _PREVIEW = 300
@@ -55,9 +55,11 @@ def main(argv: list[str] | None = None) -> int:
         print("   (pytesseract·tesseract-ocr-kor·poppler-utils 필요)")
         return 1
 
+    cfg = _tesseract_config()
     print("═" * 62)
     print(" 재OCR 가능성 진단 (페이지 렌더링)")
     print("═" * 62)
+    print(f" 모델: {'tessdata_best' if cfg else 'apt 기본(fast)'}")
 
     docs_total = docs_garbled = checked = 0
     render_ok = render_fail = 0
@@ -90,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      [원문 OCR] {pg.text.strip()[:_PREVIEW]!r}")
             try:
                 img = Image.open(io.BytesIO(raw))
-                new_text = pytesseract.image_to_string(img, lang="kor+eng")
+                new_text = pytesseract.image_to_string(img, lang="kor+eng", config=cfg)
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as e:                          # noqa: BLE001

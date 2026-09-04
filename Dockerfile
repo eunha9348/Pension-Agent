@@ -16,6 +16,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr tesseract-ocr-kor poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# apt의 tesseract-ocr-kor는 속도 우선(fast) LSTM 모델이라 정확도가 낮다.
+# 실측(2026-09-05)에서 재OCR 결과가 거의 전부 라틴 문자·숫자 잡음으로
+# 나온 원인 중 하나로 의심돼, 공식 고정밀(tessdata_best) 한국어 모델을
+# 따로 받아 둔다. `reocr.py`가 이 디렉터리가 있으면 우선 쓰고, 없으면
+# (네트워크 문제 등으로 다운로드 실패해도) apt 기본 모델로 조용히
+# 대체한다 — 이것 때문에 빌드 자체가 실패하면 안 된다.
+RUN mkdir -p /opt/tessdata_best && \
+    (python3 -c "\
+import urllib.request; \
+base='https://github.com/tesseract-ocr/tessdata_best/raw/main/'; \
+[urllib.request.urlretrieve(base+n, '/opt/tessdata_best/'+n) for n in ('kor.traineddata','eng.traineddata')]" \
+     && echo '✅ tessdata_best 다운로드 완료' \
+     || (rm -rf /opt/tessdata_best && echo '⚠️ tessdata_best 다운로드 실패 — apt 기본 모델로 대체됩니다'))
+
 # 의존성 레이어 분리 — 소스만 바뀌면 재설치하지 않는다
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

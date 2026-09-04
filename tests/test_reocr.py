@@ -53,7 +53,7 @@ def test_손상된_페이지만_재OCR_대상이_된다(tmp_path, monkeypatch):
         def get_tesseract_version(self):
             return "5.0"
 
-        def image_to_string(self, _img, lang="kor+eng"):
+        def image_to_string(self, _img, lang="kor+eng", config=""):
             calls.append(1)
             return "재OCR로 복원된 정상 문장입니다"
 
@@ -81,7 +81,7 @@ def test_재OCR_결과도_여전히_손상이면_원문을_유지한다(tmp_path
         def get_tesseract_version(self):
             return "5.0"
 
-        def image_to_string(self, _img, lang="kor+eng"):
+        def image_to_string(self, _img, lang="kor+eng", config=""):
             return "여전히 깨짐 ??????"
 
     monkeypatch.setattr(reocr, "_safe_import_ocr",
@@ -106,7 +106,7 @@ def test_재OCR_결과가_원문보다_지나치게_짧으면_버린다(tmp_path
         def get_tesseract_version(self):
             return "5.0"
 
-        def image_to_string(self, _img, lang="kor+eng"):
+        def image_to_string(self, _img, lang="kor+eng", config=""):
             return "짧음"   # 원문의 20% 미만
 
     monkeypatch.setattr(reocr, "_safe_import_ocr",
@@ -144,7 +144,7 @@ def test_이미지가_없는_zip_전용_아닌_문서는_건드리지_않는다(
         def get_tesseract_version(self):
             return "5.0"
 
-        def image_to_string(self, _img, lang="kor+eng"):
+        def image_to_string(self, _img, lang="kor+eng", config=""):
             raise AssertionError("이미지가 없는 문서에서 OCR을 호출하면 안 된다")
 
     monkeypatch.setattr(reocr, "_safe_import_ocr",
@@ -167,7 +167,7 @@ def test_페이지_번호에_대응하는_이미지가_없으면_이미지없음
         def get_tesseract_version(self):
             return "5.0"
 
-        def image_to_string(self, _img, lang="kor+eng"):
+        def image_to_string(self, _img, lang="kor+eng", config=""):
             return "안 씀"
 
     monkeypatch.setattr(reocr, "_safe_import_ocr",
@@ -207,7 +207,7 @@ def test_PDF_소스는_렌더_경로를_탄다(monkeypatch):
         def get_tesseract_version(self):
             return "5.0"
 
-        def image_to_string(self, _img, lang="kor+eng"):
+        def image_to_string(self, _img, lang="kor+eng", config=""):
             return "재OCR로 복원된 정상 문장입니다"
 
     monkeypatch.setattr(reocr, "raster_pdf_page", _fake_raster)
@@ -231,7 +231,7 @@ def test_PDF_렌더가_실패하면_이미지없음으로_집계된다(monkeypat
         def get_tesseract_version(self):
             return "5.0"
 
-        def image_to_string(self, _img, lang="kor+eng"):
+        def image_to_string(self, _img, lang="kor+eng", config=""):
             raise AssertionError("렌더가 실패했으면 OCR을 호출하면 안 된다")
 
     monkeypatch.setattr(reocr, "raster_pdf_page", lambda *a, **k: None)
@@ -246,3 +246,21 @@ def test_PDF_렌더가_실패하면_이미지없음으로_집계된다(monkeypat
 def test_pdftoppm이_없으면_None을_반환한다(monkeypatch):
     monkeypatch.setattr(reocr.shutil, "which", lambda _name: None)
     assert reocr.raster_pdf_page("/무관/doc.pdf", 1) is None
+
+
+# ── tessdata_best 모델 선택 (2026-09-05, apt fast 모델 정확도 실측 후) ──
+
+def test_tessdata_best가_있으면_config에_포함된다(tmp_path, monkeypatch):
+    best_dir = tmp_path / "tessdata_best"
+    best_dir.mkdir()
+    (best_dir / "kor.traineddata").write_bytes(b"fake")
+    monkeypatch.setattr(reocr, "_TESSDATA_BEST_DIR", str(best_dir))
+
+    cfg = reocr._tesseract_config()
+    assert "--tessdata-dir" in cfg
+    assert str(best_dir) in cfg
+
+
+def test_tessdata_best가_없으면_config이_비어있다(tmp_path, monkeypatch):
+    monkeypatch.setattr(reocr, "_TESSDATA_BEST_DIR", str(tmp_path / "없음"))
+    assert reocr._tesseract_config() == ""

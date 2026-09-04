@@ -70,6 +70,7 @@ zip 코퍼스(레이아웃 A: 페이지별 JPEG)에 대한 경로도 남겨 뒀�
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import subprocess
 import tempfile
@@ -86,9 +87,22 @@ from app.ingest.zip_parser import ParsedDocument, _page_no_from_name
 MIN_LENGTH_RATIO = 0.2
 
 # PDF 페이지 렌더 해상도. 낮으면 OCR 정확도가 떨어지고, 높으면 느려지고
-# 메모리를 더 쓴다. 스캔 문서 OCR의 통상 권장값(150~300dpi) 중간을 쓴다.
-RENDER_DPI = 200
+# 메모리를 더 쓴다. 300dpi는 스캔 문서 OCR의 통상 권장 상한이다 — 첫
+# 실측(200dpi)에서 결과 대부분이 잡음이라 해상도를 올려 재시도한다.
+RENDER_DPI = 300
 _RENDER_TIMEOUT_SEC = 30
+
+# apt의 tesseract-ocr-kor는 속도 우선(fast) LSTM 모델이라 정확도가 낮다.
+# Dockerfile이 공식 고정밀(tessdata_best) 한국어 모델을 여기 받아 둔다.
+# 없으면(로컬 개발 환경, 다운로드 실패 등) 조용히 apt 기본 모델로 대체한다.
+_TESSDATA_BEST_DIR = "/opt/tessdata_best"
+
+
+def _tesseract_config() -> str:
+    """tessdata_best가 있으면 그걸 쓰도록 pytesseract config 문자열을 만든다."""
+    if os.path.isfile(os.path.join(_TESSDATA_BEST_DIR, "kor.traineddata")):
+        return f'--tessdata-dir "{_TESSDATA_BEST_DIR}"'
+    return ""
 
 
 def _safe_import_ocr():
@@ -220,7 +234,8 @@ def reocr_documents(documents: list[ParsedDocument]) -> ReocrReport:
 
             try:
                 img = Image.open(io.BytesIO(raw))
-                new_text = pytesseract.image_to_string(img, lang="kor+eng")
+                new_text = pytesseract.image_to_string(
+                    img, lang="kor+eng", config=_tesseract_config())
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as e:                           # noqa: BLE001
