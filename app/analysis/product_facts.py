@@ -52,8 +52,10 @@ AXIS_ASSET_CLASS = "상품분류"
 AXIS_RISK_GRADE = "위험등급"
 AXIS_RETURNS = "수익률"
 AXIS_AUM = "시장잔고"
+AXIS_GUARANTEED_RATE = "확정금리"
 
-ALL_AXES = (AXIS_ASSET_CLASS, AXIS_RISK_GRADE, AXIS_RETURNS, AXIS_AUM)
+ALL_AXES = (AXIS_ASSET_CLASS, AXIS_RISK_GRADE, AXIS_RETURNS, AXIS_AUM,
+            AXIS_GUARANTEED_RATE)
 
 # 금융투자협회 6단계 위험등급의 표준 의미.
 # 원문 표기가 이와 어긋나면(예: "1등급(매우 낮은 위험)") 구형 5단계이거나
@@ -100,6 +102,7 @@ class ProductFacts:
     risk_grade: Optional[FactHit] = None
     aum: Optional[FactHit] = None
     returns: list[FactHit] = field(default_factory=list)
+    guaranteed_rate: Optional[FactHit] = None
     # 값이 갈려서 채우지 못한 축과 그 사유. 조용히 비우면 "문서에 없음"과
     # "여러 값이 충돌함"을 구별할 수 없다.
     conflicts: dict[str, str] = field(default_factory=dict)
@@ -108,7 +111,8 @@ class ProductFacts:
         out: dict = {"doc_id": self.doc_id}
         for key, hit in (("asset_class", self.asset_class),
                          ("risk_grade", self.risk_grade),
-                         ("aum", self.aum)):
+                         ("aum", self.aum),
+                         ("guaranteed_rate", self.guaranteed_rate)):
             if hit is not None:
                 out[key] = hit.as_dict()
         if self.returns:
@@ -120,10 +124,11 @@ class ProductFacts:
     @property
     def found_axes(self) -> list[str]:
         axes = []
-        if self.asset_class: axes.append(AXIS_ASSET_CLASS)
-        if self.risk_grade:  axes.append(AXIS_RISK_GRADE)
-        if self.returns:     axes.append(AXIS_RETURNS)
-        if self.aum:         axes.append(AXIS_AUM)
+        if self.asset_class:     axes.append(AXIS_ASSET_CLASS)
+        if self.risk_grade:      axes.append(AXIS_RISK_GRADE)
+        if self.returns:         axes.append(AXIS_RETURNS)
+        if self.aum:             axes.append(AXIS_AUM)
+        if self.guaranteed_rate: axes.append(AXIS_GUARANTEED_RATE)
         return axes
 
 
@@ -382,6 +387,67 @@ def extract_aum(text: str, facts: ProductFacts) -> Optional[FactHit]:
 
 
 # ════════════════════════════════════════════════════════════════
+# 축 5 · 확정금리 (원리금보장형)
+# ════════════════════════════════════════════════════════════════
+#
+# ━━ 왜 수익률과 별도 축인가 ━━
+# 과제 안내 5페이지는 연금상품을 둘로 나눈다:
+#
+#   원리금보장형 — 예금·GIC 등. 원금이 보장된다.
+#   실적배당형   — 펀드·ETF 등. 운용 실적에 따라 손익이 갈린다.
+#
+# 그리고 6축(상품분류·위험등급·판매클래스·총보수·수익률·시장잔고)은
+# **실적배당형 투자설명서**를 전제로 정의된 것이다. 그런데 실적배당형의
+# '수익률'은 성격상 단일 값으로 확정할 수 없다:
+#   · 과거 실적일 뿐 미래를 보장하지 않는다(투자설명서 자신이 명시한다)
+#   · 클래스별·기간별(1년/3년/5년/설정 이후)로 값이 갈린다
+#   · 실측에서 잡히는 것은 대부분 '5%로 가정' 같은 예시용 가정치였다
+#
+# 반면 **원리금보장형의 약정이율은 계약상 확정된 값**이다. 사용자에게
+# 의미 있는 숫자이고, 결정론적으로 뽑아도 왜곡이 없다. 그래서 실적배당형
+# 수익률과 섞지 않고 별도 축으로 둔다 — 섞으면 "확정된 이율"과 "지나간
+# 실적"이 같은 이름으로 답변에 실린다.
+
+_RATE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    # "약정이율 연 3.50%" / "적용금리: 3.20 %" / "확정금리 연 3.4%"
+    ("표제_이율", re.compile(
+        r'(?:약정\s*이율|적용\s*금리|확정\s*금리|제시\s*금리|공시\s*이율|'
+        r'기본\s*이율|약정\s*금리)[^\n%]{0,15}?(\d+(?:\.\d+)?)\s*%')),
+    # 표 형태: "약정이율 | 3.50%"
+    ("표_이율", re.compile(
+        r'(?:약정\s*이율|적용\s*금리|확정\s*금리|공시\s*이율)\s*[|｜:]\s*'
+        r'연?\s*(\d+(?:\.\d+)?)\s*%')),
+)
+
+# ⚠️ 이율로 오인하면 안 되는 것들. 특히 '연체이율'과 '중도해지이율'은
+#    실재하는 이율이지만 **그 상품의 약정이율이 아니다.** 중도해지이율을
+#    "이 상품 금리는 0.5%입니다"로 답하면 명백한 오답이다.
+_RATE_BLOCKLIST = ("연체", "중도해지", "중도 해지", "지연", "할인", "가산",
+                   "세율", "과세", "물가", "수수료")
+
+
+def extract_guaranteed_rate(text: str,
+                            facts: ProductFacts) -> Optional[FactHit]:
+    hits: list[FactHit] = []
+    for name, pat in _RATE_PATTERNS:
+        for m in pat.finditer(text):
+            line = _line_of(text, m.start())
+            if any(b in line for b in _RATE_BLOCKLIST):
+                continue
+            rate = float(m.group(1))
+            # 연금 상품의 약정이율이 20%를 넘는 일은 없다. 넘으면
+            # 다른 수치를 잘못 집은 것이다(예: 편입비율·한도).
+            if not (0 < rate <= 20):
+                continue
+            hits.append(FactHit(
+                axis=AXIS_GUARANTEED_RATE, value=rate,
+                label=f"연 {rate}%", snippet=line, pattern=name))
+        if hits:
+            break
+    return _pick_one(hits, AXIS_GUARANTEED_RATE, facts)
+
+
+# ════════════════════════════════════════════════════════════════
 # 진입점
 # ════════════════════════════════════════════════════════════════
 
@@ -399,6 +465,7 @@ def extract_product_facts(text: str, doc_id: str = "") -> ProductFacts:
     facts.asset_class = extract_asset_class(text, facts)
     facts.aum = extract_aum(text, facts)
     facts.returns = extract_returns(text)
+    facts.guaranteed_rate = extract_guaranteed_rate(text, facts)
     return facts
 
 
@@ -413,6 +480,8 @@ _AXIS_KEYWORDS: dict[str, tuple[str, ...]] = {
                        "투자신탁의 종류"),
     AXIS_RETURNS: ("수익률",),
     AXIS_AUM: ("시장잔고", "설정액", "순자산총액", "운용규모"),
+    AXIS_GUARANTEED_RATE: ("약정이율", "적용금리", "확정금리", "공시이율",
+                           "원리금보장"),
 }
 
 
@@ -421,7 +490,8 @@ def _fact_lines(raw: dict) -> list[tuple[str, str, str]]:
     out: list[tuple[str, str, str]] = []
     for key, axis in (("risk_grade", AXIS_RISK_GRADE),
                       ("asset_class", AXIS_ASSET_CLASS),
-                      ("aum", AXIS_AUM)):
+                      ("aum", AXIS_AUM),
+                      ("guaranteed_rate", AXIS_GUARANTEED_RATE)):
         if hit := raw.get(key):
             out.append((axis, hit.get("label") or str(hit.get("value")),
                         hit.get("snippet", "")))
@@ -481,6 +551,13 @@ def render_facts_block(facts: list[dict], limit: int = 4) -> str:
     lines.append(
         "  ※ 위험등급은 숫자가 작을수록 위험이 큽니다(1등급이 가장 높은 위험). "
         "숫자만 쓰지 말고 위 표기를 그대로 옮기십시오.")
+    if any(f.get("guaranteed_rate") for f in facts[:limit]):
+        # 확정금리와 실적 수익률을 같은 말로 쓰면 안 된다 — 전자는 계약상
+        # 보장된 값이고 후자는 지나간 실적이다. 사용자가 가장 오해하기
+        # 쉬운 자리이므로 프롬프트에서 명시적으로 구분해 준다.
+        lines.append(
+            "  ※ 확정금리는 원리금보장형의 **약정된 이율**입니다. "
+            "실적배당형의 수익률(과거 실적)과 같은 것처럼 쓰지 마십시오.")
     return "\n".join(lines)
 
 
