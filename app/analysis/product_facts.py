@@ -53,9 +53,10 @@ AXIS_RISK_GRADE = "위험등급"
 AXIS_RETURNS = "수익률"
 AXIS_AUM = "시장잔고"
 AXIS_GUARANTEED_RATE = "확정금리"
+AXIS_EXPENSE = "총보수표"
 
 ALL_AXES = (AXIS_ASSET_CLASS, AXIS_RISK_GRADE, AXIS_RETURNS, AXIS_AUM,
-            AXIS_GUARANTEED_RATE)
+            AXIS_GUARANTEED_RATE, AXIS_EXPENSE)
 
 # 금융투자협회 6단계 위험등급의 표준 의미.
 # 원문 표기가 이와 어긋나면(예: "1등급(매우 낮은 위험)") 구형 5단계이거나
@@ -103,6 +104,7 @@ class ProductFacts:
     aum: Optional[FactHit] = None
     returns: list[FactHit] = field(default_factory=list)
     return_table: Optional[FactHit] = None
+    expense_table: Optional[FactHit] = None
     guaranteed_rate: Optional[FactHit] = None
     # 값이 갈려서 채우지 못한 축과 그 사유. 조용히 비우면 "문서에 없음"과
     # "여러 값이 충돌함"을 구별할 수 없다.
@@ -120,6 +122,8 @@ class ProductFacts:
             out["returns"] = [h.as_dict() for h in self.returns]
         if self.return_table is not None:
             out["return_table"] = self.return_table.as_dict()
+        if self.expense_table is not None:
+            out["expense_table"] = self.expense_table.as_dict()
         if self.conflicts:
             out["conflicts"] = dict(self.conflicts)
         return out
@@ -133,6 +137,7 @@ class ProductFacts:
             axes.append(AXIS_RETURNS)
         if self.aum:             axes.append(AXIS_AUM)
         if self.guaranteed_rate: axes.append(AXIS_GUARANTEED_RATE)
+        if self.expense_table:   axes.append(AXIS_EXPENSE)
         return axes
 
 
@@ -321,6 +326,29 @@ _RETURN_TABLE_HEADER = re.compile(
 _TABLE_LINES = 6
 _TABLE_CHARS = 400
 
+# ── 총보수 표 — 수익률과 **같은 이유로** 파싱하지 않고 원문 인용한다 ──
+#
+# 실측(158문서)에서 총보수는 2,050회·100문서에 등장하는데 기존 추출기
+# (products.py::extract_class_expenses)는 5건(3.2%)만 잡았다. 원인은
+# 그 정규식이 '판매클래스와 요율이 **같은 줄에 30자 이내**'를 요구하는데,
+# 실물 표가 그 형태가 아니기 때문이다:
+#
+#     투자자가 부담하는 수수료 및 총보수 (단위: %) 1,000만원 투자시 투자자가
+#     수수료 총보수 동종유형
+#     총보수                 ← 라벨만 홀로 한 줄
+#     총보수                 ← 값은 다른 줄에
+#
+# 수익률 실적표와 똑같은 다단 표 구조다. 컬럼을 정렬해 파싱하면 엉뚱한
+# 클래스에 엉뚱한 보수가 붙으므로, 여기서도 **표를 잘라 그대로 싣는다.**
+#
+# ⚠️ 이것은 products.py를 대체하지 않는다. 같은 줄 형태가 잡히는 문서에서는
+#    거기서 값이 확정되고 `총보수_비교` 계산함수가 그대로 돈다. 이 축은
+#    **값을 못 뽑은 나머지 문서에서 정보 자체가 사라지는 것**을 막는다.
+_EXPENSE_TABLE_HEADER = re.compile(
+    r'^[^\n]{0,40}(?:수수료\s*및\s*총보수|보수\s*및\s*수수료|'
+    r'총보수\s*및\s*비용|총보수[·∙]\s*비용|클래스별\s*총보수|'
+    r'종류별\s*총보수)[^\n]{0,60}$', re.M)
+
 # 수익률로 오인하기 쉬운 문맥 — 이 말이 같은 줄에 있으면 담지 않는다.
 #
 # ⚠️ 실측(158문서)에서 '수익률'은 6,972회 나오지만 **대부분 실적이 아니다.**
@@ -340,23 +368,34 @@ _RETURN_BLOCKLIST = ("보수", "수수료", "세율", "과세", "공제", "한�
                      "가정", "변동성", "추종", "목표", "등급")
 
 
-def extract_return_table(text: str) -> Optional[FactHit]:
-    """과거 운용실적 표를 **원문 그대로** 잘라 온다 (파싱하지 않는다).
+def _quote_table(text: str, header: re.Pattern, axis: str, label: str,
+                 pattern: str) -> Optional[FactHit]:
+    """표 머리부터 몇 줄을 **원문 그대로** 잘라 온다 (파싱하지 않는다).
 
     반환값의 value는 표 블록 문자열이다. 숫자를 재구성하지 않으므로
     컬럼 오정렬로 인한 오답이 구조적으로 발생할 수 없다.
     """
-    m = _RETURN_TABLE_HEADER.search(text)
+    m = header.search(text)
     if not m:
         return None
-    start = m.start()
-    lines = text[start:].splitlines()[:_TABLE_LINES]
+    lines = text[m.start():].splitlines()[:_TABLE_LINES]
     block = "\n".join(ln.strip() for ln in lines if ln.strip())[:_TABLE_CHARS]
     if len(block) < 20:
         return None
-    return FactHit(axis=AXIS_RETURNS, value=block,
-                   label="과거 운용실적 표(원문 인용)",
-                   snippet=block, pattern="실적표_원문")
+    return FactHit(axis=axis, value=block, label=label,
+                   snippet=block, pattern=pattern)
+
+
+def extract_expense_table(text: str) -> Optional[FactHit]:
+    """총보수 표를 원문 인용한다. products.py의 값 추출을 보완한다."""
+    return _quote_table(text, _EXPENSE_TABLE_HEADER, AXIS_EXPENSE,
+                        "총보수 표(원문 인용)", "보수표_원문")
+
+
+def extract_return_table(text: str) -> Optional[FactHit]:
+    """과거 운용실적 표를 원문 인용한다 (컬럼을 파싱하지 않는다)."""
+    return _quote_table(text, _RETURN_TABLE_HEADER, AXIS_RETURNS,
+                        "과거 운용실적 표(원문 인용)", "실적표_원문")
 
 
 def extract_returns(text: str) -> list[FactHit]:
@@ -513,6 +552,7 @@ def extract_product_facts(text: str, doc_id: str = "") -> ProductFacts:
     facts.aum = extract_aum(text, facts)
     facts.returns = extract_returns(text)
     facts.return_table = extract_return_table(text)
+    facts.expense_table = extract_expense_table(text)
     facts.guaranteed_rate = extract_guaranteed_rate(text, facts)
     return facts
 
@@ -528,8 +568,8 @@ _AXIS_KEYWORDS: dict[str, tuple[str, ...]] = {
                        "투자신탁의 종류"),
     AXIS_RETURNS: ("수익률",),
     AXIS_AUM: ("시장잔고", "설정액", "순자산총액", "운용규모"),
-    AXIS_GUARANTEED_RATE: ("약정이율", "적용금리", "확정금리", "공시이율",
-                           "원리금보장"),
+    AXIS_GUARANTEED_RATE: ("약정이율", "적용금리", "확정금리", "공시이율"),
+    AXIS_EXPENSE: ("총보수", "보수 및 수수료", "수수료 및 총보수"),
 }
 
 
@@ -547,6 +587,8 @@ def _fact_lines(raw: dict) -> list[tuple[str, str, str]]:
         out.append((AXIS_RETURNS, hit.get("label", ""), hit.get("snippet", "")))
     if tbl := raw.get("return_table"):
         out.append((AXIS_RETURNS, tbl.get("label", ""), tbl.get("snippet", "")))
+    if tbl := raw.get("expense_table"):
+        out.append((AXIS_EXPENSE, tbl.get("label", ""), tbl.get("snippet", "")))
     return out
 
 
@@ -616,6 +658,11 @@ def render_facts_block(facts: list[dict], limit: int = 4) -> str:
             "실적인지 반드시 함께 밝혀 참고 정보로만 제시하십시오. 표는 "
             "원문 그대로 실은 것이므로 표에서 임의로 값을 골라 "
             "단정하지 마십시오.")
+    if any(f.get("expense_table") for f in facts[:limit]):
+        lines.append(
+            "  ※ 총보수 표는 원문 그대로 실은 것입니다. 클래스별 값을 임의로 "
+            "짝지어 단정하지 말고, 표에 적힌 대로 옮기십시오. 가입 자격이 "
+            "확인된 클래스끼리만 비교가 의미 있습니다.")
     if any(f.get("guaranteed_rate") for f in facts[:limit]):
         # 확정금리와 실적 수익률을 같은 말로 쓰면 안 된다 — 전자는 계약상
         # 보장된 값이고 후자는 지나간 실적이다. 사용자가 가장 오해하기

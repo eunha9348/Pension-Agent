@@ -317,6 +317,39 @@ def test_실적표_제시에_과거실적_고지가_붙는다():
     assert "임의로 값을 골라" in block
 
 
+# ── 총보수 표 (실측 문형) ──────────────────────────────────
+_REAL_EXPENSE = """미래에셋퇴직연금증권자투자신탁
+투자자가 부담하는 수수료 및 총보수 (단위: %) 1,000만원 투자시 투자자가
+수수료 총보수 동종유형
+C-P 0.5440 0.6100
+C-Pe 0.4390 0.5200
+"""
+
+
+def test_총보수_표를_원문_그대로_인용한다():
+    """★ 실측: 총보수는 100/158 문서에 있는데 기존 추출기는 5건(3.2%)만
+    잡았다. 원인은 '클래스와 요율이 같은 줄에 30자 이내'를 요구하는데
+    실물 표가 그 형태가 아니기 때문이다 — 수익률과 같은 다단 표다."""
+    f = extract_product_facts(_REAL_EXPENSE, "d1")
+    assert f.expense_table is not None, "총보수 표를 못 찾았다"
+    assert "0.5440" in str(f.expense_table.value)
+
+
+def test_총보수_표의_컬럼을_짝지어_파싱하지_않는다():
+    """★ 클래스↔요율을 임의로 짝지으면 엉뚱한 클래스에 엉뚱한 보수가 붙는다."""
+    from app.analysis.product_facts import AXIS_EXPENSE
+    f = extract_product_facts(_REAL_EXPENSE, "d1")
+    assert AXIS_EXPENSE in f.found_axes
+    # 표 인용일 뿐 개별 값 확정이 아니다
+    assert f.expense_table.pattern == "보수표_원문"
+
+
+def test_총보수_표_제시에_주의_문구가_붙는다():
+    f = extract_product_facts(_REAL_EXPENSE, "d1")
+    block = render_facts_block([f.as_dict()])
+    assert "임의로" in block and "가입 자격" in block
+
+
 def test_프롬프트_지시문에_마크다운을_쓰지_않는다():
     """★ HCX가 지시문의 마크다운을 그대로 따라 쓴다 (CLAUDE.md 실연동 확인)."""
     f = extract_product_facts(_REAL_TABLE, "d1")
