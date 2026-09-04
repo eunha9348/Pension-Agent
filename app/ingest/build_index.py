@@ -20,7 +20,6 @@ from app.ingest.chunker import chunk_document
 from app.ingest.metadata import apply_chunk_metadata, build_doc_metadata
 from app.ingest.loader import corpus_files, is_ingestible, iter_documents
 from app.ingest.ocr_repair import repair_documents
-from app.ingest.reocr import reocr_documents
 from app.ingest.store import DEFAULT_INDEX_DIR, ChunkRecord, DocumentStore
 from app.retrieval.bm25 import build_index as build_bm25
 
@@ -57,18 +56,18 @@ def ingest(corpus_dir: Path, corpus_kind: str) -> DocumentStore:
     #    앵커를 잘라 복원율이 떨어진다.
     documents = list(iter_documents(corpus_dir))
 
-    # 교차 문서 대조보다 먼저 재OCR을 돈다 — 손상이 촘촘한 페이지는 앵커
-    # 자체를 만들 공간이 없어(이웃 손상과 겹침) 대조가 구조적으로 불가능한
-    # 경우가 많다(`ocr_repair.py`의 "판독 실패 앵커가 이웃 손상을 물면
-    # 대조가 항상 실패한다" 참조). 재OCR은 그 페이지 자신의 원본 이미지를
-    # 다시 읽는 것이라 이 한계 밖이다(`reocr.py`). 재OCR로 정리된 뒤에도
-    # 남은 손상은 그대로 교차 문서 복원으로 넘어간다 — 이중 안전망이다.
-    reocr = reocr_documents(documents)
-    if reocr.pages_targeted or not reocr.engine_available:
-        print(f"\n[재OCR] {reocr.summary()}")
-        for s_ in reocr.samples:
-            print(f"    · {s_}")
-        print()
+    # ⚠️ 재OCR(reocr.py)은 **의도적으로 호출하지 않는다** (2026-09-05 실측 후
+    #    비활성화). PDF에서 이미지를 꺼내는 것 자체는 되지만, 실물 표본에서
+    #    두 가지 실패가 나왔다: ① 페이지 스캔본이 아니라 여러 페이지가 공유하는
+    #    배경/서식 그래픽을 "가장 큰 이미지"로 잘못 골라 서로 다른 두 페이지가
+    #    글자 하나 안 틀리고 같은 결과를 냈다(doc33). ② 반복 문자가 아니라
+    #    "SASS ATMO"·"wycooas oye sane" 같은 **그럴듯해 보이는 영문 잡음**을
+    #    내놓아 `looks_garbled` 재검사(반복 문자 판정)로는 걸러지지 않는다
+    #    (doc26). `(판독불가)`로 정직하게 격리하는 것보다 실재하지 않는
+    #    문장을 근거처럼 내보내는 쪽이 "오탐이 미탐보다 나쁘다"를 정면으로
+    #    어긴다. 품질을 판정할 결정론적 기준을 아직 못 만들었으므로 마감
+    #    전에는 켜지 않는다 — 진단은 `python -m scripts.reocr_probe`로 계속
+    #    가능하고, `reocr.py`는 결과를 채택하지 않는 이상 무해하다.
 
     repair = repair_documents(documents)
     if repair.runs_found:
@@ -121,15 +120,12 @@ def ingest(corpus_dir: Path, corpus_kind: str) -> DocumentStore:
         "runs_masked": repair.runs_masked,
         "pages_garbled": repair.pages_garbled,
         "summary": repair.summary(),
-        "reocr": {
-            "pages_targeted": reocr.pages_targeted,
-            "pages_adopted": reocr.pages_adopted,
-            "pages_rejected": reocr.pages_rejected,
-            "pages_no_image": reocr.pages_no_image,
-            "pages_ocr_failed": reocr.pages_ocr_failed,
-            "engine_available": reocr.engine_available,
-            "summary": reocr.summary(),
-        },
+        # 재OCR은 파이프라인에서 호출하지 않는다(위 주석 참조) — 실물
+        # 표본에서 가짜 그래픽 재사용·그럴듯한 잡음 텍스트가 나와 품질을
+        # 신뢰할 수 없었다. 진단은 `python -m scripts.reocr_probe`로 계속
+        # 가능하다는 것을 여기서도 남겨 둔다.
+        "reocr": {"status": "비활성 — 2026-09-05 실측 결과 품질 미검증 "
+                            "(scripts.reocr_probe 참조)"},
     }
     return store
 
