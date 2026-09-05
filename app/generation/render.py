@@ -59,6 +59,14 @@ _UNIT_RATE = {
     "r_withholding", "reduction_rate", "applied_rate_of_original_tax",
     "national_rate", "rate_with_local_tax", "r_tax_credit", "r_np_premium",
     "r_irr", "separate_tax_rate_used",
+    # ⚠️ 2026-09-05 외부 심사 리포트로 발견 — calc_private_contribution_limit()의
+    # 실제 출력 키는 파라미터명 r_tax_credit이 아니라 "세액공제율"이다(호출
+    # 측이 인자와 다른 이름으로 반환한다). 이 세트에 없으면 numeric_verifier의
+    # _presence_targets가 이 키를 건너뛰어(금액·비율로 분류된 키만 요구) 소득
+    # 구간별로 달라야 할 유일한 값(13.2%/16.5%)이 "계산 결과" 강제표기 대상에서
+    # 통째로 빠지고, 소득과 무관해 두 구간이 항상 같은 한도 상수(600/900/1800)만
+    # 중복 표기됐다(실사용 재현: 두 줄 모두 "600만원").
+    "세액공제율",
 }
 _UNIT_PLAIN = {          # 금액도 비율도 아닌 값 (개수·연차 등)
     "denominator": "",

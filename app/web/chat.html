@@ -107,6 +107,7 @@
   .h-status.check{color:var(--warn); background:var(--warn-bg)}
   .h-status.revise{color:var(--bad); background:var(--bad-bg)}
   .h-status.refuse{color:var(--muted); background:var(--sunk)}
+  .h-status.error{color:var(--bad); background:var(--bad-bg)}
   .h-status.run{color:var(--info); background:var(--info-bg)}
   .h-time{font-size:10.5px; color:var(--faint); font-family:var(--mono)}
   .h-del{
@@ -202,6 +203,7 @@
   .status-banner.check{background:var(--warn-bg); border-color:var(--warn-line); color:var(--warn)}
   .status-banner.revise{background:var(--bad-bg); border-color:var(--bad-line); color:var(--bad)}
   .status-banner.refuse{background:var(--sunk); border-color:var(--line); color:var(--muted)}
+  .status-banner.error{background:var(--bad-bg); border-color:var(--bad-line); color:var(--bad)}
 
   .tabs{display:flex; gap:2px; border-bottom:1px solid var(--line); margin-bottom:16px}
   .tab{
@@ -282,6 +284,7 @@
       <button class="filter-chip" data-f="check">확인필요</button>
       <button class="filter-chip" data-f="revise">재검증</button>
       <button class="filter-chip" data-f="refuse">거절</button>
+      <button class="filter-chip" data-f="error">오류</button>
     </div>
 
     <div class="history" id="history"></div>
@@ -382,12 +385,19 @@ function judgeStatus(data) {
   if (ans.includes("확인해 주시면 더 정확히 안내드릴 수 있습니다")) return "check";
   return "done";
 }
-const STATUS_LABEL = { done: "완료", check: "확인필요", revise: "재검증", refuse: "거절", run: "진행중" };
+// ⚠️ 2026-09-05 외부 심사 리포트로 발견 — 네트워크/서버 오류(Failed to
+// fetch, HTTP 5xx, 120초 타임아웃)로 요청 자체가 실패한 경우도 예전에는
+// "거절"과 같은 status로 남았다. "거절"은 모델이 근거 부족을 판단해
+// 답하지 않은 것이고, 이건 응답을 아예 받지 못한 것이라 원인이 다르다.
+// 배지·배너만 보고 결과를 집계하면 인프라 장애를 모델의 판단으로
+// 오인할 수 있으므로 별도 status로 분리한다.
+const STATUS_LABEL = { done: "완료", check: "확인필요", revise: "재검증", refuse: "거절", error: "오류", run: "진행중" };
 const STATUS_BANNER = {
   done: "감독 검증을 통과했습니다.",
   check: "정보가 부족해 확인이 필요한 항목이 함께 제시됐습니다.",
   revise: "내부 검증을 완전히 통과하지 못했습니다 — 표시된 항목을 직접 확인하십시오.",
   refuse: "제공 자료 범위에서 근거를 찾지 못해 답변하지 않았습니다.",
+  error: "요청이 실패했습니다(네트워크·서버 오류) — 모델의 판단이 아닙니다. 다시 시도해 주십시오.",
 };
 
 // ── 서버 상태 배너 ───────────────────────────────────────────
@@ -631,7 +641,7 @@ async function runSingle(question, reuseId) {
     const status = judgeStatus(data);
     upsertTurn({ id, question, data, secs, status, ts: Date.now() });
   } catch (e) {
-    upsertTurn({ id, question, status: "refuse", error: e.message, ts: Date.now() });
+    upsertTurn({ id, question, status: "error", error: e.message, ts: Date.now() });
   } finally {
     busy = false; $("#send").disabled = false; $("#input").focus();
     renderHistory();
@@ -678,7 +688,7 @@ $("#batchRun").onclick = async () => {
       const { data, secs } = await callApi(lines[i], id);
       upsertTurn({ id, question: lines[i], data, secs, status: judgeStatus(data), ts: Date.now() });
     } catch (e) {
-      upsertTurn({ id, question: lines[i], status: "refuse", error: e.message, ts: Date.now() });
+      upsertTurn({ id, question: lines[i], status: "error", error: e.message, ts: Date.now() });
     }
     renderHistory();
     if (activeId === id) selectTurn(id);

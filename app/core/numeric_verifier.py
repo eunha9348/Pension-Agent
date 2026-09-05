@@ -299,6 +299,18 @@ def _presence_targets(result: Any, prefix: str = "") -> list[tuple[str, float, s
             flag = _LIMIT_BINDING_FLAG.get(key)
             if not (flag and result.get(flag) is True):
                 continue
+        # ⚠️ 2026-09-05 — "세액공제율"(calc_private_contribution_limit)도
+        # 같은 논리로 면제한다. A_tax_credit(세액공제액)이 이미 나와 있으면
+        # 그 금액 자체가 어느 세율이 적용됐는지를 함축하므로(600×0.165=99
+        # 처럼) 원본 비율(16.5%)을 따로 요구할 필요가 없다 — _LIMIT_CONSTANTS와
+        # 정확히 같은 이유다. 반대로 납입액을 몰라 A_tax_credit이 없으면
+        # (두 소득구간 variants만 있는 경우) 이 비율이 두 구간을 가르는
+        # **유일한** 값이라 반드시 요구해야 한다. 안 그러면 소득과 무관해
+        # 두 구간에서 항상 같은 한도 상수만 "계산 결과"에 중복 표기되고
+        # 정작 달라야 할 값은 어느 쪽도 검증되지 않는다(외부 심사 리포트로
+        # 실사용 재현).
+        if key == "세액공제율" and "A_tax_credit" in result:
+            continue
         if key in _PRESENCE_SKIP or not isinstance(value, (int, float)):
             continue
         if isinstance(value, bool):

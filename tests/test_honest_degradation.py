@@ -15,6 +15,8 @@ Q-001에서 L6는 초안과 재생성을 모두 반려했다. 즉 시스템은 �
 
 from __future__ import annotations
 
+import pytest
+
 from app.core.coverage_pipeline import Answerability
 from app.core.supervisory_board import (Finding, SupervisionResult, Verdict,
                                         supervise)
@@ -122,6 +124,92 @@ def test_고지_항목은_최대_2건이다():
     notice, asks = _unresolved_notice(sup)
     assert len(asks) <= 2
     assert notice.count("· ") <= 2
+
+
+# ════════════════════════════════════════════════════════════════
+# F21 · 내부 진단·오류 텍스트가 고객 답변에 노출 (2026-09-05, 외부 심사
+# 리포트로 발견)
+#
+# 콘솔에 자체 설계 질의 10건을 넣어본 심사 리포트가, l6_semantic_audit이
+# 429로 실패하거나 재생성이 끝내 미해소로 남을 때 사용자 화면에
+#   "의미 감사 호출 실패: HTTP 429: {"status":{"code":"42901",...}} —
+#    결정론적 판정만 적용"
+# 이라는 원시 예외 텍스트와,
+#   "다음을 답변에 명시적으로 반영할 것 — [A9] ... (반드시 '이연퇴직소득'
+#    중 한 표현을 답변 본문에 그대로 쓸 것)"
+# 라는 재생성용 LLM 지시문이 그대로 나갔다는 것을 재현해 보여줬다.
+# 둘 다 _unresolved_notice()가 "감사 판정"과 "감사 진행 로그/LLM 지시"를
+# 구분하지 않고 f.directive or f.detail을 그대로 붙였기 때문이다.
+# ════════════════════════════════════════════════════════════════
+
+def test_의미감사_호출실패의_원시_예외_텍스트는_고지문에_나가지_않는다():
+    """★ 실사용에서 확인된 치명적 결함 그대로 재현.
+
+    supervise_with_llm_audit()의 except 분기가 만드는 CALL_FAIL Finding은
+    HyperCLOVA X 429 등 원시 예외 문자열을 detail에 담는다. 이건 "감사
+    진행 상황"이지 "감사 판정"이 아니므로 고객에게 보이면 안 된다.
+    """
+    sup = SupervisionResult(
+        verdict=Verdict.REVISE,
+        findings=[Finding(
+            "의미감사", "CALL_FAIL", Verdict.REVISE,
+            '의미 감사 호출 실패: HTTP 429: '
+            '{"status":{"code":"42901","message":"Too many requests: '
+            'rate exceeded..."}} — 결정론적 판정만 적용', "")],
+    )
+    notice, asks = _unresolved_notice(sup)
+    assert "429" not in notice and "42901" not in notice
+    assert "HTTP" not in notice
+    assert notice == "" and asks == [], (
+        "이 finding 하나만으로는 담을 내용이 없어야 한다 — "
+        "감사 진행 로그를 고지문 재료로 쓰면 안 된다")
+
+
+def test_트랩_미해소_directive의_LLM_지시절은_잘라내고_교정내용은_남긴다():
+    """★ TRAP_UNADDRESSED의 directive는 재생성 프롬프트용 "합격 조건"
+    (2026-09-02 도입)을 담을 수 있다 — "반드시 '…' 중 한 표현을 답변
+    본문에 그대로 쓸 것". 이 절은 모델에게 하는 지시이지 고객에게 하는
+    말이 아니다. directive 자체는(재생성 소비자를 위해) 건드리지 않고,
+    고지문에 노출할 때만 이 절을 잘라낸다 — 교정 취지(재원 구분 등)는
+    남아야 한다.
+    """
+    sup = SupervisionResult(
+        verdict=Verdict.REVISE,
+        findings=[Finding(
+            "적합성", "TRAP_UNADDRESSED", Verdict.REVISE,
+            "감지된 함정 중 답변에서 다뤄지지 않은 것: ['A9'] (critical 1건)",
+            "다음을 답변에 명시적으로 반영할 것 — [A9] 단, 이연퇴직소득은 "
+            "퇴직소득 과세기준 적용 (반드시 '이연퇴직소득' 중 한 표현을 "
+            "답변 본문에 그대로 쓸 것)")],
+    )
+    notice, asks = _unresolved_notice(sup)
+    assert "그대로 쓸 것" not in notice
+    # 고정 서두 문구("반드시 별도로 확인해 주십시오")는 제외하고,
+    # finding에서 온 항목 줄만 검사한다.
+    item_line = next(ln for ln in notice.splitlines() if ln.startswith("· "))
+    assert "반드시" not in item_line
+    assert "이연퇴직소득" in item_line, "지시절만 지우고 교정 취지는 남겨야 한다"
+
+
+@pytest.mark.parametrize("auditor,code", [
+    ("의미감사", "SKIPPED"),
+    ("법령근거", "TRACE"),
+    ("법령저촉", "TRACE"),
+    ("법령저촉", "NONE"),
+])
+def test_감사_진행_로그성_finding은_고지문에_실리지_않는다(auditor, code):
+    """★ 이 넷은 "판정"이 아니라 "진행 상황" 기록이다 — 대조 대상 조문
+    수·생략 사유처럼 내부 트레이스일 뿐, 사용자에게 확인을 요구할 내용이
+    아니다. severity가 REVISE/BLOCK인 채로 남는 경우가 있어(예: 법령
+    검사가 REVISE 판정 위에 얹힐 때) code만으로는 실수로 노출될 수 있다.
+    """
+    sup = SupervisionResult(
+        verdict=Verdict.REVISE,
+        findings=[Finding(auditor, code, Verdict.REVISE,
+                          "내부 트레이스 문구", "")],
+    )
+    notice, asks = _unresolved_notice(sup)
+    assert notice == "" and asks == []
 
 
 # ════════════════════════════════════════════════════════════════

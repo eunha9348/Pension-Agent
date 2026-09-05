@@ -40,6 +40,7 @@ coverage_pipeline.run_with_timeout()은 ThreadPoolExecutor 기반이라
 from __future__ import annotations
 
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -1470,6 +1471,33 @@ def _compose_trace(query_spec: dict, trace: TraceLogger) -> str:
 #      내부 프롬프트가 답변에 그대로 노출된다
 _SELF_RESOLVING = {"CALC_NOT_SHOWN"}
 
+# ⚠️ 2026-09-05 실사용 리포트로 발견 — 위 ②와 같은 계열의 노출이 두 곳
+#    더 있었다. 감사 "판정"이 아니라 감사 "진행 상황"만 기록하는 항목들인데,
+#    severity가 우연히 det.verdict(REVISE/BLOCK)를 물려받으면 아래
+#    _unresolved_notice()가 그대로 답변 본문에 붙였다:
+#      · ("의미감사","CALL_FAIL")  — 원시 예외 텍스트를 detail에 담는다.
+#        실사용에서 "HTTP 429: {"status":{"code":"42901",...}}"가
+#        고객 화면에 그대로 나갔다(치명적 결함).
+#      · ("의미감사","SKIPPED")    — "의미 감사 생략" 트레이스일 뿐 지적이 아니다.
+#      · ("법령근거","TRACE")·("법령저촉","TRACE")·("법령저촉","NONE")
+#        — 조문 대조 진행 로그일 뿐 판정이 아니다.
+#    (auditor, code) 쌍으로 제외한다 — code만으로 걸러내면 다른 감사가
+#    같은 code 문자열("TRACE" 등)을 판정 목적으로 쓸 때 함께 묻힐 수 있다.
+_DIAGNOSTIC_ONLY_FINDINGS = {
+    ("의미감사", "CALL_FAIL"),
+    ("의미감사", "SKIPPED"),
+    ("법령근거", "TRACE"),
+    ("법령저촉", "TRACE"),
+    ("법령저촉", "NONE"),
+}
+
+# TRAP_UNADDRESSED의 directive는 재생성 프롬프트용으로 "반드시 '…' 중 한
+# 표현을 답변 본문에 그대로 쓸 것"이라는 LLM 지시 문구를 담을 수 있다
+# (supervisory_board.py의 "합격 조건" 삽입, 2026-09-02). 재생성 프롬프트에는
+# 이 지시가 그대로 필요하므로 directive 자체는 건드리지 않고, 고객에게
+# 보여줄 때만 이 절만 잘라낸다.
+_LLM_DIRECTIVE_CLAUSE = re.compile(r"\s*\(반드시[^()]*그대로 쓸 것\)")
+
 
 def _numeric_passed(verdict) -> bool:
     """수치 검증을 통과했는가. 검증기가 돌지 않았으면(None) 통과로 본다."""
@@ -1558,7 +1586,8 @@ def _unresolved_notice(supervision) -> tuple[str, list[str]]:
     """
     unresolved = [f for f in getattr(supervision, "findings", [])
                   if f.severity in (Verdict.REVISE, Verdict.BLOCK)
-                  and f.code not in _SELF_RESOLVING]
+                  and f.code not in _SELF_RESOLVING
+                  and (f.auditor, f.code) not in _DIAGNOSTIC_ONLY_FINDINGS]
     if not unresolved:
         return "", []
 
@@ -1566,8 +1595,12 @@ def _unresolved_notice(supervision) -> tuple[str, list[str]]:
              "아래 항목은 반드시 별도로 확인해 주십시오."]
     asks: list[str] = []
     for f in unresolved[:2]:
-        # 시정 지시가 있으면 그게 가장 구체적이다
+        # 시정 지시가 있으면 그게 가장 구체적이다. 다만 directive는 재생성
+        # 프롬프트용 LLM 지시 문구("반드시 '…' 그대로 쓸 것")를 포함할 수
+        # 있으므로, 고객에게 보일 때는 그 절만 잘라낸다(directive 원본은
+        # 건드리지 않는다 — 재생성 쪽 소비자는 그대로 필요로 한다).
         detail = (f.directive or f.detail or "").strip()
+        detail = _LLM_DIRECTIVE_CLAUSE.sub("", detail).strip()
         if not detail:
             continue
         lines.append(f"· {detail}")
