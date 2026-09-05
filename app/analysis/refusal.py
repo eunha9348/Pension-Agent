@@ -87,6 +87,16 @@ _INJECTION = [
 ]
 
 # ── 3. 문서 범위 밖 ───────────────────────────────────────────
+# ⚠️ F30이 만든 UNRELATED_TOPIC 판정(아래 check_refusal)의 원조 코드는 이
+# 세트를 정의만 해 두고 실제 조건문에서 빠뜨렸다(2026-09-06 실사용으로
+# 발견) — "솔로몬 국공채 단기·중장기·장기, 뭐가 달라요? 안정적인 걸
+# 원해요"(과제 안내 4페이지 예시 질의 그대로)가 거절됐다. "국공채"는
+# DOMAIN_AREAS["상품"]에 이미 있는데(L0 분류가 실제로 이 질의를 '상품'
+# 영역으로 분류한다), 정작 거절 게이트는 DOMAIN_TERMS(제도 용어 위주)와
+# _FINANCE_CONTEXT_EXTRA만 봐서 상품명·상품 어휘 신호를 놓쳤다 — 결과적으로
+# 상품 비교(위험등급·총보수 비교)라는 대주제 2 전체가 이 문 앞에서 막혔다.
+# L0가 이미 분류해 둔 어휘 집합을 여기서도 그대로 재사용해 두 판정이
+# 어긋나지 않게 한다.
 _DOMAIN_KEYWORDS = {k for kws in DOMAIN_AREAS.values() for k in kws}
 # 연금 도메인의 주변 어휘 — 이게 있으면 도메인 밖이라 단정하지 않는다
 _SOFT_DOMAIN = {"연금", "퇴직", "노후", "수령", "납입", "적립", "세액", "과세",
@@ -183,6 +193,7 @@ def check_refusal(question: str,
     #    거절하는 게 더 나쁘다).
     if (not any(t in q for t in DOMAIN_TERMS)
             and not any(t in q for t in _FINANCE_CONTEXT_EXTRA)
+            and not any(t in q for t in _DOMAIN_KEYWORDS)
             and not parse_amount_expressions(q)
             and parse_rate(q) is None):
         return RefusalCheck(
