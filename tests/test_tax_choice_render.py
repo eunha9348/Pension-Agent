@@ -245,3 +245,88 @@ def test_분리과세_쪽_인적공제도_함께_노출된다():
     r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
                                  other_comprehensive_income=7000)
     assert r["separate"]["인적공제"] == 150.0
+
+
+# ════════════════════════════════════════════════════════════════
+# F38 · 과세방식 비교 각 단계에 세율(%) 안내 추가 (사용자 요청)
+# ════════════════════════════════════════════════════════════════
+#
+# 사용자 요청 — "각 단계에서 세율에 대한 퍼센트에이지 안내도 같이 해주면
+# 좋겠다. 단, 로직을 해치거나 안전성을 해칠 위험이 조금이라도 있다면
+# 하지 말아달라."
+#
+# 위험 검토:
+# ① 사적연금 분리과세 몫은 DEFAULT_SEPARATE_TAX_RATE_LOCAL(16.5%)이라는
+#    이미 쓰이던 **상수**를 그대로 노출할 뿐이다 — 새 판단이 없다.
+# ② 그 외 소득 종합과세·종합과세 전체는 누진세율(6~45% 8단계)이라 단일
+#    세율이 없다. 새 세율을 추정하지 않고, 이미 계산된 세액÷과세표준의
+#    **실효세율**(나누기 한 번)만 파생한다 — "적용세율"이 아니라
+#    "실효세율"이라 불러 이 값이 누진 구간과 다르다는 것을 그대로 드러낸다.
+# ③ verify_calc_presence(_presence_targets)는 separate/comprehensive처럼
+#    중첩된 dict를 재귀하지 않으므로(변형 없는 일반 dict의 값이 dict면
+#    isinstance(value, (int, float)) 검사에서 걸러진다) 새 필드가 답변에
+#    강제로 요구되지 않는다 — 기존에 과세표준·합계 등도 강제되지 않았던
+#    것과 같은 동작이라 새로운 강제표기 위험이 없다.
+# ④ verify_numeric_grounding(_flatten_numbers)은 모든 중첩값을 재귀하므로
+#    새 퍼센트 수치도 허용 집합에 자동으로 들어간다 — 답변이 이 값을
+#    인용해도 '근거 없는 수치'로 잡히지 않는다(아래 테스트로 실측 확인).
+
+def test_사적연금_분리과세_세율이_노출된다():
+    """상수를 그대로 노출하므로 항상 16.5%다."""
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    assert r["separate"]["사적연금_적용세율"] == 0.165
+
+
+def test_누진구간_실효세율은_세액을_과세표준으로_나눈_값이다():
+    """★ 새 판단이 아니라 이미 나온 두 숫자의 비율이어야 한다."""
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    comp = r["comprehensive"]
+    assert comp["실효세율"] == round(comp["합계"] / comp["과세표준"], 6)
+
+    sep = r["separate"]
+    assert sep["그외소득_실효세율"] == round(sep["그외_종합과세"] / sep["그외소득_과세표준"], 6)
+
+
+def test_그외소득이_0이면_실효세율도_0이고_0으로_나누지_않는다():
+    """★ 회귀 방지 — division by zero를 내면 안 된다."""
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000)
+    assert r["separate"]["그외소득_실효세율"] == 0.0
+    assert r["separate"]["그외소득_과세표준"] == 0.0
+
+
+def test_렌더링된_문장에_세율이_퍼센트로_보인다():
+    """★ 배선 — 답변 문장 자체에 %가 찍혀야 사용자에게 도달한 것이다."""
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    text = render_calc_result(r)
+    assert "세율 16.5%" in text
+    assert "실효세율 17.15%" in text
+    assert "실효세율 18.64%" in text
+
+
+def test_새_세율_수치가_근거없는_수치로_잡히지_않는다():
+    """★ 안전성 확인 — 답변에 쓰인 새 %가 numeric_verifier를 통과해야 한다."""
+    from app.core.numeric_verifier import verify_numeric_grounding
+
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    text = render_calc_result(r)
+    v = verify_numeric_grounding(text, calc_results=[r],
+                                 question="사적연금 2000만원, 그외소득 7000만원 분리과세 종합과세")
+    assert v.passed, v.ungrounded
+
+
+def test_새_필드가_계산결과_강제표기_대상에_새로_추가되지_않는다():
+    """★ 안전성 확인 — verify_calc_presence가 nested dict를 재귀하지 않는지
+    재확인한다. 재귀하면 이 세율들이 답변에 없을 때마다 강제로 요구돼
+    불필요한 축퇴 위험이 새로 생긴다.
+    """
+    from app.core.numeric_verifier import verify_calc_presence
+
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    # 세율 얘기를 전혀 안 한 답변 — 그래도 강제 누락으로 잡히면 안 된다
+    p = verify_calc_presence("세액 차이는 15.8만원입니다.", [r])
+    assert p.passed, [m[0] for m in p.missing]

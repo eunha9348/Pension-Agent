@@ -295,11 +295,21 @@ def compare_taxation_options(P_np_annual: float,
     comprehensive_total = _f_comp(base_comp) * (1.1 if include_local_tax else 1.0)
 
     cheaper = "SEPARATE" if separate_total < comprehensive_total else "COMPREHENSIVE"
+    # ⚠️ 종합과세는 누진세율(6~45% 8단계)이라 "이 세율 하나"가 없다 — 실제
+    # 적용된 것은 여러 구간에 걸친 세액이다. 그래서 새 세율을 추정·가정하지
+    # 않고, 이미 계산된 세액·과세표준에서 **실효세율(세액÷과세표준)**을
+    # 나누기 한 번으로만 파생한다. 이건 새 판단이 아니라 이미 나온 두 숫자의
+    # 비율일 뿐이므로 "계산은 함수" 원칙을 벗어나지 않는다. 분리과세의
+    # 사적연금 몫만 유일하게 단일 세율(16.5%, 상수)이라 그대로 노출한다.
+    sep_other_rate = round(sep_other_tax / base_np, 6) if base_np > 0 else 0.0
+    comp_rate = round(comprehensive_total / base_comp, 6) if base_comp > 0 else 0.0
     return {
         "choice_required": True,
         "separate": {
             "사적연금_분리과세": round(sep_private_tax, 2),
+            "사적연금_적용세율": round(DEFAULT_SEPARATE_TAX_RATE_LOCAL, 4),
             "그외_종합과세": round(sep_other_tax, 2),
+            "그외소득_실효세율": sep_other_rate,
             "그외소득_과세표준": round(base_np, 2),
             "인적공제": round(personal_deduction, 2),
             "합계": round(separate_total, 2),
@@ -320,6 +330,7 @@ def compare_taxation_options(P_np_annual: float,
             "인적공제": round(personal_deduction, 2),
             "과세표준": round(base_comp, 2),
             "합계": round(comprehensive_total, 2),
+            "실효세율": comp_rate,
         },
         "lower_tax_option": cheaper,
         "difference": round(abs(separate_total - comprehensive_total), 2),

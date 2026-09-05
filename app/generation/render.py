@@ -74,6 +74,10 @@ _UNIT_RATE = {
     # 통째로 빠지고, 소득과 무관해 두 구간이 항상 같은 한도 상수(600/900/1800)만
     # 중복 표기됐다(실사용 재현: 두 줄 모두 "600만원").
     "세액공제율",
+    # 과세방식 비교(compare_taxation_options)의 세율 안내 — 아래 _pct()가
+    # 쓰지만, 다른 호출자가 이 키를 범용 렌더러로 찍을 때도 %로 보이도록
+    # 일관되게 등록해 둔다.
+    "사적연금_적용세율", "그외소득_실효세율", "실효세율",
 }
 _UNIT_PLAIN = {          # 금액도 비율도 아닌 값 (개수·연차 등)
     "denominator": "",
@@ -138,6 +142,13 @@ def label_of(key: str) -> str:
     return _LABELS.get(key, key)
 
 
+def _pct(rate: Any) -> str:
+    """소수 비율(0.165)을 퍼센트 문자열("16.5%")로. 값이 없으면 빈 문자열."""
+    if rate is None:
+        return ""
+    return f"{float(rate) * 100:.4g}%"
+
+
 def _render_tax_choice(result: dict, indent: str) -> str:
     """compare_taxation_options()의 결과 전용 문장 렌더러.
 
@@ -156,19 +167,29 @@ def _render_tax_choice(result: dict, indent: str) -> str:
     sep_total = format_manwon(sep.get("합계", 0))
     sep_private = format_manwon(sep.get("사적연금_분리과세", 0))
     sep_other = sep.get("그외_종합과세", 0)
+    sep_private_rate = _pct(sep.get("사적연금_적용세율"))
+    sep_other_rate = _pct(sep.get("그외소득_실효세율"))
 
     gross = format_manwon(comp.get("총연금및기타소득", 0))
     deduction = format_manwon(comp.get("연금소득공제", 0))
     personal = format_manwon(comp.get("인적공제", 0))
     base = format_manwon(comp.get("과세표준", 0))
     comp_total = format_manwon(comp.get("합계", 0))
+    comp_rate = _pct(comp.get("실효세율"))
 
     cheaper = "분리과세" if result.get("lower_tax_option") == "SEPARATE" else "종합과세"
     diff = format_manwon(result.get("difference", 0))
     basis = result.get("기준", "")
 
-    sep_detail = (f"(사적연금 분리과세 {sep_private} + 그 외 소득 종합과세 "
-                 f"{format_manwon(sep_other)})" if sep_other else "")
+    # ⚠️ 종합과세·그 외 소득 몫은 누진세율(6~45%)이라 단일 세율이 없다.
+    # "실효세율"(세액 ÷ 과세표준)은 이미 계산된 두 값의 비율일 뿐 새로
+    # 판단하거나 가정하는 값이 아니다 — 그래서 "적용세율"이 아니라
+    # "실효세율"이라고 구분해 부른다. 사적연금 분리과세 몫만 유일하게
+    # 단일 세율(16.5%, 상수)이 있어 그대로 보여준다.
+    sep_detail = (f"(사적연금 분리과세 {sep_private}[세율 {sep_private_rate}] "
+                 f"+ 그 외 소득 종합과세 {format_manwon(sep_other)}"
+                 f"[실효세율 {sep_other_rate}])" if sep_other else
+                 (f"(세율 {sep_private_rate})" if sep_private_rate else ""))
 
     # ⚠️ 과세표준을 "얼마(연금소득공제 X 반영)"로 뭉뚱그리면 안 된다
     # (2026-09-06, UI-037 실측) — 총소득에서 연금소득공제만 빼면 사용자가
@@ -180,7 +201,8 @@ def _render_tax_choice(result: dict, indent: str) -> str:
         f"중 하나를 선택해야 합니다.",
         f"{indent}분리과세를 선택하면 세액이 {sep_total}{(' ' + sep_detail) if sep_detail else ''}이고, "
         f"종합과세를 선택하면 총소득 {gross}에서 연금소득공제 {deduction}과 "
-        f"인적공제 {personal}을 뺀 과세표준 {base}에 대해 세액이 {comp_total}입니다.",
+        f"인적공제 {personal}을 뺀 과세표준 {base}에 대해 세액이 "
+        f"{comp_total}(실효세율 {comp_rate})입니다.",
         f"{indent}세액만 보면 {cheaper} 쪽이 {diff} 더 낮습니다"
         + (f"({basis} 기준)." if basis else "."),
     ]
