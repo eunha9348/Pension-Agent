@@ -23,7 +23,17 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from app.analysis.units import parse_amount_expressions, parse_rate
+from app.analysis.vocab import DOMAIN_TERMS
 from app.core.grounding_retrieval import DOMAIN_AREAS, OUT_OF_SCOPE_SIGNALS
+
+# DOMAIN_TERMS(vocab.py)는 연금 제도 용어 위주라 "노후"·"은퇴"처럼 흔히
+# 쓰이는 개인 재무 어휘가 빠져 있다. 여기 추가분은 도메인 용어는 아니지만
+# "이 질문이 재무·노후 설계와 조금이라도 관련 있는가"를 넓게 잡기 위한 것.
+_FINANCE_CONTEXT_EXTRA = frozenset({
+    "노후", "은퇴", "돈", "자산", "재테크", "적금", "예금", "목돈",
+    "재무", "자금", "월급", "소득", "수입", "현금", "투자",
+})
 
 
 @dataclass
@@ -155,6 +165,31 @@ def check_refusal(question: str,
                 True, "OUT_OF_DOMAIN",
                 f"'{signal}'은(는) 제공 자료가 다루는 연금 영역 밖입니다.",
                 f"도메인 밖 신호 '{signal}' 감지")
+
+    # ── 연금·재무와 아무 관련이 없는 질의 ──
+    #
+    # ⚠️ OUT_OF_SCOPE_SIGNALS(위)는 "코인·부동산·환율"처럼 재무 영역이긴
+    #    하지만 연금이 아닌 것만 잡는 좁은 목록이다. "저녁 메뉴 추천해줘",
+    #    "오늘 날씨 어때" 같은 **재무와 아예 무관한** 질의는 그 목록에
+    #    안 걸리고, ADVISORY 신호("추천"·"조언"·"괜찮을까" 등)와 개인
+    #    서술 패턴("~는데")은 도메인과 무관하게 거의 모든 캐주얼한 한국어
+    #    문장에 걸리므로, 이런 질의도 그대로 ADVISORY로 라우팅돼 HCX가
+    #    성실하게 답을 시도했다(2026-09-06 실사용 지적).
+    #
+    #    셋 다 없을 때만(도메인 용어 · 재무 맥락 어휘 · 금액 표현) 거절한다
+    #    — 하나라도 있으면 "부동산은 없고 현금 3,500만원 있는데 노후대비…"
+    #    같은 정당한 질의를 놓치지 않는다. 애매하면 통과시킨다(오탐이
+    #    미탐보다 나쁘다는 원칙은 여기서는 반대 방향 — 정당한 질의를
+    #    거절하는 게 더 나쁘다).
+    if (not any(t in q for t in DOMAIN_TERMS)
+            and not any(t in q for t in _FINANCE_CONTEXT_EXTRA)
+            and not parse_amount_expressions(q)
+            and parse_rate(q) is None):
+        return RefusalCheck(
+            True, "UNRELATED_TOPIC",
+            "죄송하지만 연금·노후 재무 설계와 관련 없는 질문에는 답변드리기 "
+            "어렵습니다. 연금·퇴직급여·세제 관련 질문을 해주시면 도와드리겠습니다.",
+            "연금·재무 맥락 신호(도메인 용어·금액 표현) 없음")
 
     # ⚠️ NO_EVIDENCE / NO_DOMAIN_NO_EVIDENCE 는 제거했다.
     #    근거를 못 찾았다는 것은 '답하지 말라'가 아니라 '무엇이 부족한지
