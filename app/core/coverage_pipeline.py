@@ -110,8 +110,29 @@ class TraceLogger:
 
         as_text()가 이걸 이어 붙이므로 둘의 내용은 항상 같다 — 두 벌로
         만들면 감지 대상과 사용자에게 보이는 기록이 어긋난다.
+
+        ⚠️ 계산 단계는 산출값(output)을 사람이 읽는 형태로 함께 남긴다
+        (2026-09-06, 사용자 요청 — "세금 계산 과정을 답변이 아니라 응답
+        자체에 투명하게 공개해 달라. 프롬프트를 더 손대는 방식 말고").
+        답변(answer)은 HyperCLOVA X가 자연어로 다시 쓰므로 세율 같은
+        세부값을 생략할 수 있지만(프롬프트로 권고할 수는 있어도 강제할
+        수는 없다), think_trace는 **결정론적으로 조립되는 필드**라
+        LLM의 선택과 무관하게 항상 같은 내용이 실린다. render_calc_result를
+        그대로 재사용한다 — 답변 생성에 쓰는 것과 같은 함수라야 표시가
+        어긋나지 않는다("표시 반올림과 수치 검증의 기준을 어긋나게 두지
+        말 것"과 같은 원칙).
         """
-        return [f"[{s.elapsed_ms}ms] {s.step} — {s.reason}" for s in self._steps]
+        lines = []
+        for s in self._steps:
+            line = f"[{s.elapsed_ms}ms] {s.step} — {s.reason}"
+            output = s.detail.get("output")
+            if s.step == "결정론적_계산_실행" and output is not None:
+                from app.generation.render import render_calc_result
+                rendered = render_calc_result(output, indent="    ")
+                if rendered.strip():
+                    line += "\n" + rendered
+            lines.append(line)
+        return lines
 
 
 # ════════════════════════════════════════════════════════════════

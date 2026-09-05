@@ -746,3 +746,70 @@ def test_과세방식_비교_답변이_두_수치를_모두_반영한다():
         "종합과세중 어떤 것으로 선택해야 이득일까")
     assert "8,160만원" in r["answer"], "그 외 소득 7000만원이 과세표준에 반영되지 않았다"
     assert "분리과세" in r["answer"] and "낮습니다" in r["answer"]
+
+
+# ════════════════════════════════════════════════════════════════
+# F40 · 계산 과정의 투명성은 프롬프트가 아니라 think_trace가 보장한다
+# ════════════════════════════════════════════════════════════════
+#
+# 사용자 요청 — "세율 정보가 안 나타나는데 이유가 뭐야?"에 대한 진단으로
+# SUPERVISOR_SYSTEM_PROMPT에 "세율을 함께 쓰라"는 규칙을 추가했었다(F39).
+# 그런데 사용자가 이어서 정정했다 — "내가 정확히 원한 건 세금 계산 과정을
+# response에 투명하게 공개하는 것이지, 프롬프트를 손대는 게 아니다."
+#
+# 프롬프트 지시는 HyperCLOVA X가 안 지킬 수 있다(권고일 뿐 강제가 아니다 —
+# 마크다운 금지 지시를 어긴 전례가 CLAUDE.md에 이미 있다). 반면 think_trace는
+# **결정론적으로 조립되는 필드**라 LLM이 무엇을 쓰든 항상 같은 내용이 실린다.
+# 그래서 F39의 프롬프트 규칙(규칙 10)은 되돌리고, 대신
+# `TraceLogger.entries()`가 계산 단계(`결정론적_계산_실행`)의 산출값을
+# `render_calc_result()`로 렌더링해 think_trace에 직접 싣도록 했다 —
+# 답변 생성에 쓰는 것과 **같은 렌더러**라 표시가 어긋나지 않는다.
+
+def test_세율_지시가_프롬프트에서_제거됐다():
+    """★ 사용자가 명시적으로 정정한 방향 — 프롬프트 수정이 아니라 응답 자체.
+
+    rule 9의 예시("...16.5%가 적용됩니다")는 이 기능과 무관한 기존 규칙이라
+    "세율"이라는 낱말 자체는 여전히 나온다 — F39가 추가했던 규칙 10
+    ("그 세율도 함께 쓰십시오")만 없어졌는지를 본다.
+    """
+    from app.generation import answer_prompt as ap
+
+    assert "그 세율도" not in ap.SUPERVISOR_SYSTEM_PROMPT
+    assert "억지로" not in ap.SUPERVISOR_SYSTEM_PROMPT
+
+
+def test_계산_결과가_think_trace에_그대로_노출된다():
+    """★ 배선 — LLM이 뭐라고 쓰든 think_trace에는 항상 계산 과정이 실린다."""
+    from app.pipeline import answer_question
+
+    r = answer_question(
+        "ROUND-3",
+        "연간 사적연금 수령액이 2000만원이고 그외 소득액에 소득공제를 "
+        "적용하면 7000만원이야. 분리과세와 종합과세중 어떤 것으로 "
+        "선택해야 이득일까")
+    trace = r["think_trace"]
+    assert "세율 16.5%" in trace
+    assert "실효세율 17.15%" in trace
+    assert "실효세율 18.64%" in trace
+    assert "8,160만원" in trace
+
+
+def test_계산_없는_질의는_think_trace가_늘어나지_않는다():
+    """대조군 — 계산 슬롯이 없으면 이 렌더링이 아예 발동하지 않아야 한다."""
+    from app.core.coverage_pipeline import TraceLogger
+
+    trace = TraceLogger()
+    trace.log("L0_분류", "일반 문의로 분류")
+    entries = trace.entries()
+    assert entries == ["[0.0ms] L0_분류 — 일반 문의로 분류"]
+
+
+def test_계산_결과가_없으면_렌더링을_건너뛴다():
+    """★ 회귀 방지 — output이 None이거나 없는 계산 단계에서 예외가 나면 안 된다."""
+    from app.core.coverage_pipeline import TraceLogger
+
+    trace = TraceLogger()
+    trace.log("결정론적_계산_실행", "계산 완료", slot_id="s1")  # output 키 없음
+    entries = trace.entries()
+    assert len(entries) == 1
+    assert "\n" not in entries[0]
