@@ -206,6 +206,38 @@ def test_퇴직급여_총액이_명시되면_여전히_잡힌다():
     assert c.get("severance_manwon") == 8000
 
 
+def test_LLM이_현금을_연금계좌_평가액으로_오판해도_반영하지_않는다():
+    """UI-017 실사용 재현 (2026-09-06).
+
+    "나 24살에 3000만원 현금있고 500만원 주택청약있는데 노후대비 어떻게
+    해야할까? 연금을 아예 모르겠누 ㅋ"는 명백히 ADVISORY(불특정 개인 서술)
+    질의인데, 실서버의 HyperCLOVA X(L1)가 "3000만원 현금"을
+    account_value_manwon(연금계좌 평가액)으로 잘못 라벨링했다. 규칙 기반
+    추출은 '계좌에'·'평가액' 없이는 이 슬롯을 만들지 않아 안전했지만,
+    LLM이 준 조건을 병합하는 루프에는 그 검증이 없어 그대로 통과됐다.
+    그 결과 계산 조건이 있는 것으로 오판돼 ADVISORY로 가야 할 질의가
+    GENERAL로 잘못 라우팅되고, 대응하는 계산이 없어 "제공 자료로 확정하기
+    어렵습니다"로 무너졌다(mock에서는 L1이 항상 비어 규칙 경로만 타므로
+    로컬 회귀에서는 재현되지 않았다 — 실서버에서만 보이는 결함).
+    """
+    q = ("나 24살에 3000만원 현금있고 500만원 주택청약있는데 "
+         "노후대비 어떻게 해야할까? 연금을 아예 모르겠누 ㅋ")
+    c = derive_conditions(q, llm_conditions={"account_value_manwon": 3000, "age": 24})
+    assert "account_value_manwon" not in c
+
+    from app.analysis.routing import classify_route
+    route = classify_route(q, conditions=c, asked_for=[])
+    assert route.route == "ADVISORY", f"여전히 잘못 라우팅됨: {route}"
+
+
+def test_LLM이_준_정당한_계좌평가액은_그대로_반영된다():
+    """반대 방향 회귀 — '평가액' 같은 정당한 문맥의 LLM 값은 계속 계산돼야 한다."""
+    c = derive_conditions(
+        "IRP 평가액이 3억원이고 연금수령 2년차면 연금수령한도는 얼마인가요?",
+        llm_conditions={"account_value_manwon": 30000, "pension_year": 2})
+    assert c.get("account_value_manwon") == 30000
+
+
 # ════════════════════════════════════════════════════════════════
 # 결함 6 · PDF 이중 글리프가 답변까지 노출
 # ════════════════════════════════════════════════════════════════

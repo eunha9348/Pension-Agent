@@ -84,6 +84,55 @@ def _is_balance_amount(question: str, value: float) -> bool:
     return False
 
 
+# 이 명사가 금액 앞뒤에 붙으면 연금 관련 계좌·납입·퇴직급여가 **아니라**
+# 그냥 일반 자산(현금·예적금)이다. 연금 계좌에 들어있지 않다는 뜻이므로
+# account_value_manwon 등 연금 관련 슬롯으로 넘기면 안 된다.
+# ⚠️ "3000만원 현금있고"처럼 한국어는 이 명사가 금액 **뒤**에 붙는 경우가
+#    흔하다 — _is_income_amount(명사가 항상 금액 앞)와 달리 양방향으로 봐야 한다.
+_NON_PENSION_ASSET_NOUN = ("현금", "예금", "적금", "저축")
+
+
+def _is_non_pension_asset_amount(question: str, value: float) -> bool:
+    """그 금액이 연금 계좌가 아니라 일반 현금·예적금을 가리키는가.
+
+    ━━ 왜 필요한가 (UI-017, 2026-09-06) ━━
+    "24살에 3000만원 현금있고 500만원 주택청약있는데 노후대비 어떻게
+    해야할까"에서 실서버의 HyperCLOVA X(L1)가 "3000만원 현금"을
+    account_value_manwon(연금계좌 평가액)으로 잘못 라벨링해 규칙 기반
+    추출(derive_conditions의 rule 단계)이 걸러내는 값을 **LLM 조건 병합
+    루프가 그대로 받아들였다.** 그 결과 계산 조건이 있는 것으로 오판돼
+    ADVISORY(불특정 개인 서술)로 가야 할 질의가 GENERAL로 잘못 라우팅됐고,
+    대응하는 계산이 없어 "제공 자료로 확정하기 어렵습니다"로 무너졌다.
+
+    규칙 기반 경로는 애초에 '계좌에'·'평가액' 같은 키워드 없이는
+    account_value_manwon을 만들지 않으므로 안전하다(이 함수가 없어도
+    로컬 재현에서 확인됨). 이 함수는 **LLM이 준 값에도 같은 수준의
+    의심을 적용**하기 위한 것이다 — 규칙 경로의 _is_income_amount와
+    같은 계열.
+    """
+    q = question or ""
+    for start, end, v in parse_amount_expressions(q):
+        if v != value:
+            continue
+        before = q[max(0, start - 12):start]
+        after = q[end:end + 8]
+        if any(n in before for n in _NON_PENSION_ASSET_NOUN):
+            return True
+        if any(n in after for n in _NON_PENSION_ASSET_NOUN):
+            return True
+    return False
+
+
+# LLM이 이 키들에 값을 줬다면, 그 금액이 실제로는 연금 계좌 밖 일반 자산
+# (현금·예적금)일 가능성을 의심해야 한다 — 규칙 경로는 '계좌에'·'평가액' 같은
+# 전용 키워드 없이는 이 키들을 만들지 않으므로 안전하지만, LLM은 그런 검증
+# 없이 자유롭게 라벨링할 수 있기 때문이다.
+_PENSION_ACCOUNT_KEYS = frozenset({
+    "account_value_manwon", "severance_manwon", "pension_saving_manwon",
+    "irp_manwon", "combined_contribution_manwon",
+})
+
+
 # 이 명사 바로 뒤에 붙은 금액은 **소득**이지 납입액이 아니다.
 _INCOME_NOUN = ("총급여", "연봉", "종합소득", "근로소득", "소득금액", "급여가", "연소득")
 
@@ -431,6 +480,13 @@ def derive_conditions(question: str,
                     c.setdefault("condition_notes", []).append(
                         f"{k}={_fmt(val)}로 분석됐으나 있을 수 없는 값이라 "
                         f"반영하지 않았습니다")
+                continue
+            if k in _PENSION_ACCOUNT_KEYS and _is_non_pension_asset_amount(q, val):
+                # LLM이 "3000만원 현금"을 account_value_manwon 등으로 잘못
+                # 라벨링한 경우 — 근거 없는 라벨을 받아들이지 않는다.
+                c.setdefault("condition_notes", []).append(
+                    f"{_fmt(val)}만원이 현금·예적금 등으로 언급되어 연금 계좌 "
+                    f"조건({k})으로 반영하지 않았습니다")
                 continue
             if _unit_confusion(k, c.get(k), val, _text_ceiling):
                 # 규칙이 읽은 값이 있으면 그 값을 지키고, 없으면(천장값만으로
