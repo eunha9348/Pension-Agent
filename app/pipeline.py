@@ -85,7 +85,7 @@ from app.generation.answer_prompt import (make_generate_answer,
                                           strip_forbidden, strip_markdown)
 from app.generation.grounding import make_verify_grounding
 from app.ingest.store import get_store
-from app.llm.clova import MOCK_BANNER, get_client, llm_call_adapter
+from app.llm.clova import MOCK_BANNER, USAGE, get_client, llm_call_adapter
 from app.retrieval.coarse import make_coarse_search
 from app.retrieval.embedding import embedding_enabled
 from app.retrieval.hybrid import make_retrieve_hybrid
@@ -756,10 +756,12 @@ def _answer_question_impl(question_id: str, question: str,
         draft = render_advisory_fallback(query_spec, evidence, extra_conditions,
                                          trap_context)
         trace.log("L4sub_예산초과", f"남은 예산 부족 → {fallback_note}로 진행")
+        USAGE.record_degradation("l4sub_예산초과_축퇴")
     else:
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
         trace.log("L5'_예산초과", f"남은 예산 부족 → {fallback_note}로 진행")
+        USAGE.record_degradation("l5_예산초과_축퇴")
 
     draft, md_found = strip_markdown(draft)
     if md_found:
@@ -1012,12 +1014,26 @@ def _answer_question_impl(question_id: str, question: str,
             trace.log("SubAgent_구제_실패",
                       "Sub-Agent 재생성 호출이 답변을 만들지 못함 → 원본 유지")
 
+    # ⚠️ 이 아래 세 검사(BLOCK·수치검증·상품명 접지)는 전부 draft를
+    #    render_template_answer로 **완전히 교체**한다 — L5'/L4-sub가 빈
+    #    응답을 준 경우(l5_템플릿축퇴)와 사용자에게 도달하는 결과가
+    #    똑같다: **HyperCLOVA X가 쓴 문장이 아니라 결정론적 템플릿이
+    #    나간다.** 그런데 2026-09-05 T2 실측(298건)까지 이 셋은
+    #    `record_degradation()`을 하나도 안 불렀다 — `/health`의
+    #    `llm_usage.degradation_total`이 "0이 아니면 그만큼 HCX가 만든
+    #    답변이 아니다"를 보장한다고 CLAUDE.md에 적어 뒀는데, 실측에서
+    #    수치검증 실패로만 298건 중 60건 이상이 이 경로를 탔고 그중
+    #    단 한 건도 집계되지 않았다. 즉 실제 축퇴율이 카운터가 보여주는
+    #    값(7.4%)보다 훨씬 컸다 — "검사가 잡은 것을 답변이 안 막으면
+    #    그 검사는 없는 것이다"의 반대쪽 사례: 검사는 답변을 막았는데
+    #    **집계가 그 사실을 밖으로 안 알렸다.**
     # ── BLOCK → 축퇴 ─────────────────────────────────────────
     if supervision is not None and supervision.verdict == Verdict.BLOCK:
         trace.log("L6_차단", "감독 심사 BLOCK — 생성 답변을 폐기하고 "
                            "계산 결과·근거만 담은 보수적 답변으로 축퇴")
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
+        USAGE.record_degradation("l6_차단_축퇴")
 
     # 수치 검증 실패는 반드시 답변에 반영한다 (조용히 넘기지 않는다)
     if verdict.numeric is not None and not verdict.numeric.passed:
@@ -1026,6 +1042,7 @@ def _answer_question_impl(question_id: str, question: str,
                   f"결정론적 답변으로 축퇴")
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
+        USAGE.record_degradation("수치검증_실패_축퇴")
 
     # ── 상품명 접지 검사 ──────────────────────────────────────
     #
@@ -1049,6 +1066,7 @@ def _answer_question_impl(question_id: str, question: str,
                   f"결정론적 답변으로 축퇴")
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
+        USAGE.record_degradation("상품명_접지_실패_축퇴")
 
     # ── 계산값이 끝내 답변에 없으면 결정론적으로 덧붙인다 ──────
     #
