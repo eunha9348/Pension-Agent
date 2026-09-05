@@ -50,7 +50,8 @@ from app.analysis.bridge import find_bridge
 from app.analysis.calc_params import make_calc_params_builder
 from app.analysis.conditions import describe_conditions
 from app.analysis.product_facts import _fact_lines as _fact_lines_of
-from app.analysis.product_facts import collect_facts, fact_snippets
+from app.analysis.product_facts import (collect_facts, fact_snippets,
+                                        facts_reflected_in_answer)
 from app.analysis.products import extract_class_expenses
 from app.analysis.query_spec import make_extract_query_spec
 from app.analysis.refusal import check_refusal, check_safety_refusal
@@ -767,7 +768,9 @@ def _answer_question_impl(question_id: str, question: str,
     # ── 인용 조립 ─────────────────────────────────────────────
     used_evidence = _used_evidence(
         evidence, slots, query_spec,
-        trap_docs=_addressed_trap_docs(draft, trap_context.get("checks")))
+        trap_docs=_addressed_trap_docs(draft, trap_context.get("checks")),
+        fact_docs=facts_reflected_in_answer(
+            draft, query_spec.get("_product_facts") or []))
     calc_results = [s.calc_result for s in slots
                     if s.status == SlotStatus.CALC_DONE and s.calc_result is not None]
     external = _external_sources(calc_results)
@@ -1115,7 +1118,9 @@ def _answer_question_impl(question_id: str, question: str,
     #    다시 계산해도 결과가 같으므로 비용은 없다.
     used_evidence = _used_evidence(
         evidence, slots, query_spec,
-        trap_docs=_addressed_trap_docs(draft, trap_context.get("checks")))
+        trap_docs=_addressed_trap_docs(draft, trap_context.get("checks")),
+        fact_docs=facts_reflected_in_answer(
+            draft, query_spec.get("_product_facts") or []))
     citations = build_citations(used_evidence, calc_results,
                                 doc_meta=store.doc_meta_map(),
                                 external_sources=external,
@@ -1278,7 +1283,8 @@ def _addressed_trap_docs(answer: str, trap_checks: list[dict]) -> dict[str, str]
 def _used_evidence(evidence: list[EvidenceChunk],
                    slots: list[RequirementSlot],
                    query_spec: Optional[dict] = None,
-                   trap_docs: Optional[dict[str, str]] = None) -> list[dict]:
+                   trap_docs: Optional[dict[str, str]] = None,
+                   fact_docs: Optional[dict[str, str]] = None) -> list[dict]:
     """**사용한** 근거만 인용 대상으로 추린다 (검색된 전부가 아니라).
 
     ⚠️ 슬롯에 매핑된 근거가 하나도 없으면 **아무것도 인용하지 않는다.**
@@ -1314,6 +1320,15 @@ def _used_evidence(evidence: list[EvidenceChunk],
 
     # 답변이 반영한 함정의 근거 문서 — 실제로 답변을 형성했으므로 인용한다
     for did, why in (trap_docs or {}).items():
+        supports = used_ids.setdefault(did, [])
+        if why not in supports:
+            supports.append(why)
+
+    # 답변이 반영한 상품 팩트의 근거 문서 — 위와 같은 이유다.
+    # 팩트 블록은 슬롯 매핑을 거치지 않고 생성 프롬프트에 실리므로, 여기서
+    # 되살리지 않으면 "답변에는 위험등급 4등급이 있는데 retrieved_context는
+    # 근거 문서 없음"이라는 상태가 만들어진다(2026-09-05 배선 테스트로 확인).
+    for did, why in (fact_docs or {}).items():
         supports = used_ids.setdefault(did, [])
         if why not in supports:
             supports.append(why)

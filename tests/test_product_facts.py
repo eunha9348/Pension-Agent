@@ -84,6 +84,58 @@ def test_표형식_문서에서도_뽑는다():
     assert [h.value for h in f.returns] == [-2.10]
 
 
+def test_제목과_값이_다른_줄에_있어도_상품분류를_뽑는다():
+    """★ 실물 투자설명서의 지배적 형태 (2026-09-05).
+
+    【집합투자기구의 종류】
+    증권집합투자기구(채권혼합형)
+
+    패턴이 `[^\\n]`으로 줄에 묶여 있어 이 형태를 통째로 놓쳤다 — 같은
+    문서에서 위험등급은 잡히는데 상품분류만 빠지던 원인이다
+    (실측 커버리지 63.3% vs 32.9%).
+    """
+    f = extract_product_facts(
+        "【집합투자기구의 종류】\n증권집합투자기구(채권혼합형)\n", "d1")
+    assert f.asset_class is not None, "제목-값이 다른 줄이면 못 뽑는다"
+    assert f.asset_class.value == "채권혼합형"
+
+
+def test_어순이_다른_혼합형_표기도_같은_분류로_뽑는다():
+    """법령 용어는 '혼합채권형'이지만 협회 분류·실물 문서는 '채권혼합형'을
+    쓴다. 한쪽만 등록하면 그 표기를 쓴 문서에서 축이 통째로 사라진다."""
+    for term in ("채권혼합형", "주식혼합형", "혼합채권형", "혼합주식형"):
+        f = extract_product_facts(f"상품분류 | {term}\n", "d1")
+        assert f.asset_class is not None, f"{term}을 못 뽑는다"
+        assert f.asset_class.value == term
+
+
+def test_분류_표제는_줄을_넘어_산문을_긁지_않는다():
+    """★ 위 완화의 반대편 — '투자대상'류 표제어 뒤에는 분류값이 아니라
+    산문이 온다. 줄을 넘기게 했더니 부정문을 정반대로 확정했다:
+    "【투자대상】 / 이 펀드는 주식형 자산에 투자하지 않습니다" → 주식형.
+    """
+    f = extract_product_facts(
+        "【집합투자기구의 종류】\n\n【투자대상】\n"
+        "이 펀드는 주식형 자산에 투자하지 않습니다\n", "d2")
+    assert f.asset_class is None, (
+        f"다음 절의 산문에서 분류를 지어냈다: {f.asset_class}")
+
+
+def test_설정원본도_시장잔고로_뽑는다():
+    """'설정원본'은 투자설명서의 표준 표기인데 빠져 있었다. 시장잔고는
+    실측 커버리지 8.2%로 6축 중 가장 낮아 표기 하나의 영향이 크다."""
+    f = extract_product_facts("【집합투자기구의 규모】\n설정원본 1,234억원\n", "d1")
+    assert f.aum is not None, "설정원본을 못 뽑는다"
+    assert f.aum.value == 1234.0
+
+
+def test_설정원본이라도_규제_기준선은_거른다():
+    """★ 위 추가가 기존 차단어를 우회하지 않는지 확인한다."""
+    f = extract_product_facts(
+        "설정원본 50억원 미만인 소규모 집합투자기구는 해지될 수 있습니다.\n", "d2")
+    assert f.aum is None, f"제도상 기준선을 그 펀드의 잔고로 잡았다: {f.aum}"
+
+
 def test_모든_값이_원문_스니펫을_들고_다닌다():
     """★ 값만 남기면 인용도 검증도 못 한다."""
     f = extract_product_facts(_HEADED, "d1")
@@ -365,6 +417,28 @@ def test_총보수_표를_원문_그대로_인용한다():
     f = extract_product_facts(_REAL_EXPENSE, "d1")
     assert f.expense_table is not None, "총보수 표를 못 찾았다"
     assert "0.5440" in str(f.expense_table.value)
+
+
+def test_표_인용은_다음_절_제목에서_멈춘다():
+    """★ 표가 짧으면 줄 수 제한만으로는 뒤 절이 딸려 온다 (2026-09-05 실측).
+
+    이 스니펫은 ① 생성 프롬프트에 "이 값만 사용 가능"으로 실리고
+    ② fact_snippets를 거쳐 **수치 검증 허용 집합**에 들어간다. 다른 절의
+    수치(설정원본 등)가 섞이면 그 값이 총보수인 것처럼 근거를 얻는다 —
+    "근거 뭉치 전체를 허용 집합에 넣지 않는다"(F8)와 같은 결함이다.
+    """
+    from app.analysis.product_facts import extract_expense_table
+
+    hit = extract_expense_table(
+        "【수수료 및 총보수】\n"
+        "클래스 운용보수 판매보수 총보수\n"
+        "C-P2 0.180 0.150 0.395\n"
+        "【집합투자기구의 규모】\n"
+        "설정원본 1,234억원\n")
+    assert hit is not None
+    assert "0.395" in hit.snippet, "표 본문까지 잘렸다"
+    assert "1,234" not in hit.snippet, (
+        f"다음 절의 수치가 총보수표 스니펫에 섞였다: {hit.snippet!r}")
 
 
 def test_총보수_표의_컬럼을_짝지어_파싱하지_않는다():
