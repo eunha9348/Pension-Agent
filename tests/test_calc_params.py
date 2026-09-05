@@ -27,12 +27,16 @@ def _slot(fn: str, desc: str = "테스트") -> RequirementSlot:
 # 규격 커버리지
 # ════════════════════════════════════════════════════════════════
 
-def test_registry_15종이_전부_인자규격을_갖는다():
-    """DEPRECATED 1종(과세방식_판정_계산)은 remap으로 대체되므로 제외."""
+def test_registry_17종이_전부_인자규격을_갖는다():
+    """DEPRECATED 1종(과세방식_판정_계산)은 remap으로 대체되므로 제외.
+
+    ⚠️ 2026-09-06 — 수리팀 산식 2종(DB형_퇴직급여_계산·DC형_적립액_계산)
+    추가로 15→17종. 인자 규격을 함께 넣지 않으면 등록만 되고 호출은
+    되지 않으므로, 이 테스트가 그 누락을 잡는다."""
     covered = set(CALC_PARAM_SPECS) | {"과세방식_판정_계산"}
     missing = set(CALC_REGISTRY) - covered
     assert not missing, f"인자 규격이 없는 계산함수: {missing}"
-    assert len(CALC_REGISTRY) == 15
+    assert len(CALC_REGISTRY) == 17
 
 
 def test_deprecated_함수는_현행함수로_교정된다():
@@ -391,12 +395,22 @@ def test_L1이_원_단위로_착각해도_규칙값을_지킨다():
     assert c["account_value_manwon"] == 10000.0
 
 
-def test_버린_사실을_한계고지에_남긴다():
-    """조용히 버리면 왜 그 값이 안 쓰였는지 추적할 수 없다."""
+def test_버린_사실을_진단기록에_남긴다():
+    """조용히 버리면 왜 그 값이 안 쓰였는지 추적할 수 없다.
+
+    ⚠️ 2026-09-06 변경 — 기록 채널이 condition_notes → diagnostic_notes로
+    분리됐다. 이 기록은 원시 키 이름과 비정상 수치를 담은 **내부 진단**이라
+    고객 문장에 실리면 안 된다. 실사용에서 "자산 500억"을 HCX가 원 단위로
+    준 사례에서 "분석 결과(50,000,000,000만원)가 질의 원문의 금액과 자릿수가
+    크게 달라 반영하지 않았습니다"가 답변에 그대로 노출됐다(F21 계열).
+    추적 가능성(불변식)은 그대로 유지하고, 노출 경로만 trace로 옮긴다.
+    """
     from app.analysis.conditions import derive_conditions
 
     c = derive_conditions(_Q_1억, llm_conditions={"account_value_manwon": 1})
-    assert any("자릿수" in n for n in c.get("condition_notes", []))
+    assert any("자릿수" in n for n in c.get("diagnostic_notes", []))
+    assert not any("자릿수" in n for n in c.get("condition_notes", [])), \
+        "내부 진단이 고객 문장(condition_notes)에 실렸다"
 
 
 def test_같은_자릿수_이견은_L1을_존중한다():
@@ -492,3 +506,66 @@ def test_입력_경계가_항상_만원으로_변환한다():
     ]
     for q, key, expected in cases:
         assert derive_conditions(q).get(key) == expected, q
+
+
+# ════════════════════════════════════════════════════════════════
+# 퇴직급여 적립액 배선 (수리팀 산식 · 2026-09-06)
+#
+# ⚠️ 부품(계산함수)만 맞아도 조건 추출·인자 규격·TopicRule 중 하나가
+#    빠지면 계산은 한 번도 호출되지 않는다. 공개 경로로 지나가는
+#    배선 테스트를 함께 둔다.
+# ════════════════════════════════════════════════════════════════
+
+def test_DB형_평균월급과_근속연수로_적립액이_계산된다():
+    cond = derive_conditions(
+        "퇴직 직전 3개월 평균월급이 500만원이고 근속 20년입니다. "
+        "DB형 퇴직급여가 얼마인가요")
+    assert cond["avg_monthly_wage_manwon"] == 500
+    assert cond["service_years"] == 20
+
+    builder = make_calc_params_builder(cond)
+    slots = run_calculations([_slot("DB형_퇴직급여_계산")], builder)
+    assert slots[0].status == SlotStatus.CALC_DONE
+    assert slots[0].calc_result["퇴직급여_적립액"] == pytest.approx(10000.0)
+
+
+def test_DC형_연차구간이_명시되면_계단식으로_적분한다():
+    """"1~5년차는 5천만원" 형태 — N~M년차는 구간 [N-1, M]을 뜻한다."""
+    cond = derive_conditions(
+        "근속연수 15년이고, 연봉은 1~5년차는 5천만원, 6~10년차는 8천만원, "
+        "11~15년차는 1억2천만원이었어. dc형 연금으로 쌓인 총액이 얼마일까")
+    assert cond["salary_schedule"][0] == (0, 5000.0)
+
+    builder = make_calc_params_builder(cond)
+    slots = run_calculations([_slot("DC형_적립액_계산")], builder)
+    assert slots[0].status == SlotStatus.CALC_DONE
+    assert slots[0].calc_result["퇴직급여_적립액"] == pytest.approx(10416.6667, abs=0.01)
+
+
+def test_DC형_초봉과_현재연봉만_있으면_선형가정을_고지한다():
+    """두 점만 알면 선형으로 볼 수밖에 없다 — 그 가정을 반드시 밝힌다."""
+    cond = derive_conditions(
+        "근속 연수는 35년이고, 연봉은 초봉 5000만원으로 시작해서 "
+        "지금은 1억 1000만원이야. dc형 연금으로 쌓인 총액이 얼마야")
+    assert cond["salary_schedule"] == [(0.0, 5000.0), (35.0, 11000.0)]
+    assert any("선형" in n for n in cond.get("condition_notes", [])), \
+        "선형 증가 가정이 고지되지 않았다"
+
+
+def test_연차별_연봉을_모르면_지어내지_않고_되묻는다():
+    """구간을 추측으로 만들면 그 순간 '계산은 함수' 원칙이 무너진다."""
+    cond = derive_conditions("DC형으로 쌓인 총액이 얼마나 되나요?")
+    assert "salary_schedule" not in cond
+
+    builder = make_calc_params_builder(cond)
+    slots = run_calculations([_slot("DC형_적립액_계산")], builder)
+    assert slots[0].status == SlotStatus.MISSING
+    assert any("연봉" in a for a in builder.ask_back_items())
+
+
+def test_제도_설명만_묻는_질의에는_계산슬롯을_만들지_않는다():
+    """"DB형이 뭐예요?"에 빈 계산 카드가 붙으면 안 된다."""
+    from app.analysis.query_spec import rule_based_spec
+
+    spec = rule_based_spec("DB형이랑 DC형이 뭐가 달라요?")
+    assert not [a for a in spec["asked_for"] if a["type"] == "calculation"]

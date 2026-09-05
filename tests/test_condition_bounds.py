@@ -48,7 +48,14 @@ def test_있을_수_없는_값은_전부_버려진다():
     for key, bad_value in cases:
         c = derive_conditions("질문", {key: bad_value})
         assert key not in c, f"{key}={bad_value} 가 걸러지지 않았다"
-        assert c.get("condition_notes"), f"{key}={bad_value} 가 조용히 버려졌다"
+        # ⚠️ 2026-09-06 변경 — 기록 채널이 condition_notes → diagnostic_notes로
+        #    분리됐다. 불변식("버린 값이 조용히 사라지지 않는다")은 그대로이고,
+        #    다만 이 기록은 **내부 진단**이라 고객 문장에 실리지 않아야 한다.
+        #    실사용에서 "분석 결과(50,000,000,000만원)가 … 반영하지 않았습니다"가
+        #    답변에 그대로 노출된 사고가 있었다(F21과 같은 계열).
+        assert c.get("diagnostic_notes"), f"{key}={bad_value} 가 조용히 버려졌다"
+        assert not c.get("condition_notes"), \
+            f"{key}={bad_value} 의 내부 진단이 고객 문장(condition_notes)에 실렸다"
 
 
 def test_정상_범위는_그대로_통과한다():

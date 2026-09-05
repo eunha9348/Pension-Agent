@@ -91,6 +91,8 @@ _VALID: dict[str, tuple] = {
     #    것보다 물어보는 편이 낫다.
     "account_value": (0, 1_000_000, "연금계좌 평가액 (만원 단위로 알려주세요)"),
     "severance_pay": (0, 1_000_000, "퇴직급여 총액 (만원 단위로 알려주세요)"),
+    "avg_monthly_wage": (0, 100_000,
+                         "퇴직 직전 3개월간 평균월급 (만원 단위로 알려주세요)"),
     # 납입액은 연간 총 납입한도 1,800만원을 넘을 수 없다
     "X_pension_saving": (0, 1_800, "연금저축 납입액 (연 1,800만원 한도)"),
     "Y_irp_personal": (0, 1_800, "IRP 개인부담금 (연 1,800만원 한도)"),
@@ -310,6 +312,21 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
         ParamSpec("severance_pay", _get("severance_manwon"),
                   ask_back="퇴직급여 총액"),
         ParamSpec("service_years", _get("service_years"), ask_back="근속연수"),
+    ],
+
+    # ── 퇴직급여 적립액 (수리팀 산식) ───────────────────────────
+    # ⚠️ 둘 다 **적립 원금**만 낸다. DC는 운용성과에 따라 실제 잔고가
+    #    달라지므로 "예상 수령액"으로 단정하면 안 된다 — 함수 반환의
+    #    '기준' 필드가 그 사실을 함께 싣는다.
+    "DB형_퇴직급여_계산": [
+        ParamSpec("avg_monthly_wage", _get("avg_monthly_wage_manwon"),
+                  ask_back="퇴직 직전 3개월간 평균월급"),
+        ParamSpec("service_years", _get("service_years"), ask_back="근속연수"),
+    ],
+    "DC형_적립액_계산": [
+        ParamSpec("salary_schedule", _get("salary_schedule"),
+                  ask_back="근속 연차별 연봉 (예: 입사 시 5,000만원 → "
+                           "10년차 7,000만원)"),
     ],
 
     # ── 유틸 · 적합성 ──────────────────────────────────────────

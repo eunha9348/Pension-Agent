@@ -42,6 +42,10 @@ _LABELS = {
     "eligible": "가입 가능",
     "comparable": "비교 가능한 클래스",
     "excluded": "가입 자격 미충족으로 제외",
+    # 퇴직급여 적립액 (수리팀 산식)
+    "퇴직급여_적립액": "퇴직급여 적립액(적립 원금 기준)",
+    "평균월급": "퇴직 직전 3개월 평균월급",
+    "근속연수": "근속연수",
 }
 
 # ── 단위 표기 ──────────────────────────────────────────────────
@@ -54,6 +58,8 @@ _UNIT_MANWON = {
     "근속연수공제", "환산급여", "환산급여공제", "퇴직소득_과세표준",
     "환산산출세액", "산출세액", "합계", "과세표준", "연금소득공제",
     "사적연금_분리과세", "그외_종합과세",
+    # 퇴직급여 적립액 (수리팀 산식 · DB/DC 공통 출력 키)
+    "퇴직급여_적립액", "평균월급",
 }
 _UNIT_RATE = {
     "r_withholding", "reduction_rate", "applied_rate_of_original_tax",
@@ -81,7 +87,8 @@ _AMOUNT_HINTS = ("limit", "한도", "세액", "금액", "공제", "T_", "A_", "P
 
 # 답변에 그대로 노출하지 않는 내부 키
 _SKIP_KEYS = {"source", "rate_source", "DEPRECATED", "note", "⚠️", "기준", "action",
-              "doc_id", "markers", "is_legacy_suspect", "reason", "params", "label"}
+              "doc_id", "markers", "is_legacy_suspect", "reason", "params", "label",
+              "구간수"}      # 연차 구간 개수는 내부 계산 상세라 답변에 싣지 않는다
 
 # ⚠️ False일 때는 아예 싣지 않는 플래그.
 #    "연간 납입한도(1,800만원) 초과 = 아니오"는 아무 정보도 주지 않으면서

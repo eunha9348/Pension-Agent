@@ -140,3 +140,35 @@ def test_등록된_함수는_강등되지_않는다():
     assert slot["type"] == "calculation"
     assert slot.get("calc_function") == "사적연금_원천징수_계산"
     assert "calc_unavailable" not in slot
+
+
+def test_억단위_분리표기가_근거없는_수치로_잡히지_않는다():
+    """UI 실사용 재현 (2026-09-06) — 1억을 넘는 계산 결과의 표시형.
+
+    format_manwon은 10,000만원 이상을 "1억 417만원"처럼 억과 만원으로
+    쪼개 쓴다. 그런데 검증 대조 집합에는 반올림 보정값(10,417)만 있어서,
+    답변에 실제로 찍히는 417이 '근거 없는 수치'로 잡혔다. 그 결과
+    **계산이 정확히 성공했는데도** 답변이 통째로 템플릿으로 축퇴했다.
+
+    "표시 반올림과 수치 검증의 기준을 어긋나게 두지 말 것"(CLAUDE.md)과
+    정확히 같은 함정의 억 단위 판이다. 오차 허용을 늘려 해결하면 진짜
+    날조까지 통과하므로, 표시 함수가 만든 표기를 허용 집합에 넣어 푼다.
+    """
+    from app.analysis.units import format_manwon
+    from app.core.numeric_verifier import _flatten_numbers
+
+    result = {"퇴직급여_적립액": 10416.6667}
+    allowed = _flatten_numbers(result)
+
+    assert format_manwon(10416.6667) == "1억 417만원"
+    assert 417.0 in allowed, "표시형의 만원 부분이 허용 집합에 없다"
+    assert 10416.6667 in allowed, "원본 값이 허용 집합에서 사라졌다"
+
+
+def test_억단위_표기_허용이_무관한_수치까지_통과시키지_않는다():
+    """반대 방향 회귀 — 표시형을 넣는다고 아무 수나 통과하면 안 된다."""
+    from app.core.numeric_verifier import _flatten_numbers
+
+    allowed = _flatten_numbers({"퇴직급여_적립액": 10416.6667})
+    assert 9999.0 not in allowed
+    assert 500.0 not in allowed

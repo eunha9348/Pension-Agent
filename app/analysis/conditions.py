@@ -204,6 +204,61 @@ def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[floa
     return best[1] if best else None
 
 
+_RANGE_YEARS = re.compile(r'(\d{1,2})\s*[~∼\-–]\s*(\d{1,2})\s*년\s*차?')
+_FIRST_SALARY = ("초봉", "첫 연봉", "첫연봉", "입사 시", "입사시", "시작")
+_NOW_SALARY = ("지금은", "지금", "현재는", "현재", "올해")
+
+
+def _salary_schedule(q: str, service_years: Optional[float]) -> Optional[list]:
+    """DC형 적립액 산식의 입력 — [(근속연차, 연봉만원), ...] 를 만든다.
+
+    ━━ 두 형태만 결정론적으로 다룬다 ━━
+    (a) 구간 명시 — "1~5년차는 5천만원, 6~10년차는 8천만원"
+        'N~M년차'는 구간 [N-1, M]을 뜻한다(1년차 = 입사 후 첫 해 = [0,1]).
+        구간 안에서는 연봉이 일정하므로 양 끝점을 모두 넣어 계단을 만든다.
+    (b) 초봉·현재 연봉 — "초봉 5000만원으로 시작해서 지금은 1억 1000만원"
+        + 근속연수. 두 점만 알므로 **그 사이는 선형 변화로 가정**하고,
+        그 사실을 condition_notes로 고지한다(계단식 인상이면 오차가 난다).
+
+    ⚠️ 이 밖의 서술은 만들지 않는다. 추측으로 구간을 지어내면 그 순간
+       "계산은 함수" 원칙이 무너진다 — 모르면 되묻는 편이 맞다.
+    """
+    text = q or ""
+    exprs = parse_amount_expressions(text)
+    if not exprs:
+        return None
+
+    # ── (a) 구간 명시 ──
+    segments: list[tuple[float, float, float]] = []      # (시작, 끝, 연봉)
+    for m in _RANGE_YEARS.finditer(text):
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if lo < 1 or hi < lo:
+            continue
+        after = [(s, v) for s, _e, v in exprs if s >= m.end()]
+        if not after:
+            continue
+        start, value = min(after, key=lambda p: p[0])
+        if start - m.end() > _NEAR_WINDOW:
+            continue
+        segments.append((lo - 1, float(hi), value))
+    if len(segments) >= 2:
+        segments.sort(key=lambda s: s[0])
+        pts: list[tuple[float, float]] = []
+        for lo, hi, value in segments:
+            pts.append((lo, value))
+            pts.append((hi, value))
+        return pts
+
+    # ── (b) 초봉 + 현재 연봉 + 근속연수 ──
+    if not service_years or service_years <= 0:
+        return None
+    first = _find_amount_near(text, _FIRST_SALARY)
+    now = _find_amount_near(text, _NOW_SALARY)
+    if first is None or now is None or first == now:
+        return None
+    return [(0.0, first), (float(service_years), now)]
+
+
 # _manwon 접미사가 없지만 숫자여야 하는 필드. LLM 출력에서 여기 해당하는
 # 키의 값이 숫자로 안 바뀌면 조용히 버린다(위조할 수 없으므로).
 _NUMERIC_CONDITION_KEYS = {"age", "pension_year", "actual_receipt_year",
@@ -342,6 +397,20 @@ def derive_conditions(question: str,
         sev = None
     if sev is not None:
         c["severance_manwon"] = sev
+    # DB형 퇴직급여 산식의 입력 — 퇴직 직전 3개월 평균월급.
+    # ⚠️ '연봉'과 섞이면 12배 오차가 나므로 소득 가드를 그대로 건다.
+    wage = _find_amount_near(q, ("평균월급", "평균 월급", "평균임금", "평균 임금",
+                                 "월급", "월 급여", "월급여"))
+    if wage is not None and not _is_income_amount(q, wage):
+        c["avg_monthly_wage_manwon"] = wage
+    # DC형 적립액 산식의 입력 — 연차별 연봉 구간
+    if (sched := _salary_schedule(q, c.get("service_years"))) is not None:
+        c["salary_schedule"] = sched
+        if len(sched) == 2:
+            c.setdefault("condition_notes", []).append(
+                "연차별 연봉 변화를 구간별로 확인하지 못해 입사 시점과 현재 "
+                "연봉 사이를 선형 증가로 가정해 계산했습니다. 실제 인상이 "
+                "계단식이면 결과가 달라질 수 있습니다")
     # ⚠️ '계좌에'는 잔고 표지가 아니라 **위치 표지**다. "연금계좌에 900만원
     #    납입하면"의 900은 평가액이 아니라 납입액인데, 예전에는 평가액으로
     #    읽어 세액공제 계산이 통째로 빗나갔다(300건 감사 A03).
@@ -477,14 +546,14 @@ def derive_conditions(question: str,
                 # 환산 같은 정정 규칙이 없다) — 있을 수 없는 값이므로
                 # 그대로 버리고, 규칙 파싱 값이 있으면 그걸 지킨다.
                 if k not in c:
-                    c.setdefault("condition_notes", []).append(
+                    c.setdefault("diagnostic_notes", []).append(
                         f"{k}={_fmt(val)}로 분석됐으나 있을 수 없는 값이라 "
                         f"반영하지 않았습니다")
                 continue
             if k in _PENSION_ACCOUNT_KEYS and _is_non_pension_asset_amount(q, val):
                 # LLM이 "3000만원 현금"을 account_value_manwon 등으로 잘못
                 # 라벨링한 경우 — 근거 없는 라벨을 받아들이지 않는다.
-                c.setdefault("condition_notes", []).append(
+                c.setdefault("diagnostic_notes", []).append(
                     f"{_fmt(val)}만원이 현금·예적금 등으로 언급되어 연금 계좌 "
                     f"조건({k})으로 반영하지 않았습니다")
                 continue
@@ -492,12 +561,12 @@ def derive_conditions(question: str,
                 # 규칙이 읽은 값이 있으면 그 값을 지키고, 없으면(천장값만으로
                 # 걸린 경우) 아예 버린다 — 지어낼 근거가 없다.
                 if k in c:
-                    c.setdefault("condition_notes", []).append(
+                    c.setdefault("diagnostic_notes", []).append(
                         f"질의에서 읽은 금액({_fmt(c[k])}만원)과 분석 결과"
                         f"({_fmt(val)}만원)의 자릿수가 크게 달라, 질의 원문에서 읽은 "
                         f"값으로 계산했습니다")
                 else:
-                    c.setdefault("condition_notes", []).append(
+                    c.setdefault("diagnostic_notes", []).append(
                         f"분석 결과({_fmt(val)}만원)가 질의 원문의 금액과 자릿수가 "
                         f"크게 달라 반영하지 않았습니다")
                 continue

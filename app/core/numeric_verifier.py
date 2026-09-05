@@ -143,6 +143,22 @@ def _flatten_numbers(obj: Any) -> set[float]:
                 rounded = float(round(float(v)))
                 found.add(rounded)
                 found.add(rounded * 10_000)
+                # ⚠️ **억 단위 분리 표기도 같은 이유로 허용해야 한다.**
+                #    format_manwon은 10,000만원 이상을 "1억 417만원"처럼
+                #    억과 만원으로 쪼개 쓴다. 위의 반올림 보정은 10416만
+                #    넣으므로, 답변에 실제로 찍히는 417이 대조 집합에 없어
+                #    **시스템이 스스로 표시한 값이 '근거 없는 수치'로 잡혔다**
+                #    (2026-09-06 실측 — DC 적립액 1억 417만원 케이스에서
+                #     [417.0]이 미접지로 걸려 답변이 통째로 템플릿 축퇴).
+                #
+                #    반올림 보정과 마찬가지로 오차 허용을 늘리는 것이 아니다.
+                #    format_manwon이 만든 표기는 계산 결과에서 결정론적으로
+                #    파생된 것이므로 정의상 근거가 있다. 표기 규칙을 여기서
+                #    다시 구현하지 않고 **표시 함수를 그대로 호출해** 뽑는다
+                #    — 두 곳이 어긋나면 이 사고가 그대로 재발한다.
+                from app.analysis.units import format_manwon
+                found |= extract_numbers(format_manwon(float(v)),
+                                         include_trivial=True)
     elif isinstance(obj, (list, tuple, set)):
         for v in obj:
             found |= _flatten_numbers(v)

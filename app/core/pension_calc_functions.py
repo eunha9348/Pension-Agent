@@ -494,6 +494,75 @@ def calc_retirement_income_tax(severance_pay: float, service_years: int) -> dict
 
 
 # ════════════════════════════════════════════════
+# 5-2. 퇴직급여 적립액 (DB · DC)
+# SOURCE: 수리 담당 제공 산식 (2026-09-06)
+#
+# ⚠️ 이 둘은 **적립 원금**만 낸다. DC는 운용성과에 따라 실제 잔고가
+#    달라지므로, 산출값을 "예상 수령액"으로 단정하면 안 된다. 답변에서는
+#    반드시 '적립 원금 기준'임을 함께 밝힌다(프롬프트·렌더러가 담당).
+# ════════════════════════════════════════════════
+
+def calc_db_severance(avg_monthly_wage: float, service_years: float) -> dict:
+    """[수리팀 산식] DB형 퇴직급여 = 퇴직 직전 3개월 평균월급 × 근속연수.
+
+    avg_monthly_wage : 퇴직 직전 3개월간 평균월급 (만원)
+    service_years    : 근속연수 (년)
+
+    산식: N × x  (N=근속연수, x=평균월급)
+    """
+    if service_years <= 0:
+        raise ValueError("근속연수는 0년보다 커야 합니다")
+    if avg_monthly_wage < 0:
+        raise ValueError("평균월급은 음수일 수 없습니다")
+
+    total = avg_monthly_wage * service_years
+    return {
+        "퇴직급여_적립액": round(total, 4),
+        "평균월급": round(avg_monthly_wage, 4),
+        "근속연수": service_years,
+        "기준": "DB형 — 퇴직 직전 3개월 평균월급 × 근속연수 (적립 원금 기준)",
+        "source": "수리팀 산식",
+    }
+
+
+def calc_dc_accumulation(salary_schedule: list) -> dict:
+    """[수리팀 산식] DC형 적립 원금 = (1/24) × Σ (t_{i+1}−t_i)(y_{i+1}+y_i).
+
+    salary_schedule : [(t_i, y_i), ...] — t_i는 근속 연차(년, t_1=0),
+                      y_i는 그 시점의 연봉(만원). 연차 오름차순.
+
+    ━━ 산식의 의미 ━━
+    Σ (t_{i+1}−t_i)(y_{i+1}+y_i) / 2 는 연봉 곡선의 사다리꼴 적분
+    (= 총 임금총액, 만원·년). 여기에 DC 부담금률 1/12를 곱하면 적립
+    원금이므로 전체가 1/24 계수로 정리된다.
+
+    ⚠️ 운용수익은 포함하지 않는다. 실제 잔고는 운용성과에 따라 달라진다.
+    ⚠️ 구간 사이는 선형 변화로 본다 — 실제 임금 인상이 계단식이면
+       오차가 생기므로, 호출부는 구간을 아는 만큼 촘촘히 주어야 한다.
+    """
+    pts = [(float(t), float(y)) for t, y in (salary_schedule or [])]
+    if len(pts) < 2:
+        raise ValueError("연차·연봉 구간이 최소 2개 필요합니다")
+    pts.sort(key=lambda p: p[0])
+    if any(t < 0 for t, _ in pts) or any(y < 0 for _, y in pts):
+        raise ValueError("연차·연봉은 음수일 수 없습니다")
+
+    total = 0.0
+    for (t0, y0), (t1, y1) in zip(pts, pts[1:]):
+        total += (t1 - t0) * (y1 + y0)
+    total /= 24.0
+
+    return {
+        "퇴직급여_적립액": round(total, 4),
+        "근속연수": pts[-1][0] - pts[0][0],
+        "구간수": len(pts),
+        "기준": "DC형 — 연봉 곡선 적분 × 부담금률 1/12 (적립 원금 기준, "
+              "운용수익 제외)",
+        "source": "수리팀 산식",
+    }
+
+
+# ════════════════════════════════════════════════
 # 6. 지방소득세 기준 정규화
 # SOURCE: R2_KR5111420047 "15.4% (소득세 14%, 지방소득세 1.4%)"
 #         → 지방소득세 = 국세의 10% 부가
@@ -665,6 +734,9 @@ PENSION_CALC_FUNCTIONS = {
     "퇴직소득세_감면율_계산": calc_retirement_tax_reduction,
     # 퇴직소득세 (doc52)
     "퇴직소득세_계산": calc_retirement_income_tax,
+    # 퇴직급여 적립액 (수리팀 산식 · 적립 원금 기준)
+    "DB형_퇴직급여_계산": calc_db_severance,
+    "DC형_적립액_계산": calc_dc_accumulation,
     # 유틸 · 적합성
     "세율기준_정규화": normalize_tax_rate,
     "판매클래스_적합성_판정": check_class_eligibility,

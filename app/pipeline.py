@@ -676,8 +676,18 @@ def _answer_question_impl(question_id: str, question: str,
     slots = run_calculations(slots, builder, trace=trace)
     ask_back_items = builder.ask_back_items(limit=2)
     assumptions = builder.assumption_items()
-    # 조건 해석 단계에서 남긴 주의사항(예: 합산액 기준 계산)도 한계 고지로 올린다
+    # 조건 해석 단계에서 남긴 주의사항(예: 합산액 기준 계산)도 한계 고지로 올린다.
+    #
+    # ⚠️ condition_notes만 싣는다. diagnostic_notes(단위 혼동·범위 초과로
+    #    LLM 값을 버렸다는 기록)는 **내부 진단**이라 고객 문장에 넣지 않는다.
+    #    예전에는 둘이 한 리스트였고, "자산 500억"을 HCX가 원 단위로 준
+    #    사례에서 "분석 결과(50,000,000,000만원)가 질의 원문의 금액과
+    #    자릿수가 크게 달라 반영하지 않았습니다"가 고객 답변에 그대로
+    #    나갔다(2026-09-06 실사용). F21("감사 진행 로그와 판정을 같은
+    #    필드로 섞지 말 것")과 같은 계열의 결함이다.
     assumptions.extend(conditions.get("condition_notes") or [])
+    if diag := conditions.get("diagnostic_notes"):
+        trace.log("조건_진단", " / ".join(diag))
     if trap_context.get("ask_back_candidates"):
         for item in trap_context["ask_back_candidates"]:
             if len(ask_back_items) < 2 and item not in ask_back_items:

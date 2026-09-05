@@ -25,8 +25,11 @@ from app.core.pension_calc_functions import (_f_comp, _pension_income_deduction,
                                              normalize_tax_rate)
 
 
-def test_레지스트리에_15종이_등록돼_있다():
-    assert len(CALC_REGISTRY) == 15
+def test_레지스트리에_17종이_등록돼_있다():
+    """⚠️ 2026-09-06 — 수리팀 산식 2종(DB형·DC형 적립액)이 추가돼 15→17종.
+    개수 자체가 불변식은 아니지만, 등록을 빠뜨리면 계산이 통째로 안 도는
+    자리라 숫자로 못 박아 둔다."""
+    assert len(CALC_REGISTRY) == 17
 
 
 # ── 연금수령한도 · 연차 (doc39, doc40) ───────────────────────
@@ -288,3 +291,69 @@ def test_문서기반_계산은_source를_함께_반환한다():
     assert calc_pension_year(False, 0)["source"] == "doc39"
     assert calc_retirement_tax_reduction(5)["source"] == "doc40"
     assert calc_retirement_income_tax(10000, 10)["source"] == "doc52"
+
+
+# ════════════════════════════════════════════════════════════════
+# 퇴직급여 적립액 (수리팀 산식 · 2026-09-06 신설)
+#
+# ⚠️ 둘 다 **적립 원금**만 낸다. DC는 운용수익을 포함하지 않으므로
+#    "예상 수령액"으로 단정하면 안 된다 — 반환 dict의 '기준' 필드가
+#    그 사실을 함께 싣고, render_calc_result가 ※ 기준으로 표기한다.
+# ════════════════════════════════════════════════════════════════
+
+def test_DB형_퇴직급여는_평균월급_곱하기_근속연수다():
+    """산식: N × x (N=근속연수, x=퇴직 직전 3개월 평균월급)."""
+    from app.core.pension_calc_functions import calc_db_severance
+
+    r = calc_db_severance(avg_monthly_wage=500, service_years=20)
+    assert r["퇴직급여_적립액"] == pytest.approx(10000.0)      # 500 × 20 = 1억원
+
+
+def test_DB형은_근속연수가_0이하면_거부한다():
+    from app.core.pension_calc_functions import calc_db_severance
+
+    with pytest.raises(ValueError):
+        calc_db_severance(avg_monthly_wage=500, service_years=0)
+
+
+def test_DC형_적립액은_연봉이_일정하면_연봉의_12분의1씩_쌓인다():
+    """가장 단순한 검산 — 연봉 6,000만원으로 10년이면 매년 500만원씩 5,000만원.
+
+    산식 (1/24)·Σ(t_{i+1}−t_i)(y_{i+1}+y_i) 는 연봉 곡선의 사다리꼴 적분에
+    부담금률 1/12를 곱한 것과 같다. 연봉이 일정하면 적분이 곧 y×N이므로
+    결과는 y×N/12가 되어야 한다.
+    """
+    from app.core.pension_calc_functions import calc_dc_accumulation
+
+    r = calc_dc_accumulation([(0, 6000), (10, 6000)])
+    assert r["퇴직급여_적립액"] == pytest.approx(5000.0)
+
+
+def test_DC형_적립액은_계단식_인상을_구간별로_적분한다():
+    """1~5년차 5,000 / 6~10년차 8,000 / 11~15년차 12,000만원.
+
+    구간별 손계산: 5×5000/12 + 5×8000/12 + 5×12000/12 = 10,416.67만원
+    """
+    from app.core.pension_calc_functions import calc_dc_accumulation
+
+    pts = [(0, 5000), (5, 5000), (5, 8000), (10, 8000), (10, 12000), (15, 12000)]
+    r = calc_dc_accumulation(pts)
+    assert r["퇴직급여_적립액"] == pytest.approx(10416.6667, abs=0.01)
+    assert r["근속연수"] == pytest.approx(15.0)
+
+
+def test_DC형은_구간이_하나뿐이면_거부한다():
+    """점 하나로는 적분 구간이 만들어지지 않는다 — 지어내지 않고 거부한다."""
+    from app.core.pension_calc_functions import calc_dc_accumulation
+
+    with pytest.raises(ValueError):
+        calc_dc_accumulation([(0, 5000)])
+
+
+def test_적립액_계산은_운용수익_제외를_기준에_명시한다():
+    """DC 적립 원금을 '예상 수령액'으로 읽히게 두면 그게 곧 과장이다."""
+    from app.core.pension_calc_functions import calc_dc_accumulation
+
+    r = calc_dc_accumulation([(0, 6000), (10, 6000)])
+    assert "운용수익 제외" in r["기준"]
+    assert "적립 원금" in r["기준"]
