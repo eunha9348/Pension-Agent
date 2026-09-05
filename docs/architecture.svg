@@ -1,0 +1,303 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 1210" width="860" height="1210" font-family="NanumGothic, 'Noto Sans CJK KR', sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arFb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c2410c"/>
+    </marker>
+    <marker id="arSup" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c3aed"/>
+    </marker>
+  </defs>
+
+  <rect width="860" height="1210" fill="#ffffff"/>
+
+  <!-- ================= 범례 ================= -->
+  <g>
+    <rect x="24" y="16" width="812" height="40" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+    <rect x="40" y="29" width="16" height="14" rx="3" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="63" y="41" font-size="12" fill="#0f172a">결정론적 계층 (LLM 미사용)</text>
+    <rect x="248" y="29" width="16" height="14" rx="3" fill="#fdf2e5" stroke="#d97706" stroke-width="1.6"/>
+    <text x="271" y="41" font-size="12" fill="#0f172a">HyperCLOVA X 호출 지점</text>
+    <rect x="452" y="29" width="16" height="14" rx="3" fill="#f3ecfa" stroke="#7c3aed" stroke-width="1.6"/>
+    <text x="475" y="41" font-size="12" fill="#0f172a">감독 에이전트</text>
+    <rect x="596" y="29" width="16" height="14" rx="3" fill="#eef1f4" stroke="#475569" stroke-width="1.6"/>
+    <text x="619" y="41" font-size="12" fill="#0f172a">데이터·도구 계층</text>
+    <line x1="740" y1="36" x2="768" y2="36" stroke="#c2410c" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#arFb)"/>
+    <text x="774" y="41" font-size="12" fill="#0f172a">피드백</text>
+  </g>
+
+  <!-- ================= 사용자 질의 ================= -->
+  <g>
+    <rect x="286" y="74" width="288" height="34" rx="17" fill="#0f172a"/>
+    <text x="430" y="96" font-size="13.5" font-weight="700" fill="#ffffff" text-anchor="middle">사용자 질의 (단일 GET 요청)</text>
+  </g>
+  <line x1="430" y1="108" x2="430" y2="130" stroke="#334155" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ================= STAGE 1 : 입력 이해 ================= -->
+  <g>
+    <rect x="24" y="132" width="640" height="150" rx="8" fill="#fbfdff" stroke="#94a3b8" stroke-dasharray="4 3"/>
+    <rect x="24" y="132" width="126" height="22" rx="8" fill="#334155"/>
+    <text x="87" y="147" font-size="11.5" font-weight="700" fill="#ffffff" text-anchor="middle">1. 입력 이해</text>
+
+    <!-- L0 -->
+    <rect x="44" y="168" width="140" height="90" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="114" y="188" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">L0 사전 분류</text>
+    <line x1="58" y1="195" x2="170" y2="195" stroke="#a8c4da"/>
+    <text x="114" y="211" font-size="10.5" fill="#334155" text-anchor="middle">도메인 영역 분류</text>
+    <text x="114" y="226" font-size="10.5" fill="#334155" text-anchor="middle">문서 용어 수집</text>
+    <text x="114" y="245" font-size="10" font-weight="700" fill="#b91c1c" text-anchor="middle">거절 권한 없음</text>
+
+    <!-- 안전 게이트 -->
+    <rect x="200" y="168" width="140" height="90" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="270" y="188" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">안전 게이트</text>
+    <line x1="214" y1="195" x2="326" y2="195" stroke="#a8c4da"/>
+    <text x="270" y="211" font-size="10.5" fill="#334155" text-anchor="middle">빈 질의 · 개인정보</text>
+    <text x="270" y="226" font-size="10.5" fill="#334155" text-anchor="middle">프롬프트 인젝션</text>
+    <text x="270" y="245" font-size="10" font-weight="700" fill="#b91c1c" text-anchor="middle">유일한 거절 지점</text>
+
+    <!-- L1 -->
+    <rect x="356" y="168" width="140" height="90" rx="6" fill="#fdf2e5" stroke="#d97706" stroke-width="1.8"/>
+    <text x="426" y="188" font-size="12.5" font-weight="700" fill="#92400e" text-anchor="middle">L1 질의 분석</text>
+    <line x1="370" y1="195" x2="482" y2="195" stroke="#e8c48f"/>
+    <text x="426" y="211" font-size="10.5" fill="#334155" text-anchor="middle">정규 조건 21종 추출</text>
+    <text x="426" y="226" font-size="10.5" fill="#334155" text-anchor="middle">개방형 조건 수집</text>
+    <text x="426" y="245" font-size="10" font-weight="700" fill="#b45309" text-anchor="middle">HCX 호출 ①</text>
+
+    <!-- 경로 분류 -->
+    <rect x="512" y="168" width="134" height="90" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="579" y="188" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">경로 분류</text>
+    <line x1="526" y1="195" x2="632" y2="195" stroke="#a8c4da"/>
+    <text x="579" y="211" font-size="10.5" fill="#334155" text-anchor="middle">GENERAL(계산·비교)</text>
+    <text x="579" y="226" font-size="10.5" fill="#334155" text-anchor="middle">ADVISORY(불특정)</text>
+    <text x="579" y="245" font-size="10" font-weight="700" fill="#0b3d64" text-anchor="middle">코드가 결정</text>
+
+    <line x1="184" y1="213" x2="198" y2="213" stroke="#334155" stroke-width="1.8" marker-end="url(#ar)"/>
+    <line x1="340" y1="213" x2="354" y2="213" stroke="#334155" stroke-width="1.8" marker-end="url(#ar)"/>
+    <line x1="496" y1="213" x2="510" y2="213" stroke="#334155" stroke-width="1.8" marker-end="url(#ar)"/>
+  </g>
+  <line x1="344" y1="282" x2="344" y2="304" stroke="#334155" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ================= STAGE 2 : 계획·함정 ================= -->
+  <g>
+    <rect x="24" y="306" width="640" height="112" rx="8" fill="#fbfdff" stroke="#94a3b8" stroke-dasharray="4 3"/>
+    <rect x="24" y="306" width="146" height="22" rx="8" fill="#334155"/>
+    <text x="97" y="321" font-size="11.5" font-weight="700" fill="#ffffff" text-anchor="middle">2. 계획 검증·함정</text>
+
+    <rect x="76" y="342" width="230" height="62" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="191" y="362" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">1.5 계획 감사</text>
+    <text x="191" y="380" font-size="10.5" fill="#334155" text-anchor="middle">계산함수 화이트리스트 검증</text>
+    <text x="191" y="395" font-size="10.5" fill="#334155" text-anchor="middle">미등록 호출 제거</text>
+
+    <rect x="382" y="342" width="230" height="62" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="497" y="362" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">L2 함정 감지</text>
+    <text x="497" y="380" font-size="10.5" fill="#334155" text-anchor="middle">도메인 오해 패턴 28종 규칙</text>
+    <text x="497" y="395" font-size="10.5" fill="#334155" text-anchor="middle">교정 문구 + 합격 조건 생성</text>
+
+    <line x1="306" y1="373" x2="380" y2="373" stroke="#334155" stroke-width="1.8" marker-end="url(#ar)"/>
+  </g>
+  <line x1="344" y1="418" x2="344" y2="440" stroke="#334155" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ================= STAGE 3 : 병렬 탐색·활용 ================= -->
+  <g>
+    <rect x="24" y="442" width="640" height="196" rx="8" fill="#f7fbff" stroke="#1e5f8e" stroke-dasharray="4 3"/>
+    <rect x="24" y="442" width="238" height="22" rx="8" fill="#1e5f8e"/>
+    <text x="143" y="457" font-size="11.5" font-weight="700" fill="#ffffff" text-anchor="middle">3. 병렬 탐색 · 활용 (동시 실행)</text>
+
+    <rect x="60" y="478" width="252" height="88" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="186" y="498" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">L3 Exploration · 검색</text>
+    <line x1="76" y1="505" x2="296" y2="505" stroke="#a8c4da"/>
+    <text x="186" y="521" font-size="10.5" fill="#334155" text-anchor="middle">BM25(어휘) + 임베딩(의미)</text>
+    <text x="186" y="536" font-size="10.5" fill="#334155" text-anchor="middle">RRF 융합 (K=60)</text>
+    <text x="186" y="555" font-size="10" font-weight="700" fill="#0b3d64" text-anchor="middle">근거 문서 후보 확보</text>
+
+    <rect x="376" y="478" width="252" height="88" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="502" y="498" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">L4 Exploitation · 자격</text>
+    <line x1="392" y1="505" x2="612" y2="505" stroke="#a8c4da"/>
+    <text x="502" y="521" font-size="10.5" fill="#334155" text-anchor="middle">판매클래스 가입자격 판정</text>
+    <text x="502" y="536" font-size="10.5" fill="#334155" text-anchor="middle">사용자 조건만 참조</text>
+    <text x="502" y="555" font-size="10" font-weight="700" fill="#0b3d64" text-anchor="middle">검색 결과 비의존 → 병렬 가능</text>
+
+    <text x="344" y="524" font-size="11" font-weight="700" fill="#1e5f8e" text-anchor="middle">∥</text>
+
+    <line x1="186" y1="566" x2="186" y2="584" stroke="#334155" stroke-width="1.8"/>
+    <line x1="502" y1="566" x2="502" y2="584" stroke="#334155" stroke-width="1.8"/>
+    <line x1="186" y1="584" x2="502" y2="584" stroke="#334155" stroke-width="1.8"/>
+    <line x1="344" y1="584" x2="344" y2="592" stroke="#334155" stroke-width="1.8" marker-end="url(#ar)"/>
+
+    <rect x="152" y="594" width="384" height="34" rx="6" fill="#fff7ed" stroke="#c2410c" stroke-width="1.8"/>
+    <text x="344" y="609" font-size="12" font-weight="700" fill="#9a3412" text-anchor="middle">합류 barrier — 병렬화의 안전장치</text>
+    <text x="344" y="623" font-size="10" fill="#7c2d12" text-anchor="middle">확정 불가만 제외 · 자격 미상은 통과 · 미통과 후보는 추천 불가</text>
+  </g>
+  <line x1="344" y1="638" x2="344" y2="660" stroke="#334155" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ================= STAGE 4 : 계산·생성 ================= -->
+  <g>
+    <rect x="24" y="662" width="640" height="180" rx="8" fill="#fbfdff" stroke="#94a3b8" stroke-dasharray="4 3"/>
+    <rect x="24" y="662" width="152" height="22" rx="8" fill="#334155"/>
+    <text x="100" y="677" font-size="11.5" font-weight="700" fill="#ffffff" text-anchor="middle">4. 계산 · 답변 생성</text>
+
+    <rect x="152" y="696" width="384" height="52" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="344" y="715" font-size="12.5" font-weight="700" fill="#0b3d64" text-anchor="middle">L5 Prediction · 계산함수 15종</text>
+    <text x="344" y="733" font-size="10.5" fill="#334155" text-anchor="middle">세제 계산 전량 순수함수 · 만원 단위 통일 · 조건 미상 시 구간별 분기</text>
+
+    <line x1="270" y1="748" x2="230" y2="766" stroke="#334155" stroke-width="1.8" marker-end="url(#ar)"/>
+    <line x1="418" y1="748" x2="458" y2="766" stroke="#334155" stroke-width="1.8" marker-end="url(#ar)"/>
+
+    <rect x="56" y="768" width="256" height="60" rx="6" fill="#fdf2e5" stroke="#d97706" stroke-width="1.8"/>
+    <text x="184" y="787" font-size="12" font-weight="700" fill="#92400e" text-anchor="middle">L5' Supervisor [GENERAL]</text>
+    <text x="184" y="804" font-size="10.5" fill="#334155" text-anchor="middle">계산 결과를 문장으로 설명</text>
+    <text x="184" y="820" font-size="10" font-weight="700" fill="#b45309" text-anchor="middle">HCX 호출 ② · 숫자 생성 금지</text>
+
+    <rect x="376" y="768" width="256" height="60" rx="6" fill="#fdf2e5" stroke="#d97706" stroke-width="1.8"/>
+    <text x="504" y="787" font-size="12" font-weight="700" fill="#92400e" text-anchor="middle">L4-sub 상담 [ADVISORY]</text>
+    <text x="504" y="804" font-size="10.5" fill="#334155" text-anchor="middle">한계 고지 + 필요 정보 정리</text>
+    <text x="504" y="820" font-size="10" font-weight="700" fill="#b45309" text-anchor="middle">배타적 실행 → 호출 수 불변</text>
+  </g>
+  <line x1="344" y1="842" x2="344" y2="864" stroke="#334155" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ================= STAGE 5 : 감독 ================= -->
+  <g>
+    <rect x="24" y="866" width="640" height="192" rx="8" fill="#fffbf5" stroke="#d97706" stroke-dasharray="4 3"/>
+    <rect x="24" y="866" width="196" height="22" rx="8" fill="#92400e"/>
+    <text x="122" y="881" font-size="11.5" font-weight="700" fill="#ffffff" text-anchor="middle">5. 감독 이사회 (L6) · 검증</text>
+
+    <rect x="44" y="900" width="188" height="80" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="138" y="919" font-size="11.5" font-weight="700" fill="#0b3d64" text-anchor="middle">결정론적 5대 감사</text>
+    <text x="138" y="936" font-size="10" fill="#334155" text-anchor="middle">준법 · 이상치 · 적합성</text>
+    <text x="138" y="950" font-size="10" fill="#334155" text-anchor="middle">부담 · 정합성</text>
+    <text x="138" y="969" font-size="10" fill="#334155" text-anchor="middle">+ 수치 접지 양방향 검증</text>
+
+    <rect x="246" y="900" width="188" height="80" rx="6" fill="#fdf2e5" stroke="#d97706" stroke-width="1.8"/>
+    <text x="340" y="919" font-size="11.5" font-weight="700" fill="#92400e" text-anchor="middle">HCX 의미 감사</text>
+    <text x="340" y="936" font-size="10" fill="#334155" text-anchor="middle">수치–서술 정합 등 7항목</text>
+    <text x="340" y="950" font-size="10" font-weight="700" fill="#b45309" text-anchor="middle">HCX 호출 ③</text>
+    <text x="340" y="969" font-size="10" font-weight="700" fill="#b91c1c" text-anchor="middle">심각도 상향만 가능 (단조성)</text>
+
+    <rect x="448" y="900" width="188" height="80" rx="6" fill="#e8f1f8" stroke="#1e5f8e" stroke-width="1.6"/>
+    <text x="542" y="919" font-size="11.5" font-weight="700" fill="#0b3d64" text-anchor="middle">법령 저촉 판정</text>
+    <text x="542" y="936" font-size="10" fill="#334155" text-anchor="middle">조문 인용 · 답변 문장</text>
+    <text x="542" y="950" font-size="10" fill="#334155" text-anchor="middle">· 제공자료 우선 3중 차단</text>
+    <text x="542" y="969" font-size="10" font-weight="700" fill="#0b3d64" text-anchor="middle">같은 호출에 동승</text>
+
+    <rect x="152" y="996" width="384" height="44" rx="6" fill="#0f172a"/>
+    <text x="344" y="1013" font-size="11.5" font-weight="700" fill="#ffffff" text-anchor="middle">판정: APPROVE / REVISE / DOWNGRADE / BLOCK</text>
+    <text x="344" y="1030" font-size="10" fill="#cbd5e1" text-anchor="middle">미해소 지적은 사용자에게 고지 + 답변 등급 강등</text>
+  </g>
+
+  <!-- 피드백 루프: L6 → L5' 재생성 -->
+  <path d="M 24 1018 L 12 1018 L 12 798 L 54 798" fill="none" stroke="#c2410c" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arFb)"/>
+  <g transform="rotate(-90 18 918)">
+    <rect x="-40" y="908" width="116" height="19" rx="4" fill="#fff7ed" stroke="#c2410c"/>
+    <text x="18" y="921" font-size="10" font-weight="700" fill="#9a3412" text-anchor="middle">REVISE → 재생성 1회</text>
+  </g>
+
+  <line x1="344" y1="1058" x2="344" y2="1084" stroke="#334155" stroke-width="2" marker-end="url(#ar)"/>
+
+  <!-- ================= 최종 출력 ================= -->
+  <g>
+    <rect x="152" y="1086" width="384" height="46" rx="8" fill="#e8f6ee" stroke="#1a7f4b" stroke-width="2"/>
+    <text x="344" y="1105" font-size="13" font-weight="700" fill="#14532d" text-anchor="middle">최종 답변 + retrieved_context + think_trace</text>
+    <text x="344" y="1122" font-size="10" fill="#166534" text-anchor="middle">답변을 뒷받침한 근거만 인용 · 사고 과정 전체 공개</text>
+  </g>
+
+  <!-- ================= Sub-Agent 오케스트레이터 (우측) ================= -->
+  <g>
+    <rect x="680" y="132" width="156" height="500" rx="8" fill="#f3ecfa" stroke="#7c3aed" stroke-width="2"/>
+    <rect x="680" y="132" width="156" height="30" rx="8" fill="#7c3aed"/>
+    <text x="758" y="152" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">Sub-Agent</text>
+
+    <text x="758" y="182" font-size="11" font-weight="700" fill="#5b21b6" text-anchor="middle">감독 오케스트레이터</text>
+    <line x1="696" y1="192" x2="820" y2="192" stroke="#c4b5fd"/>
+
+    <text x="758" y="212" font-size="10" font-weight="700" fill="#4c1d95" text-anchor="middle">① 전 구간 감시</text>
+    <text x="758" y="228" font-size="9.5" fill="#334155" text-anchor="middle">각 계층의 국소 판단이</text>
+    <text x="758" y="241" font-size="9.5" fill="#334155" text-anchor="middle">놓치는 이상 징후 감지</text>
+
+    <text x="758" y="268" font-size="10" font-weight="700" fill="#4c1d95" text-anchor="middle">② 비용 효율</text>
+    <text x="758" y="284" font-size="9.5" fill="#334155" text-anchor="middle">이상 없으면</text>
+    <text x="758" y="297" font-size="9.5" font-weight="700" fill="#b91c1c" text-anchor="middle">LLM 호출 0회</text>
+
+    <text x="758" y="324" font-size="10" font-weight="700" fill="#4c1d95" text-anchor="middle">③ 구제 재생성</text>
+    <text x="758" y="340" font-size="9.5" fill="#334155" text-anchor="middle">L6가 초안·재생성을</text>
+    <text x="758" y="353" font-size="9.5" fill="#334155" text-anchor="middle">모두 반려한 경우</text>
+    <text x="758" y="366" font-size="9.5" fill="#334155" text-anchor="middle">답변을 직접 다시 작성</text>
+    <text x="758" y="382" font-size="9.5" font-weight="700" fill="#b45309" text-anchor="middle">HCX 호출 (최후)</text>
+
+    <rect x="694" y="396" width="128" height="86" rx="5" fill="#ffffff" stroke="#a78bfa"/>
+    <text x="758" y="413" font-size="9.5" font-weight="700" fill="#5b21b6" text-anchor="middle">3중 제약</text>
+    <text x="758" y="429" font-size="9" fill="#334155" text-anchor="middle">· 진단/생성 프롬프트</text>
+    <text x="758" y="441" font-size="9" fill="#334155" text-anchor="middle">  물리적 분리</text>
+    <text x="758" y="456" font-size="9" fill="#334155" text-anchor="middle">· 재검증 필수 통과</text>
+    <text x="758" y="471" font-size="9" fill="#334155" text-anchor="middle">· 숫자 생성 금지 유지</text>
+
+    <text x="758" y="504" font-size="10" font-weight="700" fill="#4c1d95" text-anchor="middle">④ 부분 개선 채택</text>
+    <text x="758" y="520" font-size="9.5" fill="#334155" text-anchor="middle">원본보다 나은가를</text>
+    <text x="758" y="533" font-size="9.5" fill="#334155" text-anchor="middle">결정론적으로 판정</text>
+    <text x="758" y="548" font-size="9" fill="#475569" text-anchor="middle">함정 진부분집합 감소 또는</text>
+    <text x="758" y="560" font-size="9" fill="#475569" text-anchor="middle">수치검증 실패→통과</text>
+
+    <rect x="694" y="574" width="128" height="44" rx="5" fill="#fef2f2" stroke="#dc2626"/>
+    <text x="758" y="591" font-size="9" font-weight="700" fill="#991b1b" text-anchor="middle">수치검증 실패 답변은</text>
+    <text x="758" y="605" font-size="9" font-weight="700" fill="#991b1b" text-anchor="middle">무조건 기각</text>
+  </g>
+
+  <!-- Sub-Agent 감시 화살표 -->
+  <path d="M 678 300 L 668 300" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arSup)"/>
+  <path d="M 678 540 L 668 540" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arSup)"/>
+  <path d="M 678 800 L 672 800 L 672 930 L 668 930" fill="none" stroke="#7c3aed" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arSup)"/>
+  <text x="700" y="648" font-size="9" fill="#5b21b6" text-anchor="middle">전 계층 감시</text>
+
+  <!-- ================= 데이터·도구 계층 ================= -->
+  <g>
+    <rect x="680" y="662" width="156" height="470" rx="8" fill="#eef1f4" stroke="#475569" stroke-width="1.6"/>
+    <rect x="680" y="662" width="156" height="30" rx="8" fill="#475569"/>
+    <text x="758" y="682" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">데이터 · 도구 계층</text>
+
+    <rect x="694" y="704" width="128" height="80" rx="5" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="758" y="721" font-size="10.5" font-weight="700" fill="#1e293b" text-anchor="middle">제공 문서 코퍼스</text>
+    <text x="758" y="738" font-size="9.5" fill="#334155" text-anchor="middle">158 문서 · 8,172 청크</text>
+    <text x="758" y="752" font-size="9.5" fill="#334155" text-anchor="middle">임베딩 벡터 8,172</text>
+    <text x="758" y="769" font-size="9" font-weight="700" fill="#166534" text-anchor="middle">최종 근거 (우선순위 1)</text>
+
+    <rect x="694" y="794" width="128" height="76" rx="5" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="758" y="811" font-size="10.5" font-weight="700" fill="#1e293b" text-anchor="middle">상품 팩트 6축</text>
+    <text x="758" y="827" font-size="9.5" fill="#334155" text-anchor="middle">색인 시점 전수 추출</text>
+    <text x="758" y="841" font-size="9" fill="#475569" text-anchor="middle">위험등급·분류·보수·</text>
+    <text x="758" y="853" font-size="9" fill="#475569" text-anchor="middle">수익률·잔고·클래스</text>
+
+    <rect x="694" y="880" width="128" height="76" rx="5" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="758" y="897" font-size="10.5" font-weight="700" fill="#1e293b" text-anchor="middle">법령 수집본</text>
+    <text x="758" y="913" font-size="9.5" fill="#334155" text-anchor="middle">조문 7,426건</text>
+    <text x="758" y="927" font-size="9" fill="#475569" text-anchor="middle">선택 21ms / 요청</text>
+    <text x="758" y="944" font-size="9" font-weight="700" fill="#b45309" text-anchor="middle">보조 · 내부 검증 전용</text>
+
+    <rect x="694" y="966" width="128" height="72" rx="5" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="758" y="983" font-size="10.5" font-weight="700" fill="#1e293b" text-anchor="middle">OCR 복원 계층</text>
+    <text x="758" y="999" font-size="9.5" fill="#334155" text-anchor="middle">교차 문서 대조 복원</text>
+    <text x="758" y="1013" font-size="9" fill="#475569" text-anchor="middle">후보 갈리면 복원 안 함</text>
+    <text x="758" y="1028" font-size="9" fill="#475569" text-anchor="middle">미복원분은 격리 표기</text>
+
+    <rect x="694" y="1048" width="128" height="70" rx="5" fill="#ffffff" stroke="#94a3b8"/>
+    <text x="758" y="1065" font-size="10.5" font-weight="700" fill="#1e293b" text-anchor="middle">운영 가시성</text>
+    <text x="758" y="1081" font-size="9.5" fill="#334155" text-anchor="middle">/health 축퇴 계수</text>
+    <text x="758" y="1095" font-size="9" fill="#475569" text-anchor="middle">8개 축퇴 경로 전수</text>
+    <text x="758" y="1110" font-size="9" font-weight="700" fill="#b91c1c" text-anchor="middle">0이 아니면 HCX 생성 아님</text>
+  </g>
+
+  <!-- 데이터 계층 → 파이프라인 화살표 -->
+  <path d="M 692 744 L 670 744 L 670 650 L 40 650 L 40 522 L 58 522" fill="none" stroke="#475569" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+  <rect x="272" y="639" width="176" height="14" fill="#ffffff"/>
+  <text x="360" y="650" font-size="9" fill="#475569" text-anchor="middle">코퍼스 · 상품 팩트 → 검색 대상</text>
+  <path d="M 692 918 L 650 918 L 650 940 L 638 940" fill="none" stroke="#475569" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+
+  <!-- ================= 하단 요약 ================= -->
+  <g>
+    <rect x="24" y="1148" width="640" height="46" rx="6" fill="#f8fafc" stroke="#cbd5e1"/>
+    <text x="40" y="1167" font-size="10.5" font-weight="700" fill="#0f172a">정상 경로 HCX 호출 3회</text>
+    <text x="196" y="1167" font-size="10.5" fill="#334155">L1 · (L5' 또는 L4-sub) · L6  —  경로가 늘어도 호출 수 불변</text>
+    <text x="40" y="1185" font-size="10.5" font-weight="700" fill="#0f172a">반려 시 최대 7회</text>
+    <text x="152" y="1185" font-size="10.5" fill="#334155">+ 재생성 1 + 재감사 1 + 구제생성 1 + 재감사 1  (총 예산 240초 / 상한 300초)</text>
+  </g>
+</svg>
