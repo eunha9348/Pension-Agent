@@ -89,7 +89,7 @@ def _is_balance_amount(question: str, value: float) -> bool:
 # account_value_manwon 등 연금 관련 슬롯으로 넘기면 안 된다.
 # ⚠️ "3000만원 현금있고"처럼 한국어는 이 명사가 금액 **뒤**에 붙는 경우가
 #    흔하다 — _is_income_amount(명사가 항상 금액 앞)와 달리 양방향으로 봐야 한다.
-_NON_PENSION_ASSET_NOUN = ("현금", "예금", "적금", "저축")
+_NON_PENSION_ASSET_NOUN = ("현금", "예금", "적금", "저축", "주택청약", "청약")
 
 
 def _is_non_pension_asset_amount(question: str, value: float) -> bool:
@@ -127,9 +127,18 @@ def _is_non_pension_asset_amount(question: str, value: float) -> bool:
 # (현금·예적금)일 가능성을 의심해야 한다 — 규칙 경로는 '계좌에'·'평가액' 같은
 # 전용 키워드 없이는 이 키들을 만들지 않으므로 안전하지만, LLM은 그런 검증
 # 없이 자유롭게 라벨링할 수 있기 때문이다.
-_PENSION_ACCOUNT_KEYS = frozenset({
+#
+# ⚠️ routing._CALC_CONDITION_KEYS의 "_manwon" 접미사 키 **전부**를 담는다.
+#    처음엔 account_value_manwon 등 5개만 막았는데(F28), "주택청약 500만원"이
+#    private_pension_annual_manwon(연간 연금수령액)으로 오분류되는 사고가
+#    재현됐다(UI-014, 2026-09-06) — 같은 결함이 안 막은 키에서 그대로
+#    반복됐다. 이 세트는 GENERAL 라우팅을 유발하는 "계산 조건" 키와
+#    정확히 같아야 한다 — 하나라도 빠지면 그 키가 다음 사고 지점이 된다.
+_GUARDED_MONEY_KEYS = frozenset({
     "account_value_manwon", "severance_manwon", "pension_saving_manwon",
     "irp_manwon", "combined_contribution_manwon",
+    "private_pension_annual_manwon", "private_pension_monthly_manwon",
+    "total_income_manwon",
 })
 
 
@@ -550,12 +559,12 @@ def derive_conditions(question: str,
                         f"{k}={_fmt(val)}로 분석됐으나 있을 수 없는 값이라 "
                         f"반영하지 않았습니다")
                 continue
-            if k in _PENSION_ACCOUNT_KEYS and _is_non_pension_asset_amount(q, val):
-                # LLM이 "3000만원 현금"을 account_value_manwon 등으로 잘못
-                # 라벨링한 경우 — 근거 없는 라벨을 받아들이지 않는다.
+            if k in _GUARDED_MONEY_KEYS and _is_non_pension_asset_amount(q, val):
+                # LLM이 "3000만원 현금"·"주택청약 500만원"을 account_value_manwon
+                # 등으로 잘못 라벨링한 경우 — 근거 없는 라벨을 받아들이지 않는다.
                 c.setdefault("diagnostic_notes", []).append(
-                    f"{_fmt(val)}만원이 현금·예적금 등으로 언급되어 연금 계좌 "
-                    f"조건({k})으로 반영하지 않았습니다")
+                    f"{_fmt(val)}만원이 현금·예적금·주택청약 등 연금과 무관한 "
+                    f"자산으로 언급되어 조건({k})으로 반영하지 않았습니다")
                 continue
             if _unit_confusion(k, c.get(k), val, _text_ceiling):
                 # 규칙이 읽은 값이 있으면 그 값을 지키고, 없으면(천장값만으로

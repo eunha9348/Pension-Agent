@@ -238,6 +238,37 @@ def test_LLM이_준_정당한_계좌평가액은_그대로_반영된다():
     assert c.get("account_value_manwon") == 30000
 
 
+def test_LLM이_주택청약을_연금수령액으로_오판해도_반영하지_않는다():
+    """UI-014 실사용 재현 (2026-09-06) — F28의 재발.
+
+    "24살에 현금 3000만원 있고 주택청약 500만원 있는데 노후대비 어떻게
+    해야할까?"에서 F28은 account_value_manwon 등 5개 키만 막았는데,
+    실서버 HCX는 "주택청약 500만원"을 private_pension_annual_manwon
+    (연간 연금수령액)으로 라벨링했다 — F28이 막지 않은 다른 키에서
+    같은 결함이 그대로 재발했다. 그 결과 ADVISORY로 가야 할 질의가
+    다시 GENERAL로 잘못 라우팅됐다.
+
+    가드 대상 키를 routing._CALC_CONDITION_KEYS의 금액 키 전부로
+    넓히고, 비연금 자산 신호에 '주택청약'도 추가해 해결했다.
+    """
+    q = "24살에 현금 3000만원 있고 주택청약 500만원 있는데 노후대비 어떻게 해야할까?"
+    c = derive_conditions(q, llm_conditions={"age": 24,
+                                              "private_pension_annual_manwon": 500})
+    assert "private_pension_annual_manwon" not in c
+    assert "private_pension_monthly_manwon" not in c
+
+    from app.analysis.routing import classify_route
+    route = classify_route(q, conditions=c, asked_for=[])
+    assert route.route == "ADVISORY", f"여전히 잘못 라우팅됨: {route}"
+
+
+def test_주택청약_아닌_정당한_연금수령액은_그대로_반영된다():
+    """반대 방향 회귀 — 실제로 연금 수령액을 말한 질의는 계속 계산돼야 한다."""
+    c = derive_conditions("사적연금으로 연간 1200만원 받으면 세금은 얼마인가요?",
+                          llm_conditions={"private_pension_annual_manwon": 1200})
+    assert c.get("private_pension_annual_manwon") == 1200
+
+
 # ════════════════════════════════════════════════════════════════
 # 결함 6 · PDF 이중 글리프가 답변까지 노출
 # ════════════════════════════════════════════════════════════════
