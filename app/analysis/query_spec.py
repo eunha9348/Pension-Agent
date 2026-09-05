@@ -74,6 +74,12 @@ L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기�
    다만 **다른 제도를 같은 것으로 합치지 마십시오** — 특히
    연금수령연차/연금실제수령연차, 중도인출/부득이한사유 인출처럼
    한 글자 차이로 결과가 달라지는 용어는 질문에 있는 쪽을 유지하십시오.
+6. total_income_manwon과 other_income_manwon은 다른 항목입니다.
+   total_income_manwon은 "총급여·연봉"(세액공제율 구간 판정용)이고,
+   other_income_manwon은 "사적연금 **외에** 종합과세되는 다른 소득"(분리과세
+   vs 종합과세 비교용)입니다. 질문이 "그 외 소득"·"다른 소득"이라고
+   부르며 사적연금 수령액과 별도로 언급한 금액은 other_income_manwon에
+   담으십시오 — total_income_manwon에 합치면 안 됩니다.
 
 출력 형식 — 아래 JSON 객체 **하나만** 출력하십시오. 설명·머리말을 붙이지 마십시오.
 
@@ -88,7 +94,8 @@ L1_SYSTEM_PROMPT = """당신은 연금 상담 질의를 분석하는 분석기�
     "actual_receipt_year": 0, "service_years": 0,
     "pension_saving_manwon": 0, "irp_manwon": 0, "severance_manwon": 0,
     "account_value_manwon": 0, "total_income_manwon": 0,
-    "private_pension_annual_manwon": 0, "fund_class": ""},
+    "private_pension_annual_manwon": 0, "other_income_manwon": 0,
+    "fund_class": ""},
   "extra_conditions": {"사용자가 밝힌 그 밖의 사정": "값"},
   "entities": {"product_name": "", "product_code": "",
                "fund_class": "", "plan_type": ""},

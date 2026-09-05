@@ -144,8 +144,10 @@ def _is_non_pension_asset_amount(question: str, value: float) -> bool:
 #    처음엔 account_value_manwon 등 5개만 막았는데(F28), "주택청약 500만원"이
 #    private_pension_annual_manwon(연간 연금수령액)으로 오분류되는 사고가
 #    재현됐다(UI-014, 2026-09-06) — 같은 결함이 안 막은 키에서 그대로
-#    반복됐다. 이 세트는 GENERAL 라우팅을 유발하는 "계산 조건" 키와
-#    정확히 같아야 한다 — 하나라도 빠지면 그 키가 다음 사고 지점이 된다.
+#    반복됐다. 이 세트는 최소한 GENERAL 라우팅을 유발하는 "계산 조건" 키를
+#    전부 담아야 한다 — 하나라도 빠지면 그 키가 다음 사고 지점이 된다.
+#    (아래에서 other_income_manwon처럼 라우팅과 무관한 화폐 키도 같은
+#    이유로 추가될 수 있다 — F36 참조.)
 _GUARDED_MONEY_KEYS = frozenset({
     "account_value_manwon", "severance_manwon", "pension_saving_manwon",
     "irp_manwon", "combined_contribution_manwon",
@@ -153,6 +155,14 @@ _GUARDED_MONEY_KEYS = frozenset({
     "total_income_manwon",
 })
 
+
+_GUARDED_MONEY_KEYS = _GUARDED_MONEY_KEYS | frozenset({"other_income_manwon"})
+# ⚠️ other_income_manwon은 routing._CALC_CONDITION_KEYS의 멤버가 아니다(라우팅을
+# 좌우하지 않는다) — 그래도 같은 오분류 위험(F28/F34류: "3000만원 현금"을
+# 계산 인자로 잘못 라벨링)이 그대로 적용되는 화폐 키이므로 이 세트에 넣는다.
+# "이 세트 = 라우팅 계산조건 키"라는 옛 불변식은 이제 성립하지 않는다 —
+# 이 세트의 진짜 목적은 "LLM이 오분류할 수 있는 화폐 키 전부"이고, 라우팅
+# 키는 그중 일부일 뿐이다.
 
 # 이 명사 바로 뒤에 붙은 금액은 **소득**이지 납입액이 아니다.
 _INCOME_NOUN = ("총급여", "연봉", "종합소득", "근로소득", "소득금액", "급여가", "연소득")
@@ -466,6 +476,26 @@ def derive_conditions(question: str,
         c["total_income_manwon"] = inc
         c["income_type"] = "종합소득" if "종합소득" in q else "총급여"
 
+    # ── 그 외 종합소득 (과세방식_비교_계산의 other_comprehensive_income) ──
+    # ⚠️ 실측 (UI-027, 2026-09-06) — "연간 사적연금 수령액이 2000만원이고
+    #    그외 소득액에 소득공제를 적용하면 7000만원이야"에서 7000만원이
+    #    통째로 반영되지 않았다. 원인은 이 키(other_income_manwon)를 채울
+    #    경로가 **아무 데도 없었다**는 것이다 — calc_params.py는 이 키를
+    #    읽지만(compare_taxation_options의 other_comprehensive_income 인자),
+    #    L1 프롬프트의 user_conditions 스키마에도, 규칙 기반 추출에도 이
+    #    키 이름 자체가 없어 HCX가 뽑아도 갈 곳이 없었다(extra_conditions로
+    #    새고, 그건 계산에 쓰이지 않는다). "총급여"·"연봉"·"종합소득"과 달리
+    #    "그 외 소득"류 표현은 total_income_manwon의 키워드에도 안 걸린다.
+    if (other_inc := _find_amount_near(
+            q, ("그 외 소득", "그외 소득", "그 밖의 소득", "다른 소득",
+               "타소득", "타 소득", "기타 소득", "기타소득"))) is not None:
+        c["other_income_manwon"] = other_inc
+    elif c.get("income_type") == "종합소득":
+        # "종합소득"이라고 부른 total_income_manwon은 개념상 그대로
+        # other_comprehensive_income에 대응한다("총급여"는 공제 전 금액이라
+        # 근사조차 되지 않으므로 여기서 제외한다 — 그 경우는 되묻는 편이 낫다).
+        c["other_income_manwon"] = c["total_income_manwon"]
+
     # 월/연 단위 연금 수령액
     if (m := re.search(r'(?:매달|매월|월)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q)):
         if (v := parse_amount_to_manwon(m.group(1))) is not None:
@@ -485,9 +515,15 @@ def derive_conditions(question: str,
     #    _find_amount_near는 키워드와 금액이 떨어져 있는 경우를 다루라고
     #    이미 있는 도구이므로 그대로 재사용한다. 위에서 못 잡았을 때만
     #    보조로 돌려, 기존에 맞던 케이스의 해석은 건드리지 않는다.
+    # ⚠️ '사적연금'이 낀 형태도 같은 함정이다 — "연간 사적연금 수령액이
+    #    2000만원이고"(UI-027, 2026-09-06)는 위 세 키워드 어디에도 없어
+    #    private_pension_annual_manwon이 통째로 안 잡혔다. 트리거가 좁으면
+    #    없는 것보다 나쁘다(CLAUDE.md) — 매번 새 문구가 나올 때마다 키워드를
+    #    하나씩 추가하는 대신 "사적연금 수령액"류 자체를 키워드로 넣는다.
     if "private_pension_annual_manwon" not in c:
         if (v := _find_amount_near(q, ("연간 연금수령액", "연간 수령액",
-                                       "연 연금수령액"))) is not None:
+                                       "연 연금수령액", "연간 사적연금 수령액",
+                                       "사적연금 수령액", "사적연금수령액"))) is not None:
             c["private_pension_annual_manwon"] = v
 
     # 문맥 없는 단일 금액은 보조 후보로만 둔다 (용도를 단정하지 않는다)
@@ -655,6 +691,7 @@ def describe_conditions(conditions: dict[str, Any]) -> str:
         "combined_contribution_manwon": "연금저축+IRP 합산 납입액",
         "severance_manwon": "퇴직급여", "account_value_manwon": "계좌 평가액",
         "total_income_manwon": "소득", "years_elapsed": "가입 후 경과연수",
+        "other_income_manwon": "그 외 종합소득",
         "private_pension_annual_manwon": "연간 연금수령액",
         "is_annuity_type": "수령 형태", "fund_class": "판매 클래스",
         "join_before_2013": "2013.3.1 이전 가입",

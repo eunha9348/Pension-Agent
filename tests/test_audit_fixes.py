@@ -619,3 +619,130 @@ def test_fund_class_정당한_표기는_그대로_반영된다():
     c = derive_conditions("판매클래스 비교하고 싶어요",
                           llm_conditions={"fund_class": "C-P2E"})
     assert c.get("fund_class") == "C-P2E"
+
+
+# ════════════════════════════════════════════════════════════════
+# F36 · '그 외 소득'이 과세방식 비교 계산에 반영되지 않는 결함 (UI-027)
+# ════════════════════════════════════════════════════════════════
+#
+# 실측 (2026-09-06) — "연간 사적연금 수령액이 2000만원이고 그외 소득액에
+# 소득공제를 적용하면 7000만원이야. …분리과세와 종합과세중 어떤 것으로
+# 선택해야 이득일까"에 대해 답변이 종합과세 유리(253만원 차이)로 나왔다.
+# 그런데 이 결과는 other_comprehensive_income=0(그 외 소득이 아예 없는
+# 것으로 계산한 값)과 정확히 같다 — 7000만원이 통째로 무시됐다.
+#
+# 원인: calc_params.py는 compare_taxation_options()의
+# other_comprehensive_income 인자를 conditions["other_income_manwon"]에서
+# 읽지만, 이 키를 채우는 경로가 **어디에도 없었다** — 규칙 기반 추출에도
+# 없고 L1 프롬프트의 user_conditions 스키마 예시에도 없어 HCX가 뽑아도
+# extra_conditions로 새 나가 계산에 쓰이지 않았다(연금 외 종합소득은
+# total_income_manwon과는 다른 키인데, 그 키 자체가 존재하지 않았다).
+#
+# 수정: ① "그 외 소득"류 표현 전용 규칙 기반 추출을 추가했다.
+# ② "종합소득"이라고 부른 total_income_manwon은 개념이 같으므로
+# other_income_manwon으로도 반영한다("총급여"는 소득공제 전 금액이라
+# 근사도 안 되므로 제외). ③ L1 프롬프트 스키마에 other_income_manwon을
+# 추가하고 total_income_manwon과의 구분을 명시했다. ④ 이 키도 다른
+# 화폐 키와 같은 오분류 위험(F28/F34)이 있으므로 _GUARDED_MONEY_KEYS에
+# 추가했다 — LLM이 "현금 3000만원"을 other_income_manwon으로 잘못
+# 라벨링해도 반영되지 않는다.
+
+def test_그외_소득_표현이_반영된다():
+    """★ 실측 재현 — UI-027의 '그외 소득액' 7000만원이 통째로 빠졌었다."""
+    from app.analysis.conditions import derive_conditions
+
+    q = ("연간 사적연금 수령액이 2000만원이고 그외 소득액에 소득공제를 "
+         "적용하면 7000만원이야. 분리과세와 종합과세중 어떤 것으로 "
+         "선택해야 이득일까")
+    c = derive_conditions(q)
+    assert c.get("other_income_manwon") == 7000.0
+
+
+def test_그외_소득_반영_후_계산_결과가_달라진다():
+    """★ 배선 — 값이 반영되면 유불리 판정 자체가 뒤집힌다.
+
+    other_comprehensive_income=0으로 계산하면 종합과세가 253만원 유리하다고
+    나오지만, 실제로 7000만원을 반영하면 종합과세 과세표준이 크게 올라가
+    분리과세가 유리한 쪽으로 뒤집힌다 — 숫자를 무시한 결과가 결론 자체를
+    바꿔 놓았다는 뜻이다.
+    """
+    from app.core.pension_calc_functions import compare_taxation_options
+
+    ignored = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                       other_comprehensive_income=0)
+    reflected = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                        other_comprehensive_income=7000)
+    assert ignored["lower_tax_option"] == "COMPREHENSIVE"
+    assert reflected["lower_tax_option"] == "SEPARATE"
+
+
+def test_종합소득이라고_부른_총소득은_그_외_소득으로도_반영된다():
+    """대조군 — '종합소득'은 other_comprehensive_income과 개념이 같다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("종합소득이 7000만원이고 사적연금 2000만원 받는데 "
+                          "분리과세가 나을까요 종합과세가 나을까요?")
+    assert c.get("other_income_manwon") == 7000.0
+
+
+def test_총급여는_그_외_소득으로_폴백되지_않는다():
+    """★ 회귀 방지 — 총급여(공제 전)를 그 외 소득(공제 후)으로 근사하면 안 된다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("총급여가 7000만원이고 사적연금 2000만원 받는데 "
+                          "분리과세가 나을까요 종합과세가 나을까요?")
+    assert c.get("other_income_manwon") is None
+    assert c.get("total_income_manwon") == 7000.0
+
+
+def test_LLM이_현금을_그_외_소득으로_오판해도_반영하지_않는다():
+    """★ F28/F34류 재확인 — 새로 추가한 화폐 키도 같은 가드를 받아야 한다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("현금 3000만원 있고 사적연금 2000만원인데 과세방식은?",
+                          llm_conditions={"other_income_manwon": 3000})
+    assert "other_income_manwon" not in c
+
+
+def test_LLM이_준_정당한_그_외_소득은_반영된다():
+    """대조군 — LLM이 스키마대로 정확히 낸 값까지 막으면 안 된다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("사적연금 2000만원인데 과세방식은?",
+                          llm_conditions={"other_income_manwon": 5000})
+    assert c.get("other_income_manwon") == 5000.0
+
+
+def test_사적연금이_낀_연간수령액_표현도_잡힌다():
+    """★ 같은 실측(UI-027) — '연간 사적연금 수령액이 2000만원'도 놓쳤었다.
+
+    기존 키워드("연간 연금수령액"·"연간 수령액"·"연 연금수령액")는 '연간'과
+    '수령액' 사이에 '사적연금'이 끼는 흔한 형태를 못 잡았다. 그 결과
+    other_income_manwon 하나만 고쳐서는 이 실측 질의가 여전히 계산되지
+    않았다 — private_pension_annual_manwon 자체가 비어 있었기 때문이다.
+    """
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("연간 사적연금 수령액이 2000만원이고 그외 소득액에 "
+                          "소득공제를 적용하면 7000만원이야. 분리과세와 "
+                          "종합과세중 어떤 것으로 선택해야 이득일까")
+    assert c.get("private_pension_annual_manwon") == 2000.0
+    assert c.get("other_income_manwon") == 7000.0
+
+
+def test_과세방식_비교_답변이_두_수치를_모두_반영한다():
+    """★ 배선 — 파이프라인 끝까지 가서 7000만원이 무시된 결과가 아닌지 본다.
+
+    other_comprehensive_income=0으로 계산하면 종합과세가 유리하다고 나오지만
+    (253만원 차이), 실제로는 분리과세가 15.8만원 유리한 쪽으로 뒤집힌다.
+    잘못된 결론(종합과세 유리)이 나가면 이 수정이 배선까지 안 됐다는 뜻이다.
+    """
+    from app.pipeline import answer_question
+
+    r = answer_question(
+        "ROUND-2",
+        "연간 사적연금 수령액이 2000만원이고 그외 소득액에 소득공제를 "
+        "적용하면 7000만원이야. 연금소득세의 1500만원 초과분을 분리과세와 "
+        "종합과세중 어떤 것으로 선택해야 이득일까")
+    assert "8,160만원" in r["answer"], "그 외 소득 7000만원이 과세표준에 반영되지 않았다"
+    assert "분리과세" in r["answer"] and "낮습니다" in r["answer"]
