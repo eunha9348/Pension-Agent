@@ -58,6 +58,7 @@ _UNIT_MANWON = {
     "근속연수공제", "환산급여", "환산급여공제", "퇴직소득_과세표준",
     "환산산출세액", "산출세액", "합계", "과세표준", "연금소득공제",
     "사적연금_분리과세", "그외_종합과세",
+    "총연금및기타소득", "인적공제", "그외소득_과세표준",
     # 퇴직급여 적립액 (수리팀 산식 · DB/DC 공통 출력 키)
     "퇴직급여_적립액", "평균월급",
 }
@@ -156,8 +157,10 @@ def _render_tax_choice(result: dict, indent: str) -> str:
     sep_private = format_manwon(sep.get("사적연금_분리과세", 0))
     sep_other = sep.get("그외_종합과세", 0)
 
-    base = format_manwon(comp.get("과세표준", 0))
+    gross = format_manwon(comp.get("총연금및기타소득", 0))
     deduction = format_manwon(comp.get("연금소득공제", 0))
+    personal = format_manwon(comp.get("인적공제", 0))
+    base = format_manwon(comp.get("과세표준", 0))
     comp_total = format_manwon(comp.get("합계", 0))
 
     cheaper = "분리과세" if result.get("lower_tax_option") == "SEPARATE" else "종합과세"
@@ -167,12 +170,17 @@ def _render_tax_choice(result: dict, indent: str) -> str:
     sep_detail = (f"(사적연금 분리과세 {sep_private} + 그 외 소득 종합과세 "
                  f"{format_manwon(sep_other)})" if sep_other else "")
 
+    # ⚠️ 과세표준을 "얼마(연금소득공제 X 반영)"로 뭉뚱그리면 안 된다
+    # (2026-09-06, UI-037 실측) — 총소득에서 연금소득공제만 빼면 사용자가
+    # 직접 뺄셈한 값과 실제 과세표준이 어긋나는데(인적공제 150만원 차이),
+    # 그 차이의 정체를 답변 어디서도 알 수 없었다. 총소득 → 두 공제 →
+    # 과세표준까지 산식을 그대로 문장에 드러낸다.
     lines = [
         f"{indent}사적연금 연 수령액이 1,500만원을 초과해 분리과세와 종합과세 "
         f"중 하나를 선택해야 합니다.",
         f"{indent}분리과세를 선택하면 세액이 {sep_total}{(' ' + sep_detail) if sep_detail else ''}이고, "
-        f"종합과세를 선택하면 과세표준 {base}(연금소득공제 {deduction} 반영)에 "
-        f"대해 세액이 {comp_total}입니다.",
+        f"종합과세를 선택하면 총소득 {gross}에서 연금소득공제 {deduction}과 "
+        f"인적공제 {personal}을 뺀 과세표준 {base}에 대해 세액이 {comp_total}입니다.",
         f"{indent}세액만 보면 {cheaper} 쪽이 {diff} 더 낮습니다"
         + (f"({basis} 기준)." if basis else "."),
     ]

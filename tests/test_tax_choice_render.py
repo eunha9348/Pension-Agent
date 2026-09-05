@@ -199,3 +199,49 @@ def test_과세방식_답변이_축퇴되지_않는다():
     assert "수치검증_실패" not in r["think_trace"], (
         "표시 반올림 때문에 답변이 축퇴됐다")
     assert "76.6만원" in r["answer"]
+
+
+# ════════════════════════════════════════════════════════════════
+# F37 · 종합과세 과세표준 산출 근거에 인적공제가 빠져 있던 결함 (UI-037)
+# ════════════════════════════════════════════════════════════════
+#
+# 실측 (2026-09-06) — "총 9000만원에서 연금소득공제 690만원을 빼면
+# 8310만원인데 왜 8160만원이냐, 150만원은 어디서 빠졌냐"는 질문에 답변이
+# "그렇게 되는 것입니다"만 반복하고 정확한 근거를 대지 못했다("추가 정보
+# 필요"로 얼버무림).
+#
+# 원인: compare_taxation_options()가 실제로는
+# 총연금및기타소득(9,000) − 연금소득공제(690) − 인적공제(150) = 8,160
+# 을 계산하는데, personal_deduction(인적공제 150만원)이 함수 내부
+# 지역변수로만 쓰이고 반환값 어디에도 없었다. 그래서 답변을 만드는 LLM도
+# 이를 검증하는 numeric_verifier도 150만원의 존재 자체를 알 수 없었다 —
+# 계산은 처음부터 맞았지만, **그 계산을 설명하는 데 필요한 중간값이
+# 출력에서 빠져** 사용자 질문에 답할 수 없었던 경우다.
+
+def test_종합과세_결과에_총소득과_인적공제가_노출된다():
+    """★ 실측 재현 — 인적공제 150만원이 반환값 어디에도 없었다."""
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    comp = r["comprehensive"]
+    assert comp["총연금및기타소득"] == 9000
+    assert comp["인적공제"] == 150.0
+    # 산식이 실제로 성립해야 한다 — 셋을 더하면 원래 값으로 돌아온다
+    assert (comp["총연금및기타소득"] - comp["연금소득공제"]
+            - comp["인적공제"]) == comp["과세표준"] == 8160.0
+
+
+def test_렌더링_문장이_150만원_공제를_명시한다():
+    """★ 배선 — L5' 생성 프롬프트에 실리는 문장 자체에 인적공제가 보여야 한다."""
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    text = render_calc_result(r)
+    assert "9,000만원" in text
+    assert "인적공제 150만원" in text
+    assert "8,160만원" in text
+
+
+def test_분리과세_쪽_인적공제도_함께_노출된다():
+    """대조군 — separate 분기도 같은 personal_deduction을 쓰므로 함께 실어야 한다."""
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    assert r["separate"]["인적공제"] == 150.0

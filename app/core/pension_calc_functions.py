@@ -300,11 +300,25 @@ def compare_taxation_options(P_np_annual: float,
         "separate": {
             "사적연금_분리과세": round(sep_private_tax, 2),
             "그외_종합과세": round(sep_other_tax, 2),
+            "그외소득_과세표준": round(base_np, 2),
+            "인적공제": round(personal_deduction, 2),
             "합계": round(separate_total, 2),
         },
         "comprehensive": {
-            "과세표준": round(base_comp, 2),
+            # ⚠️ 총연금및기타소득·인적공제를 반드시 실어야 한다 (2026-09-06,
+            # UI-037 실측). 예전에는 과세표준·연금소득공제·합계만 반환해
+            # "9,000만원(2,000+7,000) − 연금소득공제 690만원 = 8,310만원"까지는
+            # 사용자가 직접 계산할 수 있는데 실제 값은 8,160만원이었다. 그 차이
+            # (인적공제 150만원)를 만드는 personal_deduction이 계산함수 내부
+            # 지역변수로만 쓰이고 반환값 어디에도 없어서, 답변을 만드는 LLM도
+            # 검증기(numeric_verifier._flatten_numbers)도 이 150만원의 존재를
+            # 알 방법이 없었다. 그 결과 답변이 "8,160만원이 맞다"고 결론만
+            # 반복하고 근거를 대지 못했다("추가 정보 필요"로 얼버무림) —
+            # 계산은 맞았지만 **설명에 필요한 중간값이 출력에서 빠진** 경우다.
+            "총연금및기타소득": round(total_pension + other_comprehensive_income, 2),
             "연금소득공제": round(pension_income_deduction, 2),
+            "인적공제": round(personal_deduction, 2),
+            "과세표준": round(base_comp, 2),
             "합계": round(comprehensive_total, 2),
         },
         "lower_tax_option": cheaper,
