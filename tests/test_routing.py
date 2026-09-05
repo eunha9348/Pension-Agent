@@ -135,3 +135,68 @@ def test_구어체_살도_나이로_읽는다(q, expected):
     연령별 차등과세가 걸린 질의에서 조건이 통째로 비었다.
     """
     assert derive_conditions(q).get("age") == expected, q
+
+
+# ════════════════════════════════════════════════════════════════
+# F41 · 계산 조건 없이 계산함수만 지정되면 상담 신호를 이기지 못한다
+# ════════════════════════════════════════════════════════════════
+#
+# 실측 (UI-020, 2026-09-06) — "우리 아빠가 모아둔 자산이 부동산은 20억
+# 정도 군인연금은 월 400정도를 받는데 노후를 어떻게 대비해야할까"에서
+# L1(HCX)이 뒷받침하는 조건 하나 없이 '국민연금_수령액_계산'을 슬롯에
+# 지정했다. supervise_plan은 이 함수가 CALC_REGISTRY에 **등록만** 돼
+# 있으면 통과시킨다(관련성은 검증하지 않는다). has_calc_cond=False인데도
+# has_calc_slot=True만으로 GENERAL이 강제됐고, 계산은 필수 인자 부족으로
+# 곧바로 실패해 "확인이 필요합니다"라는 무의미한 답변만 남았다 — 질문
+#자체는 전형적인 ADVISORY 문구("노후를 어떻게 대비")였는데도.
+#
+# 두 가지를 함께 고쳤다:
+# ① classify_route의 판정 순서 — "상담 신호 + 개인 서술"이 "계산함수
+#    지정"보다 우선하도록 옮겼다. has_calc_cond(진짜 수치)가 있으면
+#    여전히 최우선으로 GENERAL이 확정되므로 정상적인 계산 질의는
+#    영향받지 않는다.
+# ② _ADVISORY_SIGNALS에 '어떻게 대비'·'노후 준비'를 추가했다 — '노후'와
+#    '대비' 사이에 조사('를')가 끼는 흔한 어순이라 기존 '노후 대비'
+#    리터럴로는 안 걸렸다(①만 고쳐도 이 실측 질의 자체는 여전히
+#    통과하지 못했다 — 상담신호=0이라 애초에 advisory_signal 자체가
+#    비어 있었다).
+
+def test_실측_질의가_ADVISORY로_간다():
+    """★ 실측 재현 — UI-020 그대로."""
+    q = ("우리 아빠가 모아둔 자산이 부동산은 20억 정도 군인연금은 월 "
+         "400정도를 받는데 노후를 어떻게 대비해야할까")
+    assert _route(q).is_advisory, _route(q).as_trace()
+
+
+def test_뒷받침_없는_계산함수_지정은_상담신호를_이기지_못한다():
+    """★ 핵심 불변식 — L1이 근거 없이 계산함수를 지정해도 상담 신호가 이긴다."""
+    from app.analysis.conditions import derive_conditions
+    from app.analysis.routing import classify_route
+
+    q = "우리 아빠가 부동산 20억 있고 군인연금 받는데 노후를 어떻게 대비해야할까"
+    cond = derive_conditions(q)  # has_calc_cond=False (뒷받침 수치 없음)
+    slots = [{"id": "s1", "calc_function": "국민연금_수령액_계산"}]
+    d = classify_route(q, cond, slots)
+    assert d.is_advisory, d.as_trace()
+
+
+def test_계산_조건이_실제로_있으면_계산함수_지정이_여전히_이긴다():
+    """대조군 — has_calc_cond가 있으면 순서 변경과 무관하게 GENERAL이어야 한다."""
+    from app.analysis.routing import classify_route
+
+    q = "월 300만원 받는데 어떻게 준비해야 할까"  # 상담 신호 + 개인서술 있음
+    cond = {"private_pension_monthly_manwon": 300}  # 그러나 진짜 계산 조건도 있음
+    slots = [{"id": "s1", "calc_function": "사적연금_원천징수_계산"}]
+    d = classify_route(q, cond, slots)
+    assert not d.is_advisory, d.as_trace()
+
+
+@pytest.mark.parametrize("q", [
+    "노후를 어떻게 대비해야 할까요",
+    "노후 준비 어떻게 시작하면 좋을까요",
+])
+def test_조사가_낀_노후_대비_표현도_상담신호로_잡힌다(q):
+    """★ 트리거 확장 — '노후'와 '대비/준비' 사이에 조사가 끼는 흔한 어순."""
+    from app.analysis.routing import _ADVISORY_SIGNALS
+
+    assert any(s in q for s in _ADVISORY_SIGNALS), q
