@@ -40,6 +40,14 @@ def format_manwon(manwon: float) -> str:
     """만원 단위 수치를 사람이 읽는 한국어 금액 표기로.
 
     답변 본문에 쓰는 표기이므로 계산 결과를 바꾸지 않는다(표시 전용).
+
+    ⚠️ 정수로 반올림하지 않는다 — 소수점 첫째 자리까지만 표시한다.
+    예전에는 정수 반올림(76.56 → "77만원")을 썼는데, 검증 대조 집합에
+    원본 값만 있으면 시스템이 스스로 표시한 값이 '근거 없는 수치'로
+    잡히는 사고가 반복됐다(2026-09-06, 억 단위 분리표기에서도 같은
+    사고 재현). numeric_verifier._flatten_numbers가 이 함수를 그대로
+    호출해 허용 집합을 만들므로 표기 자체는 안전하지만, 반올림 폭을
+    줄이면 원본과의 오차가 작아져 그 계열 사고의 여지가 준다.
     """
     if manwon is None:
         return "—"
@@ -51,10 +59,16 @@ def format_manwon(manwon: float) -> str:
         return "—"
     if m >= 10_000:
         eok, rest = divmod(m, 10_000)
-        if abs(rest) < 0.5:
+        if abs(rest) < 0.05:
             return f"{int(eok):,}억원"
-        return f"{int(eok):,}억 {rest:,.0f}만원"
-    return f"{m:,.0f}만원"
+        return f"{int(eok):,}억 {_fmt1(rest)}만원"
+    return f"{_fmt1(m)}만원"
+
+
+def _fmt1(v: float) -> str:
+    """소수점 첫째 자리까지, 딱 떨어지면 정수로("500.0" 아닌 "500")."""
+    s = f"{v:,.1f}"
+    return s[:-2] if s.endswith(".0") else s
 
 
 # ── 금액 파싱 ────────────────────────────────────────────────
