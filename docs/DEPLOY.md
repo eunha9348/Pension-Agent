@@ -179,7 +179,7 @@ RRF로 합쳐집니다. **벡터가 없으면 자동으로 BM25 단독으로 돌
 상태 확인은 `GET /health`의 `retrieval` 항목을 보십시오:
 
 ```json
-"retrieval": { "embedding_enabled": true, "vectors": 8195,
+"retrieval": { "embedding_enabled": true, "vectors": 8172,
                "mode": "BM25 + 벡터 RRF", "warning": "" }
 ```
 
@@ -204,8 +204,11 @@ python -m tests.eval_set
 **실물 코퍼스에서 돌려야 의미가 있습니다** — mock에서는 일부 문항을
 건너뜁니다. 개선 전후 통과율 비교가 발표 자료의 근거가 됩니다.
 
-> Function calling은 `maxTokens`가 1024보다 커야 동작합니다.
-> 코드에서 최소 1100으로 보장하고 있으니 낮추지 마십시오.
+> `smoke_test`가 진단용으로 Function calling도 한 번 찔러 봅니다(`maxTokens`가
+> 1024보다 커야 동작 — 코드에서 최소 1100 보장). ⚠️ **실제 답변 파이프라인은
+> Function calling을 쓰지 않습니다** — HCX-005가 tools 페이로드를 간헐적으로
+> 거부해(400·40009) L1은 평범한 텍스트 호출로 JSON을 받습니다(CLAUDE.md
+> 참고). 여기서 toolCalls 파싱이 실패해도 정상 답변 경로에는 영향이 없습니다.
 
 측정된 지연이 나오면 `app/pipeline.py`의 `BUDGET_*` 상수를 그 값으로 갱신하십시오
 (현재 값은 실측 없이 잡은 추정치입니다).
@@ -284,7 +287,8 @@ newgrp docker              # 그룹 반영 (또는 재접속)
 ```bash
 git clone https://github.com/eunha9348/Pension-Agent.git
 cd Pension-Agent
-git checkout claude/claude-implementation-plan-hpz25z
+# 기본 브랜치가 이미 최신 작업 브랜치입니다(clone만으로 충분).
+# 특정 브랜치를 명시하려면: git checkout claude/claude-implementation-plan-hpz25z
 
 cp .env.example .env
 nano .env          # CLOVA_API_KEY=발급받은키   ← 이 터미널은 EC2 안이라
@@ -376,8 +380,16 @@ docker compose restart                            # 서버가 새 인덱스를 �
 
 ```bash
 git pull
-docker compose up -d --build
+docker compose up -d --build --force-recreate
 ```
+
+⚠️ **`--force-recreate`를 빼지 마십시오.** compose는 서비스 설정(포트·볼륨·
+환경변수 등)이 그대로면 이미지를 새로 빌드해도 **컨테이너를 재생성하지
+않을 때가 있습니다** — 그러면 새 이미지가 준비돼 있어도 실행 중인
+컨테이너는 여전히 옛 코드로 돕니다(2026-09-05 실측: `git pull` +
+`up -d --build`까지 했는데 `/health`가 갱신 전 수치를 그대로 보였다).
+추출 로직(예: `analysis/product_facts.py`)이 바뀐 배포라면 재인덱싱도
+함께 필요합니다: `FORCE_REINDEX=true docker compose up -d --force-recreate agent`.
 
 ### 5-A-10. 자주 쓰는 명령
 
@@ -433,7 +445,8 @@ ACG(방화벽) 인바운드 규칙:
 # 1) 코드 받기 (키는 포함되지 않음)
 git clone https://github.com/eunha9348/Pension-Agent.git
 cd Pension-Agent
-git checkout claude/claude-implementation-plan-hpz25z
+# 기본 브랜치가 이미 최신 작업 브랜치입니다(clone만으로 충분).
+# 특정 브랜치를 명시하려면: git checkout claude/claude-implementation-plan-hpz25z
 
 # 2) 의존성
 sudo apt-get update && sudo apt-get install -y python3-venv
@@ -535,6 +548,8 @@ curl -s http://<서버>/health | python3 -m json.tool
 | 지어낸 내용으로 답한다 | mock 코퍼스 사용 중 | `corpus.kind`가 `real`인지 확인 |
 | 502 / 연결 거부 | 서버 미기동 또는 ACG 차단 | `systemctl status`, ACG 인바운드 |
 | CLOVA 호출만 실패 | 아웃바운드 차단 | 서버에서 `curl -I https://clovastudio.stream.ntruss.com` |
+| `git pull` + `up -d --build` 했는데 `/health`가 그대로 | compose가 컨테이너를 재생성 안 함 | `--force-recreate` 추가 (§5-A-9 참고) |
+| 추출·검증 로직을 바꿨는데 결과가 그대로 | 인덱스가 호스트 볼륨에 남아 재사용됨 | `FORCE_REINDEX=true`로 한 번 재기동 |
 
 ---
 
