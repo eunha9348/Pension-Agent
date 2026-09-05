@@ -30,6 +30,40 @@ def test_주제가_다른_근거는_걸러진다():
     assert match(_slot(), chunk) is False
 
 
+def test_일반_폴백_슬롯은_도메인_겹침_없이도_매칭된다():
+    """UI-021 실사용 재현 (2026-09-06).
+
+    어떤 TopicRule에도 걸리지 않은 질의는 query_spec.py의
+    _FALLBACK_SLOT("ilban", "질의 주제에 대한 제공 자료 근거")으로
+    넘어간다. 이 description 자체가 도메인 핵심어를 하나도 담고 있지
+    않아서(질의/주제/제공/자료/근거 — 전부 DOMAIN_TERMS 밖), 일반
+    _overlap_ok 판정으로는 **검색이 완벽하게 관련 문서를 찾아와도
+    이 슬롯 하나 때문에 항상 실패**했다. 실사용에서 "IRP 계좌를 중도
+    해지했을때 불이익이 있을까"가 관련 문서 8건을 정확히 찾고도
+    전부 매칭 실패로 떨어져, HCX가 근거 없이 수치를 지어냈고
+    (수치검증 실패로 결국 잡히긴 했지만) 사용자에게는 "근거 없음"
+    템플릿만 나갔다.
+    """
+    match = make_slot_evidence_matcher({})
+    chunk = EvidenceChunk(
+        doc_id="doc47",
+        text="개인형 퇴직연금제도(IRP)에서 중도인출·해지 시 세법상 부득이한 "
+             "사유에 해당하지 않으면 불이익이 있습니다.",
+        score=0.8)
+    assert match(_slot(sid="ilban", desc="질의 주제에 대한 제공 자료 근거"),
+                chunk) is True
+
+
+def test_일반_폴백이_아닌_슬롯은_여전히_도메인_겹침을_요구한다():
+    """반대 방향 회귀 — ilban 예외가 다른 슬롯까지 느슨하게 만들면 안 된다."""
+    match = make_slot_evidence_matcher({})
+    chunk = EvidenceChunk(
+        doc_id="doc99",
+        text="펀드의 환매는 청구일로부터 제3영업일에 공고되는 기준가격을 적용한다.",
+        score=0.8)
+    assert match(_slot(sid="s1", desc="연금저축 세액공제 한도"), chunk) is False
+
+
 def test_엔티티가_충돌하면_매칭하지_않는다():
     """의미는 비슷해도 대상 상품이 다르면 근거가 아니다."""
     spec = {"entities": {"product_name": "솔로몬국공채단기"}}

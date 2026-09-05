@@ -84,6 +84,19 @@ def make_slot_evidence_matcher(
         if _entity_conflict(query_entities, chunk.entities or {}, is_comparison):
             return False
 
+        # ⚠️ 어떤 TopicRule에도 걸리지 않은 질의는 query_spec.py가
+        # _FALLBACK_SLOT("ilban", "질의 주제에 대한 제공 자료 근거")으로
+        # 넘긴다. 이 description 자체가 도메인 핵심어를 하나도 안 담고
+        # 있어서(질의/주제/제공/자료/근거 — 전부 DOMAIN_TERMS 밖) 아래
+        # _overlap_ok는 domain_hits(slot_terms)가 애초에 빈 집합이라
+        # **어떤 근거를 넣어도 절대 통과할 수 없었다**(2026-09-06 실사용
+        # 재현 — IRP 중도해지 질의에서 검색이 관련 문서 8건을 정확히
+        # 찾아왔는데도 이 슬롯 하나 때문에 전부 '근거 없음'으로 무너졌다).
+        # 검색·근거필터가 이미 주제 관련성을 걸렀으므로, 이 슬롯은 도메인
+        # 겹침을 추가로 요구하지 않고 검색 결과 자체를 신뢰한다.
+        if slot.slot_id == "ilban":
+            return True
+
         slot_terms = key_terms(f"{slot.description} {slot.slot_id}")
         chunk_terms = key_terms(chunk.text)
         # 청크에 태깅된 엔티티 값도 매칭 대상에 포함 (제목·상품명 등)
