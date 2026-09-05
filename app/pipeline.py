@@ -1037,9 +1037,14 @@ def _answer_question_impl(question_id: str, question: str,
 
     # 수치 검증 실패는 반드시 답변에 반영한다 (조용히 넘기지 않는다)
     if verdict.numeric is not None and not verdict.numeric.passed:
+        # ⚠️ 어떤 숫자가 걸렸는지를 반드시 trace에 남긴다. reason은
+        #    "N개 수치가..."라는 개수만 말하고 실제 값(verdict.numeric.
+        #    ungrounded)은 버려졌었다 — 그러면 오탐인지 정탐인지 나중에
+        #    아무도 판단할 수 없다(2026-09-05, T2 298건 실측에서 수치검증
+        #    실패만으로 축퇴의 22%가 나온 뒤에야 이 공백을 발견했다).
         trace.log("수치검증_실패",
-                  f"{verdict.numeric.reason} → 근거 없는 수치를 제거한 "
-                  f"결정론적 답변으로 축퇴")
+                  f"{verdict.numeric.reason} {verdict.numeric.ungrounded} → "
+                  f"근거 없는 수치를 제거한 결정론적 답변으로 축퇴")
         draft = render_template_answer(query_spec, evidence, slots, trap_context,
                                        assumptions, ask_back_items)
         USAGE.record_degradation("수치검증_실패_축퇴")

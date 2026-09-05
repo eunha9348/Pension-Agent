@@ -83,6 +83,20 @@ def test_여덟_축퇴_경로가_모두_집계된다(path, kind):
         f"{path}의 축퇴가 집계되지 않는다"
 
 
+def test_수치검증_실패_trace에_걸린_숫자_자체가_실린다():
+    """★ reason은 "N개 수치가..."라는 개수만 말하고, 실제로 어떤 숫자가
+    걸렸는지(`VerificationResult.ungrounded`)는 trace에 안 실렸었다.
+    그러면 나중에 오탐인지 정탐인지 아무도 판단할 수 없다(2026-09-05,
+    T2 298건 실측에서 수치검증 실패만으로 축퇴의 22%가 나온 뒤 발견).
+    """
+    from pathlib import Path
+
+    src = Path("app/pipeline.py").read_text(encoding="utf-8")
+    assert "verdict.numeric.ungrounded" in src, (
+        "수치검증 실패 trace에 걸린 숫자 목록이 안 보인다 — "
+        "오탐/정탐을 나중에 판단할 방법이 없다")
+
+
 def test_health가_축퇴를_노출한다():
     from fastapi.testclient import TestClient
 
