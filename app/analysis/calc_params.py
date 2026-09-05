@@ -280,7 +280,20 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
 
     # ── 연금수령한도 · 연차 ────────────────────────────────────
     "연금수령한도_계산": [
-        ParamSpec("account_value", _first("account_value_manwon", "amount_manwon"),
+        # ⚠️ 2026-09-07 (F44·UI-043) — 예전엔 여기서 "amount_manwon"까지
+        # 직접 폴백했다. conditions.py에 이미 같은 값을 훨씬 안전하게
+        # 채우는 전용 로직이 있다("수령한도 질의의 무맥락 금액은 계좌
+        # 평가액으로 본다" — 용도가 이미 밝혀진 금액이면 건드리지 않는
+        # _PURPOSED 가드까지 갖춘 버전). 그런데 이 자리의 _first는 그
+        # 가드를 무시하고 amount_manwon을 그대로 가져와, "30년간 다녔고
+        # … 월소득은 800만원 … 30년간 …납입해왔어"에서 800(월소득, 이미
+        # 다른 목적으로 언급된 금액)이 계좌 평가액으로 잘못 채워졌다.
+        # F27이 severance_pay에서 고친 것과 정확히 같은 패턴이라 같은
+        # 방식으로 고친다 — 폴백을 없애고 conditions.py가 이미 정리해
+        # 둔 값만 그대로 쓴다. 대조군(E-05 "1억이고 10년차면 한도가?")은
+        # conditions.py의 그 가드가 account_value_manwon을 직접 채우므로
+        # 영향받지 않는다.
+        ParamSpec("account_value", _get("account_value_manwon"),
                   ask_back="연금계좌 평가액(매년 1월 1일 또는 연금개시일 기준)"),
         ParamSpec("pension_year", _get("pension_year"),
                   ask_back="연금수령연차(연금개시 가능한 해가 1년차)"),

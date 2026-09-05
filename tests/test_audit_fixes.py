@@ -813,3 +813,161 @@ def test_계산_결과가_없으면_렌더링을_건너뛴다():
     entries = trace.entries()
     assert len(entries) == 1
     assert "\n" not in entries[0]
+
+
+# ════════════════════════════════════════════════════════════════
+# F44 · 근속연수·납입기간이 연금수령연차로 새는 결함 (UI-043)
+# ════════════════════════════════════════════════════════════════
+#
+# 실측(2026-09-07) — "DB형 회사에 30년간 다녔고 … 30년간 연금저축·IRP를
+# 납입해왔어 … 연금을 처음 수령하기 시작할 때 최대 인출 한도는?"에서
+# L1이 pension_year=30으로 채웠다. 사용자가 말한 30은 근속연수·납입
+# 기간이지 연금수령연차가 아니다 — "처음 수령"이라는 말 자체가 1년차를
+# 뜻하는데, "연금수령연차 30년차 → 한도 없음(무제한)"이라는 완전히
+# 틀린 결론이 나갔다. F27/F28/F34가 잡은 것과 같은 계열(그럴듯하지만
+# 다른 개념의 숫자가 계산 조건으로 샘)이지만, 대상 키가 금액이 아니라
+# pension_year·actual_receipt_year라는 점이 다르다.
+#
+# 같은 보고에서 사용자가 "여기서 왜 나이를 제시했는데도 나이에 따라서
+# 명확한 세율이 규명되지 않아?"라고 지적한 두 번째 결함도 함께 고쳤다 —
+# "원천징수" TopicRule의 키워드("세금 얼마" 등)가 "세금은 얼마를 내게
+# 되는지"처럼 조사가 끼는 흔한 어순을 못 잡아 계산 슬롯 자체가 안
+# 만들어졌고, 나이(55세)가 확인됐는데도 사적연금_원천징수_계산이 돌지
+# 않아 근거 문서의 "5.5~3.3%" 범위 서술만 답변에 남았다(F36/F41과 같은
+# narrow-trigger 계열).
+
+def test_근속연수와_같은_숫자는_연금수령연차로_반영되지_않는다():
+    """★ 실측 재현 — 30년 근속·납입이 연금수령연차 30년차로 새면 안 된다.
+
+    이 질의는 "처음 수령"이라는 표현도 함께 있어, LLM의 30(오분류)을
+    거부한 자리에 아래 '처음 수령 → 1년차' 보완이 대신 채운다. 그래서
+    최종 pension_year는 '없음'이 아니라 정확히 1이어야 한다 — 이게
+    "값이 없는 것"과 "정확히 다른 값(1)이어야 하는 것"의 차이다.
+    """
+    from app.analysis.conditions import derive_conditions
+
+    q = ("db형을 운용하는 회사에 30년간 다녔고 퇴직 직전 월소득은 800만원이야. "
+         "또한 30년간 연간 연금저축 600만원, irp에 300만원을 납입해왔어. "
+         "55세 기준으로, 연금을 처음 수령하기 시작할 때 최대 인출 한도는 얼마이고, "
+         "그때 세금은 얼마를 내게 되는지 계산해줘.")
+    c = derive_conditions(q, llm_conditions={"pension_year": 30, "age": 55})
+    assert c.get("pension_year") == 1, "30년(근속·납입)이 아니라 '처음 수령'=1년차여야 한다"
+    assert c.get("service_years") == 30
+    assert c.get("age") == 55.0
+
+
+def test_처음_수령이라는_말_자체가_1년차를_뜻한다():
+    """★ 실측 보완 — pension_year를 되묻지 않고 산출 가능한 값을 낸다."""
+    from app.analysis.conditions import derive_conditions
+
+    assert derive_conditions("연금을 처음 수령하기 시작할 때 한도가 얼마예요?").get(
+        "pension_year") == 1
+    assert derive_conditions("첫 수령 시 한도가 얼마인가요?").get("pension_year") == 1
+
+
+def test_가입_시점의_처음은_연차로_오인하지_않는다():
+    """★ 오탐 방지 — '처음 가입'은 수령과 무관하다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("IRP에 처음 가입했는데 세액공제가 얼마나 되나요?")
+    assert "pension_year" not in c
+
+
+def test_이미_년차가_확인되면_처음_수령_보완이_덮어쓰지_않는다():
+    """대조군 — 실제 명시된 연차가 있으면 그 값을 지킨다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("연금 5년차인데 처음 수령했을 때랑 지금이랑 뭐가 다른가요?")
+    assert c.get("pension_year") == 5
+
+
+# ════════════════════════════════════════════════════════════════
+# F44-2 · 월소득이 연금수령한도의 계좌평가액으로 새는 결함 (UI-043)
+# ════════════════════════════════════════════════════════════════
+#
+# 같은 실측에서 세 번째 결함도 발견했다 — calc_params.py의
+# "연금수령한도_계산" ParamSpec이 account_value를
+# `_first("account_value_manwon", "amount_manwon")`로 조달했다.
+# conditions.py에는 이미 같은 값을 훨씬 안전하게 채우는 전용 로직이
+# 있는데("수령한도 질의의 무맥락 금액은 계좌 평가액으로 본다" — 용도가
+# 이미 밝혀진 금액이면 건드리지 않는 _PURPOSED 가드 포함), calc_params.py
+# 쪽 폴백은 그 가드를 우회해 amount_manwon을 그대로 가져왔다. 그 결과
+# "월소득은 800만원"(이미 다른 목적으로 언급된 금액)이 연금계좌 평가액인
+# 것처럼 계산에 들어갔다. F27이 severance_pay에서 고친 것과 정확히 같은
+# 패턴이라 같은 방식(폴백 제거)으로 고쳤다.
+
+def test_이미_purposed된_금액은_계좌평가액으로_새지_않는다():
+    """★ 실측 재현 — 월소득 800만원이 계좌 평가액으로 잘못 채워졌었다."""
+    from app.analysis.calc_params import CalcParamsBuilder
+    from app.analysis.conditions import derive_conditions
+    from app.core.coverage_pipeline import RequirementSlot
+
+    q = ("db형을 운용하는 회사에 30년간 다녔고 퇴직 직전 월소득은 800만원이야. "
+         "또한 30년간 연간 연금저축 600만원, irp에 300만원을 납입해왔어. "
+         "55세 기준으로, 연금을 처음 수령하기 시작할 때 최대 인출 한도는 얼마이고, "
+         "그때 세금은 얼마를 내게 되는지 계산해줘.")
+    c = derive_conditions(q, llm_conditions={"age": 55})
+    assert "account_value_manwon" not in c   # 조건 자체가 안 채워짐
+
+    builder = CalcParamsBuilder(conditions=c)
+    slot = RequirementSlot("t1", "연금수령한도", "calculation",
+                           calc_function="연금수령한도_계산")
+    try:
+        builder(slot)
+        assert False, "account_value가 없는데 계산이 성공하면 안 된다"
+    except Exception as e:
+        assert "account_value" in e.missing_params
+
+
+def test_무맥락_금액은_여전히_계좌평가액으로_반영된다():
+    """대조군(E-05) — 용도가 안 밝혀진 금액까지 막으면 계산이 죽는다."""
+    from app.analysis.calc_params import CalcParamsBuilder
+    from app.analysis.conditions import derive_conditions
+    from app.core.coverage_pipeline import RequirementSlot
+
+    c = derive_conditions("1억이고 연금수령 10년차면 한도가 얼마인가요?")
+    builder = CalcParamsBuilder(conditions=c)
+    slot = RequirementSlot("t1", "연금수령한도", "calculation",
+                           calc_function="연금수령한도_계산")
+    params = builder(slot)
+    assert params["account_value"] == 10000.0
+
+
+def test_년차가_직접_명시되면_같은_값이어도_반영된다():
+    """대조군 — 우연히 같은 값이라도 'OO년차' 직접 표현이 있으면 막지 않는다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("근속 10년이고 연금수령 10년차인데 한도가 얼마인가요?",
+                          llm_conditions={"pension_year": 10, "service_years": 10})
+    assert c.get("pension_year") == 10.0
+
+
+def test_다른_값이면_근속연수와_달라도_그대로_반영된다():
+    """대조군 — service_years와 다른 값이면 이 가드가 끼어들면 안 된다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("근속 30년인데 연금수령 5년차 한도가 얼마인가요?",
+                          llm_conditions={"pension_year": 5, "service_years": 30})
+    assert c.get("pension_year") == 5.0
+
+
+def test_세금은_얼마_표현도_원천징수_계산을_발동시킨다():
+    """★ 실측 재현 — '세금 얼마'만으로는 조사가 낀 흔한 어순을 못 잡았다."""
+    from app.analysis.query_spec import rule_based_spec
+
+    q = "연금 받으면 세금은 얼마를 내게 되는지 계산해줘"
+    fns = [c["function"] for c in rule_based_spec(q)["planned_calls"]]
+    assert "사적연금_원천징수_계산" in fns
+
+
+def test_UI043_전체_질의가_두_계산_슬롯을_모두_만든다():
+    """★ 배선 — 한도 계산과 세율 계산이 둘 다 생성돼야 한다."""
+    from app.analysis.query_spec import rule_based_spec
+
+    q = ("db형을 운용하는 회사에 30년간 다녔고 퇴직 직전 월소득은 800만원이야. "
+         "또한 30년간 연간 연금저축 600만원, irp에 300만원을 납입해왔어. "
+         "55세 기준으로, 연금을 처음 수령하기 시작할 때 최대 인출 한도는 얼마이고, "
+         "그때 세금은 얼마를 내게 되는지 계산해줘.")
+    fns = [c["function"] for c in rule_based_spec(q)["planned_calls"]]
+    assert "연금수령한도_계산" in fns
+    assert "사적연금_원천징수_계산" in fns

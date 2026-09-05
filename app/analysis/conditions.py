@@ -322,6 +322,40 @@ _NUMERIC_CONDITION_BOUNDS: dict[str, tuple[float, float]] = {
 }
 
 
+# pension_year·actual_receipt_year와 같은 값으로 오염될 수 있는 키 —
+# 근속연수·납입기간은 연금수령연차와 전혀 다른 개념인데 숫자가 우연히
+# 같으면 LLM이 혼동할 수 있다.
+_PENSION_YEAR_KEYS = frozenset({"pension_year", "actual_receipt_year"})
+
+
+def _is_service_years_conflation(question: str, value: float,
+                                 service_years) -> bool:
+    """LLM이 준 연금수령연차(류) 값이 실은 근속연수·납입기간 숫자인가.
+
+    ━━ 왜 필요한가 (2026-09-07 실측 UI-043) ━━
+    "DB형 회사에 30년간 다녔고 … 30년간 연금저축·IRP를 납입해왔어 …
+    처음 수령하기 시작할 때 최대 인출 한도는?"에서 L1이
+    pension_year=30으로 채웠다. 30은 근속연수·납입기간을 가리키는
+    숫자이지 연금수령연차가 아니다 — "처음 수령"이라는 표현 자체가
+    1년차를 뜻하는데, 근속·납입 문맥의 30이 그대로 새어 들어가
+    "연금수령연차 30년차 → 한도 없음"이라는 결론이 나왔다.
+
+    _NUMERIC_CONDITION_BOUNDS(1~60)만으로는 30이 정상 범위라 걸러지지
+    않는다 — 이건 "있을 수 없는 값"이 아니라 "그럴듯하지만 다른 개념의
+    값"이다. 그래도 결정론적으로 잡을 수 있다: 규칙 기반으로 이미 뽑힌
+    service_years와 **값이 같고**, 질의 원문에 그 숫자 바로 뒤에
+    "년차"가 붙는 형태가 전혀 없으면(= 연금수령연차를 직접 말한 흔적이
+    없으면) 근속연수·납입기간을 잘못 가져온 것으로 본다.
+
+    "근속 10년, 연금수령 10년차인데"처럼 우연히 같은 값이라도 "10년차"라는
+    직접 표현이 있으면 막지 않는다 — 그 경우는 진짜 사용자 진술이다.
+    """
+    if service_years is None or value != service_years:
+        return False
+    n = str(int(value)) if float(value).is_integer() else str(value)
+    return not re.search(re.escape(n) + r'\s*년\s*차', question or "")
+
+
 # 단위 혼동으로 볼 배수. 만원↔억, 만원↔원은 전부 10,000배 차이다.
 # 100배를 문턱으로 두면 그 사고는 잡히고, 같은 자릿수 안의 정당한 이견
 # (규칙이 600을 읽고 L1이 900을 읽는 등)은 건드리지 않는다.
@@ -624,6 +658,16 @@ def derive_conditions(question: str,
                     f"{_fmt(val)}만원이 현금·예적금·주택청약 등 연금과 무관한 "
                     f"자산으로 언급되어 조건({k})으로 반영하지 않았습니다")
                 continue
+            if (k in _PENSION_YEAR_KEYS
+                    and _is_service_years_conflation(q, val, c.get("service_years"))):
+                # LLM이 근속연수·납입기간의 숫자를 연금수령연차로 착각한 경우
+                # (F27/F28/F34류와 같은 계열 — 값 자체는 정상 범위라 bounds로는
+                # 못 잡는다). "OO년차"라는 직접 표현이 없으면 반영하지 않는다.
+                c.setdefault("diagnostic_notes", []).append(
+                    f"{_fmt(val)}이(가) 근속연수·납입기간과 같은 값으로 분석돼 "
+                    f"'{_fmt(val)}년차'라는 표현이 없는 한 조건({k})으로 반영하지 "
+                    f"않았습니다")
+                continue
             if _unit_confusion(k, c.get(k), val, _text_ceiling):
                 # 규칙이 읽은 값이 있으면 그 값을 지키고, 없으면(천장값만으로
                 # 걸린 경우) 아예 버린다 — 지어낼 근거가 없다.
@@ -666,6 +710,17 @@ def derive_conditions(question: str,
     if "private_pension_monthly_manwon" not in c and "private_pension_annual_manwon" in c:
         c["private_pension_monthly_manwon"] = round(
             c["private_pension_annual_manwon"] / 12, 4)
+
+    # ── '처음 수령'은 그 자체로 1년차를 뜻한다 ──
+    # 실측(UI-043) — "연금을 처음 수령하기 시작할 때 최대 인출 한도는?"에
+    # pension_year가 끝까지 확인되지 않아 되물어야 했다. "처음 수령"이라는
+    # 말 자체가 이미 1년차라는 뜻이므로 되물을 이유가 없다 — 산출 가능한
+    # 것은 낸다는 원칙(calc_private_withholding의 "산출 가능한 것은
+    # 내주고, 값이 더 필요한 부분만 확인 요청으로 돌린다"와 같은 논리).
+    # ⚠️ '처음'만으로는 안 된다 — "IRP에 처음 가입했는데"처럼 가입 시점을
+    #    가리키는 경우까지 끌려온다. '수령'·'받'과 붙어 있을 때만 잡는다.
+    if "pension_year" not in c and re.search(r'(처음|첫)\s*(수령|받)', q):
+        c["pension_year"] = 1
 
     return c
 
