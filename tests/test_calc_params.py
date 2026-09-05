@@ -78,6 +78,25 @@ def test_퇴직소득세_doc52_원문예시_재현():
     assert slots[0].calc_result["근속연수공제"] == pytest.approx(5500.0)
 
 
+def test_연봉만_있고_퇴직급여_총액이_없으면_되묻는다():
+    """UI-013 실사용 재현 (2026-09-06).
+
+    "근속 25년차이고 연봉 8천만원인데 DC로 퇴직금 얼마나 받을 수 있나요"에서
+    연봉 8,000만원이 severance_pay로 새 나가 calc_retirement_income_tax가
+    근거 없는 세금을 계산했다. severance_pay는 amount_manwon(문맥 없는
+    범용 단일 금액)을 폴백으로 쓰지 않으므로, severance_manwon이 없으면
+    계산 대신 되묻기로 강등돼야 한다.
+    """
+    cond = derive_conditions("근속 25년차이고 연봉 8천만원인데 DC로 퇴직금 얼마나 받을 수 있나요")
+    assert "severance_manwon" not in cond
+    assert cond["amount_manwon"] == 8000        # 캐치올 자체는 여전히 채워짐(다른 슬롯용)
+
+    builder = make_calc_params_builder(cond)
+    slots = run_calculations([_slot("퇴직소득세_계산")], builder)
+    assert slots[0].status == SlotStatus.MISSING
+    assert "severance_pay" not in (slots[0].calc_result or {})
+
+
 def test_소득_모르면_세액공제율_두_경우를_모두_계산한다():
     """조건을 모르면 단정하지 않고 나눠서 계산 — '조건별 결론'의 재료."""
     cond = derive_conditions("연금저축에 600만원, IRP에 300만원 넣으면 세액공제 얼마인가요?")

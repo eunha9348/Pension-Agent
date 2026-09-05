@@ -300,8 +300,14 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
     ],
 
     # ── 퇴직소득세 ─────────────────────────────────────────────
+    # ⚠️ severance_pay는 amount_manwon(문맥 없는 범용 단일 금액)을 폴백으로
+    #    쓰지 않는다. "근속 25년차이고 연봉 8천만원인데 DC로 퇴직금 얼마나
+    #    받을 수 있나요"에서 연봉 8,000만원이 severance_manwon 가드(income
+    #    guard)를 통과해도, amount_manwon 폴백이 그대로 살아 있어 같은 값이
+    #    또 새 나갔다(UI-013, 2026-09-06). severance_manwon이 없으면
+    #    되묻는 편이 근거 없는 세금 계산보다 낫다.
     "퇴직소득세_계산": [
-        ParamSpec("severance_pay", _first("severance_manwon", "amount_manwon"),
+        ParamSpec("severance_pay", _get("severance_manwon"),
                   ask_back="퇴직급여 총액"),
         ParamSpec("service_years", _get("service_years"), ask_back="근속연수"),
     ],

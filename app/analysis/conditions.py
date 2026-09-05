@@ -287,7 +287,11 @@ def derive_conditions(question: str,
             c["pension_saving_manwon"] = saving
         if irp is not None:
             c["irp_manwon"] = irp
-    if (sev := _find_amount_near(q, ("퇴직금", "퇴직급여", "명예퇴직", "명퇴"))) is not None:
+    sev = _find_amount_near(q, ("퇴직금", "퇴직급여", "명예퇴직", "명퇴"))
+    if sev is not None and (_is_balance_amount(q, sev)
+                            or _is_income_amount(q, sev)):
+        sev = None
+    if sev is not None:
         c["severance_manwon"] = sev
     # ⚠️ '계좌에'는 잔고 표지가 아니라 **위치 표지**다. "연금계좌에 900만원
     #    납입하면"의 900은 평가액이 아니라 납입액인데, 예전에는 평가액으로
