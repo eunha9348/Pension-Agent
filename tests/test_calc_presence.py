@@ -96,6 +96,42 @@ def test_variants_구조의_조건별_결론도_전부_요구한다():
         "연금 수령 시 330만원, 일시금 수령 시 550만원입니다.", calc).passed is True
 
 
+def test_variants_전부_같은_값은_조건_딱지_없이_한_번만_요구된다():
+    """★ F25 · 2026-09-05 실사용 재현(UI-012). "연금저축이랑 IRP에 넣으면
+    세액공제 얼마까지 되나요?" 질의에서, 답변이 합산 한도(900만원)만
+    언급하고 단독 한도(600만원, 소득과 무관하게 항상 같음)를 안 썼더니
+    "계산 결과" 박스에
+
+        · 총급여 5,500만원 이하 연금저축 단독 세액공제 한도: 600만원
+        · 총급여 5,500만원 초과 연금저축 단독 세액공제 한도: 600만원
+
+    처럼 **조건에 따라 다른 값인 것처럼** 두 줄로 중복 표기됐다. 실제로는
+    소득과 무관하게 항상 같은 값이다. `render_calc_result()`(생성 프롬프트
+    렌더러)에는 이미 "조건별 결과가 전부 같으면 한 번만 찍는다"는 원칙이
+    있는데, 이 검증기(누락 시 강제로 덧붙이는 값의 출처)에는 없었다 —
+    같은 판단(이 값이 조건별로 갈리는가)을 두 곳이 다른 기준으로 하던
+    것과 같은 계열의 결함이다.
+    """
+    calc = [{"variants": [
+        {"label": "총급여 5,500만원 이하", "result": {
+            "연금저축_단독_한도": 600.0, "세액공제율": 0.165}},
+        {"label": "총급여 5,500만원 초과", "result": {
+            "연금저축_단독_한도": 600.0, "세액공제율": 0.132}},
+    ]}]
+    r = verify_calc_presence("합산 한도는 900만원입니다.", calc)
+    labels = [label for label, _v, _s in r.missing]
+
+    handos = [lb for lb in labels if "단독" in lb]
+    assert len(handos) == 1, f"소득과 무관한 값이 조건별로 중복 요구됐다: {labels}"
+    assert "이하" not in handos[0] and "초과" not in handos[0], (
+        "값이 같은데 조건 딱지가 붙었다 — 조건에 따라 다른 값처럼 보인다")
+
+    # 갈리는 값(세액공제율)은 여전히 변형별로 따로 요구돼야 한다(회귀 방지)
+    rates = [lb for lb in labels if "세액공제율" in lb]
+    assert len(rates) == 2 and any("이하" in lb for lb in rates) \
+        and any("초과" in lb for lb in rates)
+
+
 def test_세액공제율은_소득구간별로_다르게_요구된다():
     """★ 2026-09-05 외부 심사 리포트로 발견 — calc_private_contribution_limit()의
     출력 키는 "세액공제율"인데(파라미터명 r_tax_credit과 다름), render.py의

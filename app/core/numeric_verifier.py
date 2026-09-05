@@ -285,9 +285,40 @@ def _presence_targets(result: Any, prefix: str = "") -> list[tuple[str, float, s
         return out
 
     if isinstance(result.get("variants"), list):
-        for v in result["variants"]:
-            tag = str(v.get("label") or "조건")
-            out.extend(_presence_targets(v.get("result"), f"{tag} "))
+        # ⚠️ 2026-09-05 실사용 재현(F25) — 변형마다 조건 딱지를 붙여 그대로
+        # 늘어놓으면, 소득과 무관해 항상 같은 값(연금저축 단독 한도 등)까지
+        # "총급여 이하: 600만원 / 총급여 초과: 600만원"처럼 **조건에 따라
+        # 다른 값인 것처럼** 중복 표기된다. `render_calc_result()`(생성
+        # 프롬프트용 렌더러)에는 이미 "조건별 결과가 전부 같으면 한 번만
+        # 찍는다"는 원칙이 있는데, 이 함수(답변에 실렸는지 검증 + 누락 시
+        # 강제로 덧붙이는 값의 출처)에는 없었다 — 같은 판단을 두 곳이
+        # 다른 기준으로 하면 한쪽에서 새는 것과 같은 함정이다. 값이 모든
+        # 변형에서 동일할 때만 조건 딱지 없이 한 번으로 합친다. 값이 갈리면
+        # (예: 세액공제율) 변형별로 그대로 구분해 요구한다.
+        variants = result["variants"]
+        tags = [str(v.get("label") or "조건") for v in variants]
+        per_variant = [_presence_targets(v.get("result")) for v in variants]
+
+        by_label: dict[str, list[tuple[float, str]]] = {}
+        order: list[str] = []
+        for lst in per_variant:
+            for label, value, shown in lst:
+                by_label.setdefault(label, []).append((value, shown))
+                if label not in order:
+                    order.append(label)
+
+        for label in order:
+            entries = by_label[label]
+            same_everywhere = (len(entries) == len(variants)
+                              and len({v for v, _s in entries}) == 1)
+            if same_everywhere:
+                value, shown = entries[0]
+                out.append((prefix + label, value, shown))
+            else:
+                for tag, lst in zip(tags, per_variant):
+                    for l2, v2, s2 in lst:
+                        if l2 == label:
+                            out.append((f"{prefix}{tag} {l2}", v2, s2))
         return out
 
     # 계산값이 나온 질의에서는 상수 한도를 요구하지 않는다.
