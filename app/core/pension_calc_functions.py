@@ -386,13 +386,23 @@ def calc_taxation_mode(P_np_annual: float, P_private_excess: float,
 # ════════════════════════════════════════════════
 
 def calc_withdrawal_limit(account_value: float, pension_year: int) -> dict:
-    """[doc39] 연금수령한도 = 평가액 ÷ (11 − 연금수령연차) × 120%
+    """[doc39] 연금수령한도 = 1.2 × 연금계좌평가액 / max(1, 11 − 연금수령연차)
 
     account_value: 매년 1월 1일 또는 연금개시일 기준 평가액
     pension_year : 연금수령연차 (연금개시 가능한 해가 1년차)
 
     doc39: "11년차부터는 한도 자체가 사라져 전액 일시 인출을 하여도
             연금수령으로 인정받을 수 있다."
+
+    ⚠️ 2026-09-06 — 수리 담당자가 새 산식(분모를 max(1, 11−연차)로 바닥을
+    까는 형태)을 보내왔다. 1~10년차 구간에서는 11−연차가 항상 1 이상이라
+    기존 식과 수학적으로 완전히 같은 값을 낸다. 그런데 11년차 이상에서는
+    두 식이 갈린다 — max(1,·)로 바닥을 깔면 "평가액×1.2"라는 **유한한**
+    값이 나오는데, doc39 원문은 11년차 이상을 "한도 자체가 사라진다"고
+    명시한다(유한한 상한이 아니라 무제한). 제공 문서가 최종 근거이고
+    외부 산식은 보조라는 원칙(CLAUDE.md)에 따라, 11년차 이상은 새 산식
+    그대로 적용하지 않고 기존의 '무제한' 처리를 유지한다 — 사용자 확인 완료.
+    1~10년차 구간에는 새 산식의 분모 형태(max(1, 11−연차))를 그대로 반영한다.
     """
     if pension_year >= 11:
         return {
@@ -401,8 +411,8 @@ def calc_withdrawal_limit(account_value: float, pension_year: int) -> dict:
             "note": "연금수령연차 11년차 이상 — 한도 없음 (전액 연금수령 인정)",
             "source": "doc39",
         }
-    denominator = 11 - pension_year
-    limit = account_value / denominator * 1.2
+    denominator = max(1, 11 - pension_year)
+    limit = 1.2 * account_value / denominator
     return {
         "limit": round(limit, 4),
         "unlimited": False,
