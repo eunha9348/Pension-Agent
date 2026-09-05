@@ -13,18 +13,11 @@
 
 ## 제출 정보
 
-> ### ⬇️ 제출 전 이 줄을 채우세요
-> **API End-point: `http://[[IP를 여기에 입력]]/answer`**
->
-> 위 줄의 `[[IP를 여기에 입력]]`을 배포 서버의 실제 공인 IP로 바꾸고
-> (예: `http://123.45.67.89/answer`) 커밋·푸시하십시오. 아래 표의
-> 같은 자리도 함께 바뀝니다 — 문자열이 같으므로 검색/치환 한 번이면 됩니다.
-
 | 항목 | 내용 |
 |---|---|
 | 제출 채널 | 주최 측 GitHub Organization 내 Private Repository Push |
 | 제출물 | ① 소스코드 + Dockerfile/requirements.txt + 본 README &nbsp;·&nbsp; ② 기술제안서 &nbsp;·&nbsp; ③ 평가용 API End-point URL |
-| **API End-point** | `http://[[IP를 여기에 입력]]/answer` ← **배포 후 실제 값으로 교체 필수** |
+| **API End-point** | `http://54.116.169.219/answer` |
 | End-point 제출 | **README 명시 + 구글폼 제출 둘 다 필수** — 연금 주제 폼: <https://forms.gle/JY33gvdFAncAvYCSA> |
 | **제출 마감** | **09.06(일) 23:59** — 이후 결과물 변경 시 **실격**(코드 검증이 평가 과정에서 진행될 수 있음) |
 | 서버 운영 기간 | **09.07(월) 10:00 ~ 09.11(금) 15:00** — 기간 중 API 상시 활성화 유지 |
