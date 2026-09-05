@@ -185,3 +185,34 @@ def test_감사_프롬프트가_위험등급_방향_오귀속도_본다():
 
     assert "위험등급 방향" in P
     assert "1등급이 가장 높은 위험" in P and "6등급" in P
+
+
+def test_조건부_값의_서술_순서_지침이_세_프롬프트_모두에_있다():
+    """★ M2 · 2026-09-05 외부 콘솔 심사 리포트로 발견.
+
+    "600만원 이내 13.2%가 적용됩니다. 다만 소득이 낮으면 16.5%도
+    가능합니다"처럼, 소득 구간에 따라 **둘 중 하나만** 적용되는 세율을
+    하나는 확정으로, 다른 하나는 예외처럼 서술하면 두 세율이 동시에
+    적용되는 것 같은 잘못된 인상을 준다. 수치 자체는 둘 다 맞았으므로
+    verify_numeric_grounding으로는 못 잡는다 — 문자열로 결정할 수 없는
+    "서술 순서가 오해를 부르는가"는 규칙이 아니라 프롬프트 지침 +
+    의미 감사로 다룬다(위험등급 방향 오귀속과 같은 처리 방식).
+
+    L5'(SUPERVISOR)·L4-sub(ADVISORY) 두 경로 모두 조건부 값을 만들 수
+    있으므로 한쪽에만 지침을 넣으면 F3(함정 교정이 ADVISORY에만 빠진
+    것)과 같은 비대칭이 생긴다. 감사 프롬프트에도 안전망으로 넣는다 —
+    프롬프트 지시만으로는 HCX가 관성적으로 어길 수 있기 때문이다
+    (마크다운 지시를 무시하고 굵게를 쓴 사례와 같은 계열).
+    """
+    from app.core.supervisory_board import LLM_AUDIT_SYSTEM_PROMPT
+    from app.generation.advisory import ADVISORY_SYSTEM_PROMPT
+    from app.generation.answer_prompt import SUPERVISOR_SYSTEM_PROMPT
+
+    for name, prompt in (("SUPERVISOR", SUPERVISOR_SYSTEM_PROMPT),
+                         ("ADVISORY", ADVISORY_SYSTEM_PROMPT)):
+        assert "조건을 먼저" in prompt, f"{name}에 서술 순서 지침이 없다"
+        assert "13.2%" in prompt and "16.5%" in prompt, (
+            f"{name}에 구체적 반례가 없다")
+
+    assert "조건부 값의 서술 순서" in LLM_AUDIT_SYSTEM_PROMPT, (
+        "의미 감사 안전망이 없다 — 프롬프트 지시만으로는 HCX가 어길 수 있다")
