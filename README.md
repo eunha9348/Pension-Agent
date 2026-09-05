@@ -16,13 +16,34 @@
 | 항목 | 내용 |
 |---|---|
 | 제출 채널 | 주최 측 GitHub Organization 내 Private Repository Push |
-| 제출물 | ① 소스코드 + Dockerfile/requirements.txt + 본 README &nbsp;·&nbsp; ② 기술제안서 &nbsp;·&nbsp; ③ 평가용 API 서버 정보(End-point + API 명세) |
-| **API End-point** | `http://<배포 서버 공인 IP 또는 도메인>/answer` ← **배포 후 실제 값으로 교체 필수** |
-| 서버 운영 기간 | 09.07 ~ 09.20 (변경 시 공지) — 기간 중 API 상시 활성화 유지 |
-| **제출 마감** | **09.06** — 이후 커밋·push·서버 배포 등 변경 시 **실격** |
+| 제출물 | ① 소스코드 + Dockerfile/requirements.txt + 본 README &nbsp;·&nbsp; ② 기술제안서 &nbsp;·&nbsp; ③ 평가용 API End-point URL |
+| **API End-point** | `http://<배포 서버 공인 IP>/answer` ← **배포 후 실제 값으로 교체 필수** |
+| End-point 제출 | **README 명시 + 구글폼 제출 둘 다 필수** — 연금 주제 폼: <https://forms.gle/JY33gvdFAncAvYCSA> |
+| **제출 마감** | **09.06(일) 23:59** — 이후 결과물 변경 시 **실격**(코드 검증이 평가 과정에서 진행될 수 있음) |
+| 서버 운영 기간 | **09.07(월) 10:00 ~ 09.11(금) 15:00** — 기간 중 API 상시 활성화 유지 |
 
 - 경로 `/answer` 고정, 요청 헤더(인증 포함) 불필요
 - 표준 포트: HTTP 80 / HTTPS 443(자체 서명 인증서 가능) — `docker compose up -d`만으로 80 포트 충족(`HOST_PORT`로 변경 가능)
+
+### 평가 호출 규격 (주최측 공지)
+
+| 항목 | 값 |
+|---|---|
+| 문항당 타임아웃 | **300초** (초과·5xx 시 최대 2회 재시도) |
+| 동시성 | **순차 1건씩 · 동시 요청 없음** |
+| 응답 필드 | 5개 전부 **문자열** · `application/json` |
+| `retrieved_context` 구분 형식 | 자율 (평가 대상 아님) — 본 구현은 `\n---\n` 사용 |
+| 주최측 발신 IP | **34.47.115.128** (평가 호출·헬스체크 동일) |
+
+서버 아웃바운드 점검(평가와 무관, 자율):
+
+```bash
+curl -s http://34.47.115.128/health     # 우리 서버 안에서 실행
+```
+
+파이프라인 총 예산은 `PIPELINE_BUDGET_SEC`(기본 **240초** = 300초 - 여유 60초)로
+조정합니다. 예산이 모자라면 LLM 단계가 생략되며, 그 사유와 남은 시간이
+`think_trace`에 기록됩니다.
 
 ---
 
