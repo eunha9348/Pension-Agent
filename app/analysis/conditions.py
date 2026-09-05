@@ -157,6 +157,20 @@ _GUARDED_MONEY_KEYS = frozenset({
 
 
 _GUARDED_MONEY_KEYS = _GUARDED_MONEY_KEYS | frozenset({"other_income_manwon"})
+
+# _GUARDED_MONEY_KEYS 중 소득 오분류 위험까지 함께 걸리는 부분집합.
+# total_income_manwon·other_income_manwon은 애초에 소득을 담는 키이므로
+# 제외한다(이 값들에 소득 라벨이 붙는 것은 오분류가 아니라 정확한 라벨이다).
+_INCOME_MISLABEL_KEYS = _GUARDED_MONEY_KEYS - {
+    "total_income_manwon", "other_income_manwon"}
+# ⚠️ 2026-09-07 실측(UI-045) — "퇴직 직전 월소득은 800만원"이
+# account_value_manwon(연금계좌 평가액)으로 오분류됐다. 규칙 기반
+# 추출(pension_saving_manwon·irp_manwon·severance_manwon 등 개별 키)은
+# 이미 _is_income_amount로 소득 오분류를 막고 있었는데, LLM 조건 병합
+# 루프의 _GUARDED_MONEY_KEYS 가드는 _is_non_pension_asset_amount(현금·
+# 예적금)만 보고 소득은 보지 않았다 — 같은 판단(이 금액이 연금 계좌
+# 자체와 무관한 값인가)을 두 곳이 다른 기준으로 하고 있었던 셈이다
+# ("인용 기준과 매칭 기준을 어긋나게 두지 말 것"과 같은 함정).
 # ⚠️ other_income_manwon은 routing._CALC_CONDITION_KEYS의 멤버가 아니다(라우팅을
 # 좌우하지 않는다) — 그래도 같은 오분류 위험(F28/F34류: "3000만원 현금"을
 # 계산 인자로 잘못 라벨링)이 그대로 적용되는 화폐 키이므로 이 세트에 넣는다.
@@ -165,7 +179,12 @@ _GUARDED_MONEY_KEYS = _GUARDED_MONEY_KEYS | frozenset({"other_income_manwon"})
 # 키는 그중 일부일 뿐이다.
 
 # 이 명사 바로 뒤에 붙은 금액은 **소득**이지 납입액이 아니다.
-_INCOME_NOUN = ("총급여", "연봉", "종합소득", "근로소득", "소득금액", "급여가", "연소득")
+# ⚠️ "월소득"도 있어야 한다(2026-09-07 실측 UI-045) — "퇴직 직전 월소득은
+# 800만원"에서 이게 빠져 있어 800이 소득으로 인식되지 않았고, 뒤이어
+# account_value_manwon(연금계좌 평가액)으로 오분류돼도 이 가드로 잡히지
+# 않았다(아래 _is_income_amount의 UI-045 항목 참조).
+_INCOME_NOUN = ("총급여", "연봉", "종합소득", "근로소득", "소득금액", "급여가",
+               "연소득", "월소득", "월 소득")
 
 
 def _is_income_amount(question: str, value: float) -> bool:
@@ -576,9 +595,17 @@ def derive_conditions(question: str,
     _PURPOSED = ("pension_saving_manwon", "irp_manwon", "severance_manwon",
                  "total_income_manwon", "combined_contribution_manwon",
                  "private_pension_annual_manwon", "private_pension_monthly_manwon")
+    # ⚠️ _PURPOSED는 **이미 조건 키로 자리 잡은 것**만 본다(2026-09-07
+    # 실측 UI-045). "퇴직 직전 월소득은 800만원"은 "월소득"이라는 명백한
+    # 용도 표지가 있는데도, 그걸 받아 주는 조건 키(total_income_manwon)
+    # 자체가 rule 단계에서 만들어지지 않아 _PURPOSED 검사를 그대로
+    # 통과했다 — "용도가 명시되지 않았다"는 전제 자체가 틀렸는데도 그
+    # 전제로 계좌 평가액을 확정해 버린 것이다. 조건 키 존재 여부가 아니라
+    # 원문에 소득 표지가 있는지 자체를 직접 봐야 한다.
     if ("account_value_manwon" not in c
             and c.get("amount_manwon") is not None
             and not any(k in c for k in _PURPOSED)
+            and not _is_income_amount(q, c["amount_manwon"])
             and any(k in q for k in ("수령한도", "인출한도", "얼마까지 인출",
                                      "얼마나 인출", "얼마까지 뽑", "한도"))
             and not any(k in q for k in ("세액공제", "공제한도", "납입한도",
@@ -657,6 +684,14 @@ def derive_conditions(question: str,
                 c.setdefault("diagnostic_notes", []).append(
                     f"{_fmt(val)}만원이 현금·예적금·주택청약 등 연금과 무관한 "
                     f"자산으로 언급되어 조건({k})으로 반영하지 않았습니다")
+                continue
+            if k in _INCOME_MISLABEL_KEYS and _is_income_amount(q, val):
+                # LLM이 "월소득 800만원"을 account_value_manwon(연금계좌
+                # 평가액) 등으로 잘못 라벨링한 경우 — 위 현금·예적금 가드와
+                # 같은 계열이지만 대상이 소득이라는 점만 다르다(UI-045).
+                c.setdefault("diagnostic_notes", []).append(
+                    f"{_fmt(val)}만원이 소득(월소득·총급여 등)으로 언급되어 "
+                    f"조건({k})으로 반영하지 않았습니다")
                 continue
             if (k in _PENSION_YEAR_KEYS
                     and _is_service_years_conflation(q, val, c.get("service_years"))):

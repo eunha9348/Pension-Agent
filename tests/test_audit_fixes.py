@@ -971,3 +971,77 @@ def test_UI043_전체_질의가_두_계산_슬롯을_모두_만든다():
     fns = [c["function"] for c in rule_based_spec(q)["planned_calls"]]
     assert "연금수령한도_계산" in fns
     assert "사적연금_원천징수_계산" in fns
+
+
+# ════════════════════════════════════════════════════════════════
+# F45 · 월소득이 연금계좌 평가액으로 새는 결함 (UI-045)
+# ════════════════════════════════════════════════════════════════
+#
+# 실측(2026-09-07) — "DB형 회사에 30년간 다녔고 퇴직 직전 월소득은
+# 800만원이야. 55세 기준으로 종신형으로 처음 수령할 때 이 db계좌에서
+# 최대 인출 한도는?"에서 답변이 "첫 해의 인출 한도는 96만원"이라는
+# 터무니없는 값을 냈다. 역산하면 1.2×800/max(1,11-1)=96 — 800(월소득)이
+# 그대로 연금계좌 평가액으로 쓰인 것이다. 사용자가 직접 지적했다:
+# "이게 DB형 연금에 들어있는 총액으로 보고 계산한 것 같다."
+#
+# 원인은 두 겹이었다:
+# ① LLM 조건 병합 루프의 _GUARDED_MONEY_KEYS 가드는
+#    _is_non_pension_asset_amount(현금·예적금)만 보고 소득은 안 봤다.
+#    "월소득"도 _INCOME_NOUN 목록에 없어 _is_income_amount 자체가 이
+#    표현을 인식하지 못했다.
+# ② "수령한도 질의의 무맥락 금액은 계좌 평가액으로 본다"는 규칙 기반
+#    로직(E-05 대응)도 같은 구멍이 있었다 — "용도가 이미 조건 키로
+#    자리 잡았는가"(_PURPOSED)만 봤지, 원문에 소득 표지가 있는지 자체는
+#    보지 않았다. total_income_manwon 조건 키가 안 만들어졌을 뿐 "월소득"
+#    이라는 용도 표지는 원문에 분명히 있었는데도 "용도 불명"으로 오판했다.
+#
+# 두 곳 모두 _is_income_amount로 소득 표지를 직접 확인하도록 고쳤다.
+
+def test_월소득이_계좌평가액으로_반영되지_않는다():
+    """★ 실측 재현 — LLM이 직접 account_value_manwon으로 라벨링한 경우."""
+    from app.analysis.conditions import derive_conditions
+
+    q = ("db형을 운용하는 회사에 30년간 다녔고 퇴직 직전 월소득은 800만원이야. "
+         "55세 기준으로 연금을 종신형으로 수령할때 처음 수령하기 시작할 때 "
+         "이 db계좌에서 최대 인출 한도는 얼마이고, 그때 세금은 얼마를 내게 "
+         "되는지 계산해줘.")
+    c = derive_conditions(q, llm_conditions={"account_value_manwon": 800, "age": 55})
+    assert "account_value_manwon" not in c
+
+
+def test_무맥락_금액_규칙도_월소득을_계좌평가액으로_삼지_않는다():
+    """★ 실측 재현 — LLM 조건 없이도(순수 규칙 경로) 같은 오분류가 있었다.
+
+    _PURPOSED 검사가 조건 키 존재 여부만 봐서, "월소득"이라는 용도
+    표지가 원문에 있는데도 "용도 불명"으로 오판해 800을 계좌 평가액으로
+    확정해 버렸다.
+    """
+    from app.analysis.conditions import derive_conditions
+
+    q = ("db형을 운용하는 회사에 30년간 다녔고 퇴직 직전 월소득은 800만원이야. "
+         "55세 기준으로 연금을 종신형으로 수령할때 처음 수령하기 시작할 때 "
+         "이 db계좌에서 최대 인출 한도는 얼마이고, 그때 세금은 얼마를 내게 "
+         "되는지 계산해줘.")
+    c = derive_conditions(q)   # LLM 조건 없이 순수 규칙 경로만
+    assert "account_value_manwon" not in c
+
+
+def test_E05_대조군_무맥락_금액은_여전히_계좌평가액으로_반영된다():
+    """대조군 — 소득 표지가 없는 무맥락 금액까지 막으면 계산이 죽는다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("1억이고 연금수령 10년차면 한도가 얼마인가요?")
+    assert c.get("account_value_manwon") == 10000.0
+
+
+def test_계산_결과가_잘못된_숫자_대신_확인_요청으로_바뀐다():
+    """★ 배선 — 파이프라인 끝까지 가서 '96만원' 같은 오답이 사라졌는지 본다."""
+    from app.pipeline import answer_question
+
+    q = ("db형을 운용하는 회사에 30년간 다녔고 퇴직 직전 월소득은 800만원이야. "
+         "55세 기준으로 연금을 종신형으로 수령할때 처음 수령하기 시작할 때 "
+         "이 db계좌에서 최대 인출 한도는 얼마이고, 그때 세금은 얼마를 내게 "
+         "되는지 계산해줘.")
+    r = answer_question("ROUND-4", q)
+    assert "96만원" not in r["answer"]
+    assert "연금계좌 평가액" in r["answer"]
