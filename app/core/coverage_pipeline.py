@@ -219,7 +219,8 @@ def map_evidence_to_slots(
 def decide_answerability(slots: list[RequirementSlot],
                           trace: Optional[TraceLogger] = None,
                           refusal: Any = None,
-                          evidence_count: Optional[int] = None) -> Answerability:
+                          evidence_count: Optional[int] = None,
+                          is_advisory: bool = False) -> Answerability:
     """결정론적 규칙 — LLM에게 위임하지 않음 (기존 원칙 유지).
 
     REFUSE → ASK_BACK → PARTIAL → ANSWER 순으로 판정한다.
@@ -246,8 +247,36 @@ def decide_answerability(slots: list[RequirementSlot],
 
     # 근거가 0건이면 계산 결과가 있어도 답변의 토대가 없다.
     # (계산은 사용자가 준 조건으로 돌아갈 뿐, 제도적 근거를 대신하지 못한다)
+    #
+    # ⚠️ **ADVISORY는 이 규칙에서 제외한다 (2026-09-05, 안내서 예시 질의로 발견).**
+    #    L0에서 "도메인 커버리지·근거 0건 조기 REFUSE"를 걷어냈던 바로 그
+    #    규칙이 여기 남아 있었다. 경로 분류는 ADVISORY로 옳게 갔는데 이
+    #    게이트가 L4-sub에 닿기 전에 잘라내, 과제 안내서 4페이지의 예시 질의
+    #    "58세인데, 크게 잃지 않으면서 굴릴 상품 하나 추천해 주세요."가
+    #    "제공된 자료 범위에서는 답변드리기 어렵습니다"로 **거절**됐다.
+    #    거의 같은 "좋은 연금 상품 하나 추천해 주세요"는 근거가 잡혀
+    #    정상 응답했다 — 즉 **정보를 더 준 질의가 거절되는** 상태였다.
+    #
+    #    세 가지 문서화된 불변식을 정면으로 어긴다:
+    #      · 핵심 설계 원칙 "불특정 서술도 답한다 — 조건이 모자라면 거절이
+    #        아니라 한계 고지 + 필요한 정보 정리"
+    #      · 아키텍처 "L4-sub … 되돌려보내지 않는다"
+    #      · 평가지표 '정보한계 대응' — 무리한 답변 대신 **한계 고지 또는
+    #        역질문**을 요구한다. 맨몸 거절은 둘 다 아니다.
+    #
+    #    ADVISORY 답변은 사실을 단정하지 않는다. 무엇을 확인해야 하는지
+    #    정리해 주는 것이라 코퍼스 근거가 없어도 성립한다 — 바로 아래
+    #    NO_SLOTS를 ADVISORY에서 제외하는 것과 같은 이유다(슬롯이 비는 것도
+    #    불특정 서술의 정상 상태이지 결함이 아니다).
     if evidence_count == 0 and not any(
             s.status == SlotStatus.CALC_DONE for s in slots):
+        if is_advisory:
+            if trace:
+                trace.log("답변가능성_판정",
+                          "검색 근거 0건이지만 ADVISORY 경로 — 거절하지 않고 "
+                          "한계 고지 + 확인 항목 역질문으로 답한다",
+                          decision=Answerability.ASK_BACK.value)
+            return Answerability.ASK_BACK
         if trace:
             trace.log("답변가능성_판정",
                       "검색 근거 0건이고 계산 결과도 없음 → 근거 없이 답하지 않음",

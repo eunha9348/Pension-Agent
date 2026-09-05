@@ -7,7 +7,7 @@
 > 실제 코퍼스 **158문서(PDF 156 · xlsx 2) · 8,172청크**로 인덱스를 구성했고,
 > CLOVA Studio 실연동(HCX-005)으로 L1·L5'·L6 호출이 성공하는 것을 배포
 > 환경에서 확인했습니다. 검색은 BM25 + 벡터 RRF 하이브리드입니다.
-> 회귀 테스트 1,247건 통과. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
+> 회귀 테스트 1,250건 통과. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
 
 ---
 
@@ -249,7 +249,7 @@ app/
   pipeline.py     L0~L6 통합
   main.py         GET /answer · GET /health
 sql/schema.sql    PostgreSQL 스키마 (선택)
-tests/            회귀 테스트 1,247건 + 자체 평가셋 42문항
+tests/            회귀 테스트 1,250건 + 자체 평가셋 42문항
 ```
 
 ## 의존성

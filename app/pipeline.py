@@ -672,7 +672,8 @@ def _answer_question_impl(question_id: str, question: str,
     # ── 답변가능성 판정 ───────────────────────────────────────
     refusal = check_refusal(question, grounding, evidence_count=len(evidence))
     decision = decide_answerability(slots, trace=trace, refusal=refusal,
-                                    evidence_count=len(evidence))
+                                    evidence_count=len(evidence),
+                                    is_advisory=route.is_advisory)
 
     # ── 1.5 계획 감사 판정 반영 ────────────────────────────────
     #

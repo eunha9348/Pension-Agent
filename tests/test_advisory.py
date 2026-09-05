@@ -191,3 +191,60 @@ def test_계산질의는_여전히_일반경로로_간다():
                                "얼마까지 인출할 수 있나요?")
     assert "경로 GENERAL" in r["think_trace"]
     assert "1,200만원" in r["answer"]
+
+
+# ── 근거 0건 거절 금지 (2026-09-05, 과제 안내서 예시 질의로 발견) ──────
+
+def test_ADVISORY는_근거_0건이어도_거절하지_않는다():
+    """★ 과제 안내서 4페이지 예시 질의가 실제로 거절됐다.
+
+    "58세인데, 크게 잃지 않으면서 굴릴 상품 하나 추천해 주세요."
+    → "제공된 자료 범위에서는 답변드리기 어렵습니다"
+
+    경로 분류는 ADVISORY로 옳게 갔는데, `decide_answerability`의
+    "근거 0건 → REFUSE" 규칙이 L4-sub에 닿기 전에 잘라냈다. 이것은
+    L0에서 걷어냈던 바로 그 조기 거절 규칙이 다른 계층에 남아 있던 것이다.
+    거의 같은 "좋은 연금 상품 하나 추천해 주세요"는 근거가 잡혀 정상
+    응답했으므로, **정보를 더 준 질의가 거절되는** 상태였다.
+
+    어기는 불변식 셋:
+      · "불특정 서술도 답한다 — 거절이 아니라 한계 고지 + 필요한 정보 정리"
+      · "L4-sub … 되돌려보내지 않는다"
+      · 평가지표 '정보한계 대응' — 한계 고지 또는 역질문을 요구한다
+    """
+    from app.core.coverage_pipeline import Answerability, decide_answerability
+
+    # 근거 0건 · 계산 없음 · 슬롯 없음 — 예시 질의가 만드는 상태
+    assert decide_answerability(
+        [], evidence_count=0, is_advisory=True) is Answerability.ASK_BACK
+
+
+def test_GENERAL은_근거_0건이면_여전히_거절한다():
+    """★ 위 완화가 GENERAL까지 번지면 안 된다.
+
+    계산·비교 질의는 제도적 근거 없이 답하면 그게 곧 날조다.
+    ADVISORY만 예외인 이유는 그 답변이 사실을 단정하지 않고
+    '무엇을 확인해야 하는지'를 정리하기 때문이다.
+    """
+    from app.core.coverage_pipeline import Answerability, decide_answerability
+
+    assert decide_answerability(
+        [], evidence_count=0, is_advisory=False) is Answerability.REFUSE
+
+
+def test_안내서_예시질의가_거절되지_않고_역질문을_받는다():
+    """배선 테스트 — 공개 진입점으로 들어가 실제 응답을 본다.
+
+    부품(decide_answerability)만 고쳐도 호출자가 route를 안 넘기면
+    그대로 거절된다. 그래서 answer_question()을 지나가야 한다.
+    """
+    from app.pipeline import answer_question
+
+    r = answer_question("SPEC-EX",
+                        "58세인데, 크게 잃지 않으면서 굴릴 상품 하나 추천해 주세요.")
+    ans = r["answer"]
+    assert "답변드리기 어렵습니다" not in ans, f"여전히 거절한다: {ans[:120]}"
+    # 한계 고지 + 역질문이 있어야 한다 (평가지표 '정보한계 대응')
+    assert "확인" in ans, "확인 요청(역질문)이 없다"
+    # 근거가 없어도 근거 표시는 있어야 한다 (안내서: 모든 답변에 근거 문서 표시)
+    assert "근거" in ans
