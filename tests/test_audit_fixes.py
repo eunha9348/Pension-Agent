@@ -513,3 +513,109 @@ def test_한도만_안내하는_질의는_여전히_한도를_요구한다():
     p = verify_calc_presence("한도가 정해져 있습니다.", calc)
     assert not p.passed, "한도 질의인데 한도 누락을 놓쳤다"
     assert len(p.missing) == 3
+
+
+# ════════════════════════════════════════════════════════════════
+# F35 · routing._CALC_CONDITION_KEYS 전수 감사 — 미검증 키 2종 발견
+# ════════════════════════════════════════════════════════════════
+#
+# F27·F28·F34가 반복 수정한 것은 전부 같은 결함이었다: LLM(HCX)이 낸
+# 값이 routing._CALC_CONDITION_KEYS의 멤버로 검증 없이 채워지면, 그
+# 존재만으로 ADVISORY(개인 서술 상담)를 GENERAL(계산 경로)로 강제
+# 전환한다. F34 수정 후 "_manwon 접미사가 있는 8개 키는 전부
+# _GUARDED_MONEY_KEYS로 덮였는가"를 전수 대조했더니 누락은 없었지만
+# (`money_keys - _GUARDED_MONEY_KEYS == set()`), _CALC_CONDITION_KEYS
+# 에는 _manwon이 아닌 키도 있다: actual_receipt_year·children_total·
+# pension_year·service_years·years_elapsed. 이 중 4개는
+# _NUMERIC_CONDITION_KEYS/_BOUNDS로 이미 검증됐지만 **children_total
+# 하나만 두 집합 어디에도 없어서** LLM 병합 루프의 catch-all
+# `else: c[k] = v`로 떨어졌다 — 숫자 검증도 범위 검증도 없이 "2명"
+# 같은 문자열까지 그대로 저장됐다.
+#
+# 같은 감사에서 계산 조건 키는 아니지만 routing.classify_route의
+# has_account 신호(그 자체로 GENERAL을 강제)를 이루는 account_type·
+# fund_class도 완전 자유 문자열이라 같은 위험이 있음을 확인했다.
+# has_calc_slot(HCX가 지정한 calc_function)은 이미 supervise_plan()의
+# 화이트리스트가 classify_route보다 먼저 걸러내므로 이 감사의 대상이
+# 아니다(pipeline.py — supervise_plan 561행이 classify_route 581행보다
+# 앞선다).
+#
+# 수정: children_total을 _NUMERIC_CONDITION_KEYS/_BOUNDS(0~10)에 추가.
+# account_type은 _ACCOUNT_SIGNALS의 알려진 라벨(IRP/연금저축/퇴직연금)만,
+# fund_class는 규칙 기반 추출과 동일한 클래스 표기 정규식만 허용한다.
+
+def test_children_total에_비숫자_값이_반영되지_않는다():
+    """★ 실측 재현 — '2명' 같은 문자열이 검증 없이 그대로 저장됐다."""
+    from app.analysis.conditions import derive_conditions
+
+    q = "24살에 현금 3000만원 있고 아이도 있는데 노후대비 어떻게 해야할까?"
+    c = derive_conditions(q, llm_conditions={"age": 24, "children_total": "2명"})
+    assert "children_total" not in c
+
+
+def test_children_total에_있을_수_없는_값이_반영되지_않는다():
+    """범위 검증 — 자녀 수가 10명을 넘는 값은 있을 수 없는 값이다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("아이가 있는데 어떻게 해야 할까요?",
+                          llm_conditions={"children_total": 999})
+    assert "children_total" not in c
+
+
+def test_children_total_정당한_값은_그대로_반영된다():
+    """대조군 — 범위 안의 정상 값까지 막으면 출산크레딧 계산이 죽는다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("자녀 2명 있는데 출산크레딧 얼마나 받나요?",
+                          llm_conditions={"children_total": 2})
+    assert c.get("children_total") == 2.0
+
+
+def test_children_total_무검증_라우팅_오염이_더이상_없다():
+    """★ 배선 — 비숫자 값이 사라지면 ADVISORY 질의가 GENERAL로 안 끌려간다."""
+    from app.analysis.conditions import derive_conditions
+    from app.analysis.routing import classify_route
+
+    q = "24살에 현금 3000만원 있고 아이도 있는데 노후대비 어떻게 해야할까?"
+    c = derive_conditions(q, llm_conditions={"age": 24, "children_total": "2명"})
+    assert classify_route(q, c).route == "ADVISORY"
+
+
+def test_account_type에_알수없는_값이_반영되지_않는다():
+    """★ account_type은 있기만 해도 GENERAL을 강제한다 — 자유 문자열 금지."""
+    from app.analysis.conditions import derive_conditions
+    from app.analysis.routing import classify_route
+
+    q = "24살에 현금 3000만원 있고 아이도 있는데 노후대비 어떻게 해야할까?"
+    c = derive_conditions(q, llm_conditions={"age": 24, "account_type": "아무거나"})
+    assert "account_type" not in c
+    assert classify_route(q, c).route == "ADVISORY"
+
+
+def test_account_type_정당한_라벨은_그대로_반영된다():
+    """대조군 — 실제 계좌유형 언급까지 막으면 계좌 기반 계산이 죽는다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("연금 계획이 궁금해요",
+                          llm_conditions={"account_type": "연금저축"})
+    assert c.get("account_type") == "연금저축"
+
+
+def test_fund_class에_알수없는_표기가_반영되지_않는다():
+    """판매클래스도 자유 문자열이면 규칙 기반 추출과 기준이 어긋난다."""
+    from app.analysis.conditions import derive_conditions
+    from app.analysis.routing import classify_route
+
+    q = "24살에 현금 3000만원 있고 아이도 있는데 노후대비 어떻게 해야할까?"
+    c = derive_conditions(q, llm_conditions={"age": 24, "fund_class": "AAAA"})
+    assert "fund_class" not in c
+    assert classify_route(q, c).route == "ADVISORY"
+
+
+def test_fund_class_정당한_표기는_그대로_반영된다():
+    """대조군 — 실제 클래스 표기까지 막으면 안 된다."""
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions("판매클래스 비교하고 싶어요",
+                          llm_conditions={"fund_class": "C-P2E"})
+    assert c.get("fund_class") == "C-P2E"

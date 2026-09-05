@@ -24,6 +24,18 @@ _ACCOUNT_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
     ("퇴직연금", ("퇴직연금", "DC형", "DB형", "확정기여", "확정급여")),
 ]
 
+# 계좌유형으로 인정하는 값 — _ACCOUNT_SIGNALS의 라벨과 정확히 같아야 한다.
+# routing.classify_route는 account_type이 하나라도 있으면(값과 무관하게)
+# GENERAL로 강제 전환한다. LLM이 임의 문자열을 이 키에 채우면 그 문자열이
+# 무엇이든 라우팅이 뒤집히므로, 알려진 라벨이 아니면 받아들이지 않는다.
+_VALID_ACCOUNT_TYPES = frozenset({label for label, _ in _ACCOUNT_SIGNALS})
+
+# 판매 클래스 값 검증 — 규칙 기반 추출(위 511행)과 동일한 클래스 표기만
+# 허용한다. 인용 기준과 매칭 기준을 어긋나게 두지 말 것(CLAUDE.md)과 같은
+# 이유로, 규칙이 인정하는 표기와 LLM이 채우는 값의 검증 기준이 갈리면 안 된다.
+_FUND_CLASS_VALUE = re.compile(
+    r'^([CS]-(?:P2E|P2|Pe|PE|RF|RJ|Re|[PRFW3])|Crp-e|Crp|S-I)$')
+
 _ANNUITY_SIGNALS = ("종신", "종신형", "평생 받는", "사망할 때까지")
 _PERIOD_SIGNALS = ("확정기간", "기간형", "정해진 기간")
 
@@ -270,8 +282,17 @@ def _salary_schedule(q: str, service_years: Optional[float]) -> Optional[list]:
 
 # _manwon 접미사가 없지만 숫자여야 하는 필드. LLM 출력에서 여기 해당하는
 # 키의 값이 숫자로 안 바뀌면 조용히 버린다(위조할 수 없으므로).
+#
+# ⚠️ children_total도 여기 속한다(2026-09-05 감사로 발견). 이 키는
+#    _manwon 접미사가 없고 예전에는 이 집합에도 없어서, LLM 출력의
+#    children_total이 숫자 검증도 범위 검증도 없이 그대로 c[k]=v로
+#    저장됐다 — 심지어 "2명" 같은 비숫자 문자열까지 통과했다. 그런데
+#    이 키는 routing._CALC_CONDITION_KEYS의 멤버라 어떤 값이든 채워지는
+#    순간 ADVISORY로 가야 할 개인 서술 질의를 GENERAL로 강제 전환한다
+#    (F27·F28·F34와 정확히 같은 계열 — 계산 조건 키가 무검증으로
+#    채워지면 라우팅이 오염된다).
 _NUMERIC_CONDITION_KEYS = {"age", "pension_year", "actual_receipt_year",
-                          "service_years", "years_elapsed"}
+                          "service_years", "years_elapsed", "children_total"}
 
 # 이 키들이 벗어나면 안 되는 범위. calc_params.py의 _VALID와 같은 수치를
 # 쓴다 — 계산 인자에 쓰일 때만 걸러지고, 이 조건이 그대로 사람에게
@@ -287,6 +308,7 @@ _NUMERIC_CONDITION_BOUNDS: dict[str, tuple[float, float]] = {
     "actual_receipt_year": (1, 60),
     "service_years": (1, 60),
     "years_elapsed": (0, 60),
+    "children_total": (0, 10),
 }
 
 
@@ -580,6 +602,24 @@ def derive_conditions(question: str,
                         f"크게 달라 반영하지 않았습니다")
                 continue
             c[k] = val
+        elif k == "account_type":
+            # ⚠️ 자유 문자열을 그대로 받으면 안 된다 — routing.classify_route는
+            # 값과 무관하게 account_type의 존재 자체로 GENERAL을 강제한다.
+            # 알려진 라벨이 아니면 라우팅을 오염시킬 뿐이므로 버린다.
+            if v in _VALID_ACCOUNT_TYPES:
+                c[k] = v
+            else:
+                c.setdefault("diagnostic_notes", []).append(
+                    f"계좌유형('{v}')이 인식 가능한 유형(IRP/연금저축/퇴직연금)이 "
+                    f"아니어서 조건으로 반영하지 않았습니다")
+        elif k == "fund_class":
+            v_str = str(v).strip()
+            if _FUND_CLASS_VALUE.fullmatch(v_str):
+                c[k] = v_str
+            else:
+                c.setdefault("diagnostic_notes", []).append(
+                    f"판매클래스('{v}')가 알려진 표기 형식이 아니어서 조건으로 "
+                    f"반영하지 않았습니다")
         else:
             c[k] = v
 
