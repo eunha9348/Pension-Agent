@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from app.analysis.calc_params import remap_function
-from app.analysis.conditions import derive_conditions
+from app.analysis.conditions import derive_conditions, is_public_pension_only
 from app.analysis.typo import corrected_terms
 from app.core.coverage_pipeline import CALC_REGISTRY
 
@@ -195,6 +195,29 @@ class TopicRule:
     # 수령액임을 명시**한 경우뿐이고, 납입액·평가액과 섞이지 않는다.
     # 1,500만원이라는 문턱 자체도 제공문서에 있는 확정 수치다.
     trigger_when_over: tuple[str, float] | None = None
+    # 이 규칙이 **사적연금(연금저축·IRP·퇴직연금) 전용**인가.
+    #
+    # ━━ 왜 필요한가 (F50 · 2026-09-06 실측) ━━
+    # F46은 "공적연금 금액이 사적연금 조건 키로 새는 것"을 막았다. 그런데
+    # 막힌 것은 **값**뿐이고 **슬롯**은 그대로 만들어졌다. 실측:
+    #   "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요"
+    # → 금액은 F46 가드가 정확히 걸러냈는데도 '원천징수' 규칙이 그대로
+    #   발동해 `사적연금_원천징수_계산` 슬롯이 만들어졌고, 검색은 그 슬롯을
+    #   따라 **사적연금 세율 문서**를 근거로 끌어왔다. 그 결과 답변이
+    #   사적연금 원천징수·연금수령 감면율(70%/60%)을 국민연금 세율인 것처럼
+    #   제시했다 — 인용한 근거 문서 자신이 "공적연금은 제외한다"고 적고 있는데도.
+    #
+    # 공적연금 소득세는 연금소득 간이세액표 + 연말정산/종합과세 구조라
+    # 연금계좌(사적연금)의 3.3~5.5% 원천징수·1,500만원 분리과세 선택과
+    # **제도 자체가 다르다.** 값만 막고 슬롯을 남기면 근거가 질의 대상과
+    # 어긋나므로 평가지표 '근거 완전성'(대상이 다른 근거를 배제했는가)을
+    # 정면으로 어긴다.
+    #
+    # ⚠️ 판정은 `conditions.is_public_pension_only` **한 곳**만 쓴다. 공적연금·
+    #    사적연금 명사 목록을 여기서 다시 만들면 두 곳이 어긋난다.
+    # ⚠️ 게이트가 매우 좁다 — 공적연금 명사가 있고 사적연금 명사가 **하나도**
+    #    없을 때만 참이다. "국민연금 말고 연금저축은 세금 얼마"는 그대로 발동한다.
+    private_pension_only: bool = False
     # 키워드가 걸려도 **이 중 하나가 없으면** 규칙을 발동시키지 않는다(AND 게이트).
     #
     # ━━ 왜 exclude로는 안 되는가 (F49, 2026-09-06) ━━
@@ -233,15 +256,18 @@ _PRODUCT_DIMENSION: tuple[str, ...] = _product_dimension_terms()
 TOPIC_RULES: list[TopicRule] = [
     TopicRule("퇴직소득세_감면", ("감면", "이연퇴직소득", "실제수령연차"),
               "toejik_gamnyeon", "연금실제수령연차에 따른 이연퇴직소득세 감면율",
-              "퇴직소득세_감면율_계산", "이연퇴직소득세 감면 기준"),
+              "퇴직소득세_감면율_계산", "이연퇴직소득세 감면 기준",
+              private_pension_only=True),
     TopicRule("연금수령한도", ("수령한도", "인출한도", "얼마까지 인출", "얼마나 인출",
                             "얼마까지 뽑", "한도"),
               "suryeong_hando", "연금수령한도",
               "연금수령한도_계산", "연금수령한도 산정 방식",
-              exclude=("세액공제", "공제한도", "납입한도", "공제 한도")),
+              exclude=("세액공제", "공제한도", "납입한도", "공제 한도"),
+              private_pension_only=True),
     TopicRule("연금수령연차", ("연차", "기산", "2013"),
               "suryeong_yeoncha", "연금수령연차 기산",
-              "연금수령연차_계산", "연금수령연차 기산 규칙"),
+              "연금수령연차_계산", "연금수령연차 기산 규칙",
+              private_pension_only=True),
     # '환급·돌려받다'는 사용자가 세액공제를 부르는 가장 흔한 말이다.
     # 이게 없어서 "IRP에 900만원 넣으면 얼마나 돌려받나요?"가 주제 미매칭으로
     # 떨어져 계산이 아예 안 돌았고, 숫자를 LLM이 지어냈다(300건 감사 A03·A04).
@@ -252,11 +278,13 @@ TOPIC_RULES: list[TopicRule] = [
               "사적연금_납입한도_세액공제_계산", "연금저축·IRP 세액공제 한도",
               exclude=("퇴직소득세", "손실"),
               calc_needs=("pension_saving_manwon", "irp_manwon",
-                          "combined_contribution_manwon")),
+                          "combined_contribution_manwon"),
+              private_pension_only=True),
     TopicRule("과세방식", ("분리과세", "종합과세", "1500", "1,500", "천오백"),
               "gwase_bangsik", "1,500만원 초과 시 과세방식 선택",
               "과세방식_비교_계산", "연금소득 과세방식 선택 기준",
-              trigger_when_over=("private_pension_annual_manwon", 1500)),
+              trigger_when_over=("private_pension_annual_manwon", 1500),
+              private_pension_only=True),
     # ⚠️ "세금 얼마"만으로는 "세금은 얼마"·"세금이 얼마"처럼 조사가 끼는
     #    흔한 어순을 못 잡는다(2026-09-07 실측 UI-043) — "그때 세금은
     #    얼마를 내게 되는지 계산해줘"가 이 규칙 어디에도 안 걸려 계산
@@ -267,7 +295,8 @@ TOPIC_RULES: list[TopicRule] = [
                         "세금은 얼마", "세금이 얼마", "세금을 얼마",
                         "얼마나 떼", "떼나요"),
               "wonchen", "연금소득 원천징수세율",
-              "사적연금_원천징수_계산", "연령별 연금소득 원천징수세율"),
+              "사적연금_원천징수_계산", "연령별 연금소득 원천징수세율",
+              private_pension_only=True),
     TopicRule("퇴직소득세", ("퇴직소득세", "퇴직금 세금", "퇴직급여 세금",
                           "근속연수공제", "환산급여", "퇴직소득 과세"),
               "toejik_se", "퇴직소득세 산출",
@@ -346,7 +375,8 @@ TOPIC_RULES: list[TopicRule] = [
               "연금외수령_재원별_세금_계산", "연금 외 수령 재원별 과세기준",
               calc_needs=("severance_manwon", "credited_contribution_manwon",
                           "investment_gain_manwon",
-                          "uncredited_contribution_manwon")),
+                          "uncredited_contribution_manwon"),
+              private_pension_only=True),
     TopicRule("중도인출", ("중도인출", "중도 인출", "중도해지", "깨면", "빼면", "꺼내"),
               "jungdo", "중도인출 사유와 세제", None,
               "중도인출 사유와 적용 세율"),
@@ -437,6 +467,8 @@ def _match_topics(question: str,
             return False
         if r.require_any and not any(x in question for x in r.require_any):
             return False        # AND 게이트 — 위 require_any 주석 참조
+        if r.private_pension_only and is_public_pension_only(question):
+            return False        # F50 — 위 private_pension_only 주석 참조
         if any(k in question for k in r.keywords):
             return True
         # 키워드가 없어도 조건이 문턱을 넘으면 발동한다 (위 주석 참조)

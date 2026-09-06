@@ -288,8 +288,12 @@ _PRIVATE_PENSION_NOUN = (
 )
 
 
-def _lacks_private_pension_basis(question: str) -> bool:
+def is_public_pension_only(question: str) -> bool:
     """공적연금만 언급된 질의인가 — 사적연금 근거가 원문에 아예 없는가.
+
+    ⚠️ 공개 함수다. F50에서 `query_spec`·`trap_rules`가 같은 판단을 하게 됐고,
+       그 판단을 각자 다시 구현하면 반드시 어긋난다(CLAUDE.md "인용 기준과
+       매칭 기준을 어긋나게 두지 말 것"). 명사 목록도 여기 것만 쓴다.
 
     ━━ 왜 위치 기반 가드만으로는 부족한가 (F46 후속) ━━
     `_is_public_pension_amount`는 `parse_amount_expressions`가 찾아낸 금액의
@@ -875,7 +879,7 @@ def derive_conditions(question: str,
                 continue
             if k in _PRIVATE_PENSION_KEYS and (
                     _is_public_pension_amount(q, val)
-                    or _lacks_private_pension_basis(q)):
+                    or is_public_pension_only(q)):
                 # LLM이 국민연금·공무원연금·군인연금 수령액을 사적연금 수령액으로
                 # 잘못 라벨링한 경우(F46). 규칙 경로 3곳을 막아도 이 경로가
                 # 열려 있으면 같은 오답이 그대로 나간다 — F45에서 겪은 것과

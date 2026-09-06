@@ -101,8 +101,12 @@ def test_함정규칙은_사문화되지_않았다():
     """
     from app.core.trap_rules import TRAPS, detect_traps
 
-    assert len(TRAPS) == 28
+    # 2026-09-06 C7 추가 (F50) — 공적연금 질의에 연금계좌 세제가 실려 나가던
+    #            결함을 막는다. 실측 질의로 발화를 확인했다.
+    assert len(TRAPS) == 29
     assert [t.id for t in detect_traps("DB형인데 중도인출 받을 수 있나요?")] == ["A3"]
+    assert "C7" in [t.id for t in detect_traps(
+        "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요")]
 
 
 def test_법령_계층은_함정_탐지에_전적으로_의존한다():

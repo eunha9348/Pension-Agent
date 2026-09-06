@@ -1520,3 +1520,91 @@ def test_강제표기_검증도_표시_반올림값을_인정한다():
     p_shown = verify_calc_presence("세액 차이는 15.8만원입니다.", [r])
     assert p_raw.passed
     assert p_shown.passed
+
+
+# ════════════════════════════════════════════════════════════════
+# F50 · 공적연금 전용 질의에 **사적연금 계산 슬롯·함정**이 그대로 만들어져
+#       사적연금 세율이 국민연금 세율인 것처럼 답변된 결함 (2026-09-06)
+# ════════════════════════════════════════════════════════════════
+#
+# F46은 "공적연금 금액이 사적연금 조건 키로 새는 것"을 막았다. 그런데 막힌
+# 것은 **값**뿐이었다. 슬롯과 함정은 그대로 만들어져, 검색이 연금계좌 세율
+# 문서를 끌어오고 답변이 그 문서의 원천징수율·감면율(70%/60%)을 국민연금
+# 세율처럼 제시했다 — 인용한 doc39 자신이 "공적연금은 제외한다"고 적고
+# 있는데도. 답변이 자기 근거 문서로 자신을 반박한 상태였다(UI 평가 1번).
+#
+# ⚠️ 이 파일에는 이미 모듈 수준 헬퍼들이 있다. 새 이름만 쓴다
+#    (CLAUDE.md — 테스트 파일에 절을 덧붙일 때 기존 헬퍼 이름을 재정의하지 말 것).
+
+_F50_PUBLIC_ONLY = [
+    "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요",
+    "공무원연금 받는데 종합과세 되나요",
+    "군인연금 월 400만원 받는데 세금 얼마나 떼나요",
+]
+
+
+@pytest.mark.parametrize("q", _F50_PUBLIC_ONLY)
+def test_공적연금_전용_질의에는_사적연금_계산슬롯이_생기지_않는다(q):
+    """★ 값만 막고 슬롯을 남기면 검색이 대상이 다른 근거를 끌어온다
+    (평가지표 '근거 완전성' — 대상이 다른 근거를 배제했는가)."""
+    spec = rule_based_spec(q)
+    calc_fns = {c["function"] for c in spec["planned_calls"]}
+    assert "사적연금_원천징수_계산" not in calc_fns, calc_fns
+    assert "과세방식_비교_계산" not in calc_fns, calc_fns
+
+
+@pytest.mark.parametrize("q,expected_fn", [
+    ("국민연금 말고 연금저축에서 받는 연금은 세금 얼마인가요",
+     "사적연금_원천징수_계산"),
+    ("IRP에서 연 2000만원 받으면 분리과세가 나을까요",
+     "과세방식_비교_계산"),
+])
+def test_사적연금이_함께_언급되면_계산슬롯은_그대로_만들어진다(q, expected_fn):
+    """★ 게이트가 좁다는 것을 고정한다 — 사적연금 명사가 하나라도 있으면
+    F50은 발동하지 않는다. 넓히면 정상 계산 질의가 통째로 죽는다."""
+    spec = rule_based_spec(q)
+    calc_fns = {c["function"] for c in spec["planned_calls"]}
+    assert expected_fn in calc_fns, calc_fns
+
+
+@pytest.mark.parametrize("q,gone", [
+    ("공무원연금 받는데 종합과세 되나요", "C1"),
+    ("국민연금 세액공제 되나요", "C4"),
+    ("국민연금 중도인출 할 수 있나요", "A2"),
+])
+def test_연금계좌_전용_함정은_공적연금_질의에서_발화하지_않는다(q, gone):
+    """★ critical 함정은 최후에 **강제 삽입**된다. 공적연금 질의에 연금계좌
+    규정 교정문을 강제로 붙이면 교정이 아니라 오답의 주입이 된다."""
+    from app.core.trap_rules import detect_traps
+
+    assert gone not in {t.id for t in detect_traps(q)}
+
+
+def test_공적연금_세제혼동_함정이_발화하고_사적연금_질의는_건드리지_않는다():
+    """★ C7 — 트리거 비대칭을 없앤다. C2는 사용자가 '1,500만원'을 말해야
+    켜지는데, 시스템은 사용자가 말하지 않아도 사적연금 세제를 적용한다."""
+    from app.core.trap_rules import detect_traps
+
+    hit = {t.id for t in detect_traps("국민연금을 매달 200만원 받습니다. "
+                                      "세금은 얼마나 내나요")}
+    assert "C7" in hit
+    # 제도만 묻는 질의(세금 맥락 없음)에는 붙지 않는다
+    assert "C7" not in {t.id for t in detect_traps("국민연금이 뭐예요?")}
+    # 사적연금 명사가 있으면 붙지 않는다
+    assert "C7" not in {t.id for t in detect_traps(
+        "국민연금 말고 연금저축에서 받는 연금은 세금 얼마인가요")}
+
+
+def test_배선_공적연금_질의_답변에_사적연금_규정_비적용이_명시된다():
+    """★ 배선 테스트 — 부품만 고쳐 놓고 파이프라인이 안 쓰면 그대로 샌다
+    (CLAUDE.md '배선을 검사하는 테스트는 배선을 지나가야 한다')."""
+    from app.pipeline import answer_question
+
+    r = answer_question("F50-WIRE",
+                        "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요")
+    ans = r["answer"]
+    # 연금계좌 규정이 적용되지 않는다는 사실이 답변에 실려야 한다
+    assert "적용되지 않" in ans, ans
+    # 그리고 맨몸 거절이 아니라 역질문이 함께 나가야 한다
+    #  (평가지표 '정보한계 대응' — 한계 고지 또는 역질문)
+    assert "연금저축" in ans or "IRP" in ans, ans

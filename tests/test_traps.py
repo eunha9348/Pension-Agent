@@ -22,10 +22,15 @@ CLEAN_QUERIES = [
 ]
 
 
-def test_규칙이_28종이다():
+def test_규칙이_29종이다():
     # 2026-09-01 A9 추가 — 연금 외 수령 시 재원별 과세 구분
     #            E8 추가 — 연금 수령 시 이연퇴직소득세 감면 메커니즘
-    assert len(TRAPS) == 28
+    # 2026-09-06 C7 추가 (F50) — 공적연금에는 연금계좌 세제가 적용되지 않음.
+    #            C2와 트리거가 반대다: C2는 사용자가 '1,500만원'을 말해야
+    #            켜지는데, 시스템은 사용자가 말하지 않아도 사적연금 세제를
+    #            적용한다. 그 비대칭이 실측에서 국민연금 질의에 사적연금
+    #            원천징수·감면율을 실어 보냈다.
+    assert len(TRAPS) == 29
 
 
 def test_규칙_스키마가_온전하다():
@@ -661,9 +666,17 @@ def test_trigger_none이_실제로_배제한다():
     for r in TRAPS:
         if not r.trigger_none:
             continue
+        # ⚠️ 주제어만으로는 부족한 규칙이 있다 — trigger_context(맥락어 중
+        #    하나가 더 있어야 확정)를 함께 요구하는 규칙은 주제어 하나로는
+        #    원래 발동하지 않는 것이 **정상**이다(C7, F50). 이 테스트가
+        #    보려는 것은 "제외어가 실제로 배제하는가"이므로, 발동 전제를
+        #    규칙이 요구하는 대로 갖춰 준 뒤에 배제를 확인한다.
+        #    전제를 약화한 것이 아니라 정확히 맞춘 것이다.
         base = r.trigger_keywords[0]
+        if r.trigger_context:
+            base = base + " " + r.trigger_context[0]
         assert r.id in [t.id for t in detect_traps(base)], (
-            f"{r.id}: 주제어만으로도 안 걸린다 — 이 테스트가 무의미해진다")
+            f"{r.id}: 발동 전제를 갖췄는데도 안 걸린다 — 이 테스트가 무의미해진다")
         blocked = base + " " + r.trigger_none[0]
         assert r.id not in [t.id for t in detect_traps(blocked)], (
             f"{r.id}: 제외어 '{r.trigger_none[0]}'가 있는데도 발동했다")
