@@ -95,12 +95,29 @@ def test_A08_회귀_없음_단독한도만_강제되고_무관한_한도는_안_
     assert "연간 총 납입한도" not in labels
 
 
-def test_600만원을_답변에_쓰면_E03_검증을_통과한다():
-    """★ 정답 형태 — '한도만 실었을 때' verify_calc_presence가 통과하는지."""
+def test_600만원만_쓰고_재배치_기회를_빠뜨리면_이제_불충분하다():
+    """★ 2026-09-07 실측으로 불변식이 바뀌었다 — 예전에는 이 형태가
+    '정답'이었지만, 300만원이 IRP로 옮기면 살릴 수 있는 돈이라는 사실
+    없이는 사용자가 손해 보는 분배를 그대로 두게 된다(사용자가 개선점을
+    물었는데도 바로잡지 못한 사례). 한도·공제액만으로는 더 이상
+    충분하지 않다 — 재배치 시 추가 공제 가능액도 요구한다."""
     r = calc_private_contribution_limit(X_pension_saving=900)
     answer = "연금저축은 단독으로는 600만원까지만 세액공제되며, 99만원이 공제됩니다."
     result = verify_calc_presence(answer, [r])
-    assert result.passed
+    assert not result.passed
+    missing_labels = {m[0] for m in result.missing}
+    assert "초과분을 IRP로 옮기면 추가로 받을 수 있는 공제액" in missing_labels
+
+
+def test_재배치_기회까지_쓰면_통과한다():
+    """★ 새 정답 형태 — 한도·공제액에 더해 재배치 기회(추가 공제 가능액)
+    까지 실으면 통과한다."""
+    r = calc_private_contribution_limit(X_pension_saving=900)
+    answer = ("연금저축은 단독으로는 600만원까지만 세액공제되어 300만원은 "
+             "공제 대상에서 빠지고 99만원이 공제됩니다. 이 300만원을 IRP로 "
+             "옮기면 49.5만원을 추가로 공제받을 수 있습니다.")
+    result = verify_calc_presence(answer, [r])
+    assert result.passed, [m[0] for m in result.missing]
 
 
 def test_한도를_안_쓰면_E03_검증이_실패한다():
@@ -133,3 +150,23 @@ def test_한도_안_넘으면_새_판정이_안_뜬다():
     codes = [f.code for f in findings]
     assert "PENSION_SAVING_LIMIT_EXCEEDED" not in codes
     assert "COMBINED_LIMIT_EXCEEDED" not in codes
+
+
+def test_재배치_가능하면_REVISE를_낸다():
+    """★ 2026-09-07 실측 — 한도 초과 사실만 명시하는 걸로는 부족하다.
+    재배치하면 추가로 받을 수 있다는 사실을 적극적으로 권고해야 한다."""
+    r = calc_private_contribution_limit(X_pension_saving=900, r_tax_credit=0.165)
+    findings = audit_anomaly([r], {})
+    codes = [f.code for f in findings]
+    assert "REALLOCATION_MISSED" in codes
+    directive = next(f.directive for f in findings if f.code == "REALLOCATION_MISSED")
+    assert "적극적으로 권고" in directive
+
+
+def test_이미_합산한도까지_찼으면_재배치_판정이_안_뜬다():
+    """★ 오탐 경계 — IsReallocatable=False일 때는 이 판정이 뜨지 않는다."""
+    r = calc_private_contribution_limit(X_pension_saving=700, Y_irp_personal=300,
+                                        r_tax_credit=0.165)
+    findings = audit_anomaly([r], {})
+    codes = [f.code for f in findings]
+    assert "REALLOCATION_MISSED" not in codes

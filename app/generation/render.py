@@ -25,6 +25,9 @@ _LABELS = {
     "연금저축_단독_한도": "연금저축 단독 세액공제 한도",
     "연금저축_IRP_합산_한도": "연금저축+IRP 합산 세액공제 한도",
     "연간_총납입한도": "연간 총 납입한도",
+    "연금저축_한도초과_미공제액": "연금저축 단독 한도 초과로 공제 못 받는 금액",
+    "재배치시_추가공제_가능액": "초과분을 IRP로 옮기면 추가로 받을 수 있는 공제액",
+    "IsReallocatable": "초과분을 IRP로 옮기면 추가 공제 가능",
     "r_withholding": "원천징수세율",
     "T_withholding": "원천징수세액",
     "P_private_excess": "1,500만원 초과분",
@@ -54,6 +57,7 @@ _LABELS = {
 #    개수를 금액으로 찍는 버그가 있었다. 아는 키는 명시적으로 못 박는다.
 _UNIT_MANWON = {
     "연금저축_단독_한도", "연금저축_IRP_합산_한도", "연간_총납입한도",
+    "연금저축_한도초과_미공제액", "재배치시_추가공제_가능액",
     "limit", "A_tax_credit", "T_withholding", "P_private_excess", "difference",
     "C_np_copay", "P_np_monthly", "P_np_annual",
     "근속연수공제", "환산급여", "환산급여공제", "퇴직소득_과세표준",
@@ -108,7 +112,8 @@ _SKIP_KEYS = {"source", "rate_source", "DEPRECATED", "note", "⚠️", "기준",
 #    ⚠️ eligible(가입 가능)처럼 **False가 곧 결론인 키는 넣지 말 것.**
 #    "가입 가능 = 아니오"는 반드시 답변에 실려야 한다.
 _SKIP_IF_FALSE = {"IsLimitExceeded", "special_rule_applied",
-                  "IsPensionSavingLimitExceeded", "IsCombinedLimitExceeded"}
+                  "IsPensionSavingLimitExceeded", "IsCombinedLimitExceeded",
+                  "IsReallocatable"}
 
 
 def _is_rate(key: str, value: float) -> bool:

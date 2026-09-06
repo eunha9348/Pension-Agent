@@ -152,6 +152,36 @@ def calc_private_contribution_limit(X_pension_saving=None, Y_irp_personal=None,
     # "한도를 넘었다는 사실을 답변에 명시했는가"를 REVISE 대상으로 삼는다.
     out["IsPensionSavingLimitExceeded"] = x > LIMIT_PENSION_SAVING
     out["IsCombinedLimitExceeded"] = combined_before_cap > LIMIT_COMBINED
+
+    # ━━ 잘못 분배하면 세액공제를 놓친다 — 그 사실도 계산해서 낸다
+    #    (2026-09-07 실측) ━━
+    # 위 두 플래그는 "한도를 넘었다"는 사실만 밝힌다. 그런데 연금저축
+    # 단독 한도(600만원)를 넘긴 초과분은 **버려지는 게 아니다** — IRP로
+    # 옮기면 합산 한도(900만원)까지는 그대로 공제받을 수 있다. 예를 들어
+    # 연금저축에만 900만원을 넣으면 600만원만 공제되고 300만원은 그
+    # 계좌에 있는 한 영영 공제 대상이 아닌데, 그 300만원을 IRP로
+    # 옮기기만 해도 900만원 전액이 공제된다.
+    #
+    # 이 계산은 "얼마까지 받을 수 있나"를 넘어 "어떻게 넣어야 최대로
+    # 받는가"를 묻는 질의에 필요하다. 한도·공제율은 알면서도 실제
+    # 분배 최적화를 계산하지 못하는 사각지대였다 — 사용자가 손해 보는
+    # 분배를 그대로 말해도 시스템이 이를 바로잡지 못했다.
+    #
+    # ⚠️ IRP 쪽에는 개별 한도가 없다(합산 900만원 안에서는 IRP 단독으로
+    #    900을 채워도 된다) — 그래서 재배치 여지는 항상 "초과분을 IRP로
+    #    옮겼을 때 합산 한도 안에 들어오는 만큼"으로 계산된다.
+    if x > LIMIT_PENSION_SAVING:
+        wasted = x - LIMIT_PENSION_SAVING          # 연금저축에 묶여 공제 못 받는 금액
+        room = max(0.0, LIMIT_COMBINED - combined_before_cap)  # 합산 한도까지 남은 여지
+        recoverable = min(wasted, room)
+        out["연금저축_한도초과_미공제액"] = round(wasted, 4)
+        if recoverable > 0:
+            out["IsReallocatable"] = True
+            out["재배치시_추가공제_가능액"] = round(recoverable * r_tax_credit, 4)
+        else:
+            # 이미 합산 한도(900)까지 다 찼으면 옮겨도 더 받을 게 없다
+            # — 그 사실 자체가 답이므로 False로 명시한다.
+            out["IsReallocatable"] = False
     return out
 
 
@@ -190,7 +220,15 @@ def calc_private_withholding(P_private_monthly=None, Age=None,
     else:
         r = 0.165  # 55세 미만 해지/수령 시 기타소득세 기준
 
-    out = {"r_withholding": r}
+    # ⚠️ source가 빠져 있었다 (2026-09-07 실측, Q10). CLAUDE.md 코드 스타일
+    #    "계산 함수는 순수함수. 반환값 dict에 source 필드로 근거 문서 ID
+    #    포함"을 이 함수만 어기고 있었다. source가 없으면 build_citations가
+    #    이 계산 결과를 근거로 아무 문서도 예약하지 못하고, 그 자리를
+    #    slot_matching의 느슨한 겹침 판정이 대신 채운다 — 실제로 일반 펀드의
+    #    무관한 원천징수 조항이 "연령별 연금소득 원천징수세율" 슬롯에
+    #    근거로 붙었다(그 결함 자체는 slot_matching.py에서 별도로 고쳤다).
+    #    source를 명시하면 이 계산값에는 처음부터 올바른 문서가 예약된다.
+    out = {"r_withholding": r, "source": "doc39"}
     if P_private_monthly is None:
         out["note"] = ("월 수령액이 확인되지 않아 세율만 안내합니다. "
                        "원천징수세액은 수령액에 따라 달라집니다.")

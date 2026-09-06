@@ -205,6 +205,53 @@ def test_한도_수치가_구법값이_아니다():
     assert 1200 not in out.values()
 
 
+# ════════════════════════════════════════════════════════════════
+# 세액공제 재배치 최적화 (2026-09-07 실측)
+# ════════════════════════════════════════════════════════════════
+#
+# 한도·공제율은 정확히 알면서도, "연금저축에만 900만원 넣으면 어떻게
+# 되나요?"처럼 **분배가 최적이 아닌** 질의에는 "600만원만 공제되고
+# 99만원입니다"까지만 답하고 끝났다. 실제로는 그 초과분(300만원)을
+# IRP로 옮기면 900만원 전액(148.5만원)이 공제된다 — 사용자가 손해 보는
+# 분배를 그대로 말해도 이를 바로잡지 못한 사례다.
+
+def test_연금저축_단독한도_초과분은_IRP로_옮기면_살릴_수_있다():
+    out = calc_private_contribution_limit(X_pension_saving=900, r_tax_credit=0.165)
+    assert out["연금저축_한도초과_미공제액"] == pytest.approx(300.0)
+    assert out["IsReallocatable"] is True
+    # 300만원을 옮기면 900만원 전액(148.5) - 현재(99) = 49.5만원 추가
+    assert out["재배치시_추가공제_가능액"] == pytest.approx(49.5)
+
+
+def test_이미_합산한도까지_채웠으면_재배치해도_더_받을_게_없다():
+    """★ 오탐 경계 — 연금저축 600 + IRP 300 = 합산 900을 이미 채운
+    상태에서 연금저축을 더 넣어도(예: 700) 재배치가 답이 아니다."""
+    out = calc_private_contribution_limit(X_pension_saving=700, Y_irp_personal=300,
+                                          r_tax_credit=0.165)
+    assert out["연금저축_한도초과_미공제액"] == pytest.approx(100.0)
+    assert out["IsReallocatable"] is False
+    assert "재배치시_추가공제_가능액" not in out
+
+
+def test_단독한도를_안_넘으면_재배치_필드_자체가_없다():
+    """★ 회귀 방지 — 정상 분배에는 이 필드들이 아예 안 나온다."""
+    out = calc_private_contribution_limit(X_pension_saving=600, Y_irp_personal=300,
+                                          r_tax_credit=0.165)
+    assert "연금저축_한도초과_미공제액" not in out
+    assert "IsReallocatable" not in out
+    assert "재배치시_추가공제_가능액" not in out
+
+
+def test_부분적으로만_재배치_여지가_있는_경우():
+    """★ IRP에 이미 일부 들어 있으면 옮길 수 있는 여지도 그만큼 준다."""
+    # 연금저축 900(600 초과 300) + IRP 200 → 합산 800, 여지 100만
+    out = calc_private_contribution_limit(X_pension_saving=900, Y_irp_personal=200,
+                                          r_tax_credit=0.165)
+    assert out["연금저축_한도초과_미공제액"] == pytest.approx(300.0)
+    assert out["IsReallocatable"] is True
+    assert out["재배치시_추가공제_가능액"] == pytest.approx(100 * 0.165)
+
+
 @pytest.mark.parametrize("age,annuity,rate", [
     (60, False, 0.055),
     (75, False, 0.044),

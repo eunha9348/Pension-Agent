@@ -24,7 +24,8 @@ from __future__ import annotations
 import re
 from typing import Callable, Optional
 
-from app.analysis.vocab import GENERIC_TERMS, domain_hits, key_terms
+from app.analysis.vocab import (AMBIGUOUS_DOMAIN_TERMS, GENERIC_TERMS,
+                                PENSION_CONTEXT_TERMS, domain_hits, key_terms)
 from app.core.coverage_pipeline import (ENTITY_KEYS, EvidenceChunk,
                                         RequirementSlot, SlotStatus)
 
@@ -60,7 +61,16 @@ def _overlap_ok(slot_terms: set[str], target_terms: set[str]) -> tuple[bool, set
         return False, hit
 
     # 도메인 핵심어가 하나도 안 겹치면 주제가 같다고 보지 않는다
-    if not domain_hits(hit):
+    dhits = domain_hits(hit)
+    if not dhits:
+        return False, hit
+
+    # ⚠️ 겹친 도메인어가 전부 "가짜 도메인어"(연금 밖에서도 쓰이는 말)뿐이면
+    #    연금 맥락어가 최소 하나 더 있어야 한다 (2026-09-07 실측, Q10).
+    #    "원천징수(세율)"만 겹쳐서 일반 펀드의 이자·배당소득 원천징수
+    #    조항이 "연령별 연금소득 원천징수세율" 슬롯에 근거로 붙었다 —
+    #    동의어 확장으로 겹침이 여러 개처럼 보였지만 실제로는 한 단어였다.
+    if dhits <= AMBIGUOUS_DOMAIN_TERMS and not (target_terms & PENSION_CONTEXT_TERMS):
         return False, hit
 
     need = max(_MIN_OVERLAP, round(len(slot_terms) * _OVERLAP_RATIO))
