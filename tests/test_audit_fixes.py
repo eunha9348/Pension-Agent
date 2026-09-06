@@ -1312,3 +1312,47 @@ def test_재원_금액이_없으면_빈_계산_카드를_만들지_않는다():
 
     a = answer_question("F48-PLAIN2", "중도인출 사유가 뭔가요?")["answer"]
     assert "재원마다 과세기준이 다릅니다" not in a
+
+
+# ═══════════════════════════════════════════════════════════════════
+# F46 후속 · 단위 없는 숫자는 위치 기반 가드 전체가 눈이 먼다
+#
+# _is_public_pension_amount는 parse_amount_expressions가 찾아낸 금액의
+# **위치**를 보고 판정한다. "공무원연금 월 300 받으시고"처럼 사용자가
+# 단위 없이 숫자만 쓰면 그 파서가 표현을 못 잡아 위치가 없고, 따라서 이
+# 계열 가드 전부(소득·현금·공적연금)가 눈이 먼다. 규칙 경로는 애초에
+# 금액을 못 잡으니 무해하지만 **LLM은 단위가 없어도 값을 읽어 채운다.**
+# ═══════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("q,llm", [
+    ("아버지가 공무원연금 월 300 받으시고 예금 5천만원 있으신데 어떻게 굴리는 게 좋을까요",
+     {"private_pension_monthly_manwon": 300}),
+    ("국민연금 월 150 받는데 노후 준비 어떻게",
+     {"private_pension_monthly_manwon": 150}),
+])
+def test_공적연금만_언급된_질의는_사적연금_값을_받지_않는다(q, llm):
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(q, llm_conditions=llm)
+    assert "private_pension_monthly_manwon" not in c
+
+
+@pytest.mark.parametrize("q,llm,expected", [
+    # 사적연금 명사가 하나라도 있으면 발동하지 않는다
+    ("국민연금 말고 개인연금 월 200 받는데 세금은?",
+     {"private_pension_monthly_manwon": 200}, 200.0),
+    ("국민연금 외에 연금저축에서 월 200 받습니다. 세금은?",
+     {"private_pension_monthly_manwon": 200}, 200.0),
+    ("IRP에서 월 150 받는데 세율이 어떻게 되나요",
+     {"private_pension_monthly_manwon": 150}, 150.0),
+    # 공적연금 명사가 아예 없으면 발동하지 않는다 — 아무 연금도 특정하지
+    # 않은 질의까지 막으면 정상 계산이 죽는다
+    ("매달 200만원 받는데 세금은 얼마인가요",
+     {"private_pension_monthly_manwon": 200}, 200.0),
+])
+def test_대조군_사적연금_근거가_있으면_그대로_반영된다(q, llm, expected):
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(q, llm_conditions=llm)
+    assert c.get("private_pension_monthly_manwon") == expected

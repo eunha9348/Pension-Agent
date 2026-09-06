@@ -280,6 +280,40 @@ def _is_public_pension_amount(question: str, value: float) -> bool:
     return False
 
 
+# 사적연금이라는 근거가 되는 명사. 질의에 이 중 하나도 없으면 LLM이
+# private_pension_* 키에 채운 값은 **원문에 근거가 전혀 없다.**
+_PRIVATE_PENSION_NOUN = (
+    "연금저축", "연금 저축", "IRP", "irp", "개인형", "퇴직연금",
+    "사적연금", "개인연금", "연금계좌", "DC", "DB",
+)
+
+
+def _lacks_private_pension_basis(question: str) -> bool:
+    """공적연금만 언급된 질의인가 — 사적연금 근거가 원문에 아예 없는가.
+
+    ━━ 왜 위치 기반 가드만으로는 부족한가 (F46 후속) ━━
+    `_is_public_pension_amount`는 `parse_amount_expressions`가 찾아낸 금액의
+    **위치**를 보고 판정한다. 그런데 "공무원연금 월 300 받으시고"처럼
+    사용자가 **단위 없이** 숫자만 쓰면 그 파서가 금액 표현을 잡지 못해
+    위치가 없고, 따라서 이 계열 가드 **전부**(소득·현금·공적연금)가
+    눈이 먼다. 규칙 경로는 애초에 금액을 못 잡으니 문제가 없지만,
+    **LLM은 단위가 없어도 값을 읽어 채운다.**
+
+    그래서 LLM 경로에만 보조 판정을 둔다: 질의에 공적연금 명사가 있고
+    사적연금 명사가 **하나도** 없으면, private_pension_* 값은 원문에
+    근거가 없다고 본다.
+
+    ⚠️ 공적연금 명사가 있을 때만 발동한다 — "매달 200만원 받는데 세금은?"
+       처럼 아무 연금도 특정하지 않은 질의까지 막으면 정상 계산이 죽는다.
+    ⚠️ 사적연금 명사가 하나라도 있으면 발동하지 않는다 —
+       "국민연금 말고 개인연금 월 200 받는데"는 그대로 계산돼야 한다.
+    """
+    q = question or ""
+    if not any(n in q for n in _PUBLIC_PENSION_NOUN):
+        return False
+    return not any(n in q for n in _PRIVATE_PENSION_NOUN)
+
+
 def _note_public_pension(c: dict[str, Any]) -> None:
     """공적연금 금액을 사적연금 조건에서 제외했음을 **고객에게** 고지한다.
 
@@ -839,7 +873,9 @@ def derive_conditions(question: str,
                     f"{_fmt(val)}만원이 소득(월소득·총급여 등)으로 언급되어 "
                     f"조건({k})으로 반영하지 않았습니다")
                 continue
-            if k in _PRIVATE_PENSION_KEYS and _is_public_pension_amount(q, val):
+            if k in _PRIVATE_PENSION_KEYS and (
+                    _is_public_pension_amount(q, val)
+                    or _lacks_private_pension_basis(q)):
                 # LLM이 국민연금·공무원연금·군인연금 수령액을 사적연금 수령액으로
                 # 잘못 라벨링한 경우(F46). 규칙 경로 3곳을 막아도 이 경로가
                 # 열려 있으면 같은 오답이 그대로 나간다 — F45에서 겪은 것과
