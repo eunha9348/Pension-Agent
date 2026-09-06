@@ -502,3 +502,67 @@ def verify_asset_claim_grounding(answer: str,
         "reason": (f"뒷받침할 근거가 없는데 투자대상을 단정함: "
                    f"{', '.join(ungrounded)}"),
     }
+
+
+# ════════════════════════════════════════════════════════════════
+# F56 · 근거에 없는 구체적 절차·메커니즘을 단정 (2026-09-07 실측, UI-003)
+# ════════════════════════════════════════════════════════════════
+#
+# ━━ 실측 ━━
+# "개인이 직접 운용하는 방식으로 초기에 위험자산 비중을 70% 이하로
+# 가져갔지만, 가격 급상승으로 비중이 70%가 넘게되면 어떻게 되나요?"에
+# 검색이 무관한 문서 7건을 가져왔는데(관련 문서를 못 찾음), 답변은 그
+# 어디에도 없는 **"자동으로 리밸런싱(Rebalancing) 과정이 진행됩니다"**
+# 를 구체적 절차로 단정했다.
+#
+# ━━ F53과 무엇이 다른가 ━━
+# F53(`verify_asset_claim_grounding`)은 **근거·계산이 모두 0건일 때만**
+# 돈다 — 근거가 있으면 자산군 서술은 의미 판단에 가깝다고 보기 때문이다.
+# 그런데 이 사고는 근거가 **있지만 무관한** 경우다(7건 인용됐지만 전부
+# 다른 주제). 절차·메커니즘 단정("자동으로 ~됩니다")은 특정 사실 하나를
+# 구체적으로 지어내는 것이라 자산군 서술보다 위험도가 높다 — 그래서
+# 근거 유무와 무관하게, 그 절차가 **실제로 검색된 근거 어디에도 없으면**
+# 잡는다.
+#
+# ━━ 왜 오탐이 통제되는가 ━━
+# 답변 쪽은 "자동으로 리밸런싱"처럼 좁고 구체적인 문구만 본다(넓히면
+# "리밸런싱이 필요합니다" 같은 일반 서술까지 잡혀 오탐이 된다).
+# 근거 쪽은 '리밸런싱'·'재조정'·'재배분' 같은 **뿌리 단어가 어디든**
+# 있으면 통과시킨다(다른 표현으로 같은 절차를 설명해도 놓치지 않도록) —
+# 오탐이 미탐보다 나쁘므로 근거 판정은 관대하게 둔다.
+#
+# ⚠️ 실측 실측(replay 300건, 로컬 mock)에서 이 문구 자체가 등장하지
+#    않아 오탐 측정이 불가능하다 — 실물 코퍼스에만 있는 주제라
+#    `verify_asset_claim_grounding`의 F16(제품 팩트)과 같은 계열의
+#    한계다. 서버에서 실측이 필요하다.
+_MECHANISM_CLAIMS: tuple[str, ...] = (
+    "자동으로 리밸런싱", "자동 리밸런싱", "자동으로 재조정", "자동 재조정",
+    "자동으로 매도", "자동 매도", "강제로 매도", "강제 매도",
+    "자동으로 처분", "강제 처분", "자동 정리매매", "임의로 매도",
+    "자동으로 조정",
+)
+_MECHANISM_GROUNDING_ROOTS: tuple[str, ...] = ("리밸런싱", "재조정", "재배분")
+
+
+def verify_mechanism_claim_grounding(answer: str,
+                                     evidence_texts: Iterable[str]) -> dict:
+    """자동 리밸런싱·강제 매도 같은 구체적 절차 단정이 근거에 있는가.
+
+    F53과 달리 근거 유무와 무관하게 **항상** 돈다 — 절차 단정은 근거가
+    있어도 그 근거가 실제로 그 절차를 말하는지 확인해야 하는 고위험
+    서술이기 때문이다(값이 아니라 **행위**를 단정하는 문장).
+    """
+    if not answer:
+        return {"passed": True, "ungrounded": [], "reason": "빈 답변"}
+    haystack = _no_space(" ".join(t for t in (evidence_texts or []) if t))
+    if any(_no_space(root) in haystack for root in _MECHANISM_GROUNDING_ROOTS):
+        return {"passed": True, "ungrounded": [],
+                "reason": "근거에 관련 절차 서술이 있음"}
+    norm_answer = _no_space(answer)
+    ungrounded = [c for c in _MECHANISM_CLAIMS if _no_space(c) in norm_answer]
+    if not ungrounded:
+        return {"passed": True, "ungrounded": [], "reason": "절차 단정 없음"}
+    return {
+        "passed": False, "ungrounded": ungrounded,
+        "reason": f"근거에 없는 절차를 단정함: {', '.join(ungrounded)}",
+    }

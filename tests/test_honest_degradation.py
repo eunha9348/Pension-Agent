@@ -359,3 +359,62 @@ def test_배선_검증기가_근거0건에서_자산군_단정을_REVISE로_올�
     codes = [f.code for f in v.supervision.findings]
     assert "ASSET_CLAIM_UNGROUNDED" in codes, codes
     assert v.supervision.verdict in (Verdict.REVISE, Verdict.BLOCK)
+
+
+# ════════════════════════════════════════════════════════════════
+# F56 · 근거에 없는 절차·메커니즘을 단정하던 결함 (외부 UI 평가 UI-003)
+# ════════════════════════════════════════════════════════════════
+#
+# "위험자산 비중이 70%를 초과하면 어떻게 되나요?"에 검색이 무관한 문서
+# 7건을 인용했는데, 답변은 그 어디에도 없는 "자동으로 리밸런싱이
+# 진행됩니다"를 단정했다. F53(자산군 서술)과 달리 이 검사는 근거 유무와
+# 무관하게 항상 돈다 — 절차 단정은 근거가 있어도 그 근거가 실제로 그
+# 절차를 말하는지 확인해야 하는 고위험 서술이기 때문이다.
+
+_F56_Q = ("개인이 직접 운용하는 방식으로 초기에 위험자산 비중을 70% "
+         "이하로 가져갔지만, 위험자산의 가격 급상승으로 비중이 70%가 "
+         "넘게되면 어떻게 되나요?")
+
+
+def test_근거에_없는_리밸런싱_단정이_잡힌다():
+    from app.core.citation_system import verify_mechanism_claim_grounding
+
+    bad = ("위험자산 비중이 70%를 초과하게 되면 자동으로 리밸런싱"
+           "(Rebalancing) 과정이 진행됩니다.")
+    res = verify_mechanism_claim_grounding(bad, [_F56_Q])
+    assert not res["passed"]
+    assert "자동으로 리밸런싱" in res["ungrounded"]
+
+
+def test_근거에_관련_절차_서술이_있으면_통과한다():
+    """★ 오탐 경계 — 근거가 다른 표현으로 같은 절차를 설명해도
+    뿌리 단어(재조정 등)만 있으면 놓치지 않는다."""
+    from app.core.citation_system import verify_mechanism_claim_grounding
+
+    bad = "비중 초과 시 자동으로 리밸런싱됩니다."
+    ok_evidence = "위험자산 비중 초과분은 별도 재조정 절차를 따릅니다."
+    assert verify_mechanism_claim_grounding(bad, [_F56_Q, ok_evidence])["passed"]
+
+
+def test_절차_단정이_없으면_대상이_아니다():
+    from app.core.citation_system import verify_mechanism_claim_grounding
+
+    ok = "위험자산 비중 관리는 투자자 본인의 책임입니다."
+    assert verify_mechanism_claim_grounding(ok, [_F56_Q])["passed"]
+
+
+def test_배선_검증기가_근거무관_상태에서도_절차단정을_REVISE로_올린다():
+    """★ F53과 달리 citations가 있어도(무관한 근거라도) 항상 돈다."""
+    from app.core.coverage_pipeline import EvidenceChunk
+    from app.core.supervisory_board import Verdict
+    from app.generation.grounding import make_verify_grounding
+
+    vg = make_verify_grounding(question=_F56_Q, slots=[], llm_call=None,
+                               citations=[{"doc_id": "R2_KR5169950018",
+                                          "text": "무관한 근거", "matched": ""}],
+                               answerability="ANSWER")
+    ev = [EvidenceChunk("R2_KR5169950018", "저위험자산이란 국공채...", score=1.0)]
+    v = vg("위험자산 비중 초과 시 자동으로 리밸런싱이 진행됩니다.", ev)
+    codes = [f.code for f in v.supervision.findings]
+    assert "MECHANISM_CLAIM_UNGROUNDED" in codes, codes
+    assert v.supervision.verdict in (Verdict.REVISE, Verdict.BLOCK)

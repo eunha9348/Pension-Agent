@@ -23,7 +23,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from app.core.citation_system import verify_asset_claim_grounding
+from app.core.citation_system import (verify_asset_claim_grounding,
+                                      verify_mechanism_claim_grounding)
 from app.core.coverage_pipeline import EvidenceChunk, RequirementSlot, SlotStatus
 from app.core.numeric_verifier import (verify_calc_presence,
                                        verify_numeric_grounding,
@@ -332,6 +333,33 @@ def make_verify_grounding(question: str,
                     f"역질문할 것"))
                 supervision.directives.append(
                     f"근거가 없으므로 {terms} 관련 투자대상 서술을 삭제할 것")
+                if supervision.verdict == Verdict.APPROVE:
+                    supervision.verdict = Verdict.REVISE
+
+        # ── 5. 근거에 없는 절차·메커니즘을 단정했는가 (F56) ──────
+        #
+        # ⚠️ F53과 달리 **근거 유무와 무관하게 항상** 돈다. F53이 막은
+        #    것은 "근거가 아예 없을 때"였는데, 이 사고는 근거가 **있지만
+        #    무관한** 경우다(7건이 인용됐지만 전부 다른 주제). "자동으로
+        #    ~됩니다" 같은 절차 단정은 값이 아니라 **행위**를 지어내는
+        #    것이라 자산군 서술보다 위험도가 높다고 보고 게이트를 풀었다.
+        #
+        # 실측(2026-09-07 UI-003): "위험자산 비중이 70%를 초과하면
+        # 어떻게 되나요?"에 무관한 문서 7건이 인용됐는데, 답변은 그
+        # 어디에도 없는 "자동으로 리밸런싱이 진행됩니다"를 단정했다.
+        if supervision is not None:
+            mech = verify_mechanism_claim_grounding(
+                answer, evidence_texts + list(fact_texts or []))
+            if not mech["passed"]:
+                terms = ", ".join(mech["ungrounded"])
+                supervision.findings.append(Finding(
+                    "근거기반", "MECHANISM_CLAIM_UNGROUNDED", Verdict.REVISE,
+                    mech["reason"],
+                    f"근거 문서 어디에도 없는 절차를 단정했습니다 — "
+                    f"'{terms}' 서술을 삭제하고, 확인된 절차가 없다는 점을 "
+                    f"밝힌 뒤 정확한 처리 방식은 확인이 필요하다고 안내할 것"))
+                supervision.directives.append(
+                    f"근거에 없으므로 '{terms}' 절차 단정을 삭제할 것")
                 if supervision.verdict == Verdict.APPROVE:
                     supervision.verdict = Verdict.REVISE
 
