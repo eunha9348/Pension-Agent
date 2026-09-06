@@ -426,3 +426,79 @@ def verify_product_grounding(answer: str,
         "reason": (f"근거 문서에 없는 상품명 {len(ungrounded)}건: "
                    f"{', '.join(ungrounded)}"),
     }
+
+
+# ════════════════════════════════════════════════════════════════
+# F53 · 근거 0건 상태에서 투자대상을 지어내는 것 (2026-09-06 외부 UI 평가 4번)
+# ════════════════════════════════════════════════════════════════
+#
+# ━━ 실측 ━━
+# "솔로몬 국공채 단기·중장기·장기, 뭐가 달라요?"에 retrieved_context는
+# 정직하게 "근거 문서: 해당 없음"을 표시했는데, 같은 답변이 **"중장기·장기
+# 상품은 주식·부동산·인프라에도 투자한다"**는 구체적 사실을 단정했다.
+# 근거가 0건이면 그 문장을 뒷받침할 것이 아무것도 없다 — 정의상 날조다.
+#
+# ━━ 왜 기존 검사가 못 잡았는가 ━━
+# · verify_numeric_grounding — 수치가 없는 문장이라 대상이 아니다.
+# · verify_product_grounding — '솔로몬 국공채 중장기'에는 '펀드·투자신탁'
+#   접미사가 없어 상품명으로 추출되지 않는다.
+# 지어낸 **이름**과 지어낸 **수치**는 막고 있었는데, 지어낸 **성격**은
+# 아무도 보지 않았다.
+#
+# ━━ 왜 근거 0건일 때만 보는가 ━━
+# 근거가 있으면 "이 자산군 서술이 그 근거에 있는가"는 의미 판단에 가깝다
+# (제도 설명에서 "주식형 펀드에도 투자할 수 있습니다"는 정상이다).
+# 그건 의미 감사의 몫이다. 반면 **근거도 계산도 0건**인 상태는 판단이
+# 필요 없다 — 뒷받침할 것이 하나도 없다는 사실이 이미 확정돼 있다.
+# 결정론 계층에는 확실한 것만 둔다(CLAUDE.md).
+
+# 투자대상 자산군 어휘. 상품의 '성격'을 규정하는 구체 명사만 담는다.
+_ASSET_TARGET_TERMS: tuple[str, ...] = (
+    "주식", "채권", "부동산", "인프라", "원자재", "리츠", "파생상품",
+    "실물자산", "특별자산", "해외자산", "회사채", "국공채", "국채",
+    "머니마켓", "MMF", "ETF", "금리연계", "환헤지",
+)
+
+# 그 어휘가 **투자대상 서술**로 쓰였는지 가르는 동사. 이게 없으면
+# "국공채는 채권입니다" 같은 용어 설명까지 잡혀 오탐이 된다.
+_INVEST_VERBS: tuple[str, ...] = (
+    "투자", "편입", "운용", "구성", "담고", "담습", "비중", "배분",
+)
+
+# ⚠️ '·'로 나누지 않는다 — supervisory_board의 문장 분리기와 **일부러**
+#    다르다. 저쪽은 불릿 줄을 가르려고 '·'를 넣었는데, 여기서는 그것이
+#    한국어 나열 구분자로도 쓰인다: "주식·부동산·인프라에도 투자합니다"를
+#    '·'로 자르면 동사가 붙은 마지막 조각('인프라에도 투자합니다')만 남아
+#    주식·부동산을 통째로 놓친다(실측으로 드러났다). 불릿은 줄바꿈으로도
+#    갈리므로 '·'를 빼도 줄 단위 분리는 유지된다.
+_ASSET_SENTENCE_SPLIT = re.compile(r'[.!?\n]')
+
+
+def verify_asset_claim_grounding(answer: str,
+                                 allowed_texts: Iterable[str]) -> dict:
+    """답변이 근거 없이 투자대상(자산군)을 단정하고 있는가.
+
+    allowed_texts : 질의 원문 + 인용된 근거 + 상품 팩트 스니펫.
+                    `verify_numeric_grounding`이 쓰는 허용 집합과 **같은
+                    기준**으로 만들어 넘길 것 — 두 검사가 다른 근거를 보면
+                    한쪽이 통과시킨 것을 다른 쪽이 막는 일이 생긴다.
+
+    ⚠️ 호출자가 "근거 0건 · 계산 0건"일 때만 부르도록 게이팅한다.
+       이 함수 자체는 게이트를 모른다(순수 판정).
+    """
+    haystack = _no_space(" ".join(t for t in (allowed_texts or []) if t))
+    ungrounded: list[str] = []
+    for sentence in _ASSET_SENTENCE_SPLIT.split(answer or ""):
+        if not any(v in sentence for v in _INVEST_VERBS):
+            continue
+        for term in _ASSET_TARGET_TERMS:
+            if term in sentence and term not in haystack and term not in ungrounded:
+                ungrounded.append(term)
+    if not ungrounded:
+        return {"passed": True, "ungrounded": [],
+                "reason": "근거 없이 단정한 투자대상 서술 없음"}
+    return {
+        "passed": False, "ungrounded": ungrounded,
+        "reason": (f"뒷받침할 근거가 없는데 투자대상을 단정함: "
+                   f"{', '.join(ungrounded)}"),
+    }

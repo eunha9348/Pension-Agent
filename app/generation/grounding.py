@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
+from app.core.citation_system import verify_asset_claim_grounding
 from app.core.coverage_pipeline import EvidenceChunk, RequirementSlot, SlotStatus
 from app.core.numeric_verifier import (verify_calc_presence,
                                        verify_numeric_grounding,
@@ -302,6 +303,37 @@ def make_verify_grounding(question: str,
             supervision.directives.append(presence.instruction())
             if supervision.verdict == Verdict.APPROVE:
                 supervision.verdict = Verdict.REVISE
+
+        # ── 4. 근거 0건인데 투자대상을 단정했는가 (F53) ──────────
+        #
+        # ⚠️ **근거도 계산도 0건일 때만** 본다. 그 상태에서는 판단이 필요
+        #    없다 — 뒷받침할 것이 하나도 없다는 사실이 이미 확정돼 있으므로,
+        #    질의가 준 말이 아닌 투자대상 서술은 정의상 근거가 없다.
+        #    근거가 있을 때 "이 자산군 서술이 그 근거에 있는가"는 의미
+        #    판단에 가까우므로 의미 감사에 맡긴다(CLAUDE.md — 결정론
+        #    규칙은 확실할 때만).
+        #
+        # 실측(2026-09-06 UI 평가 4번): retrieved_context가 정직하게
+        # "근거 문서: 해당 없음"을 표시한 답변이 동시에 "중장기·장기
+        # 상품은 주식·부동산·인프라에도 투자한다"를 단정했다. 지어낸
+        # 이름과 지어낸 수치는 막고 있었는데 지어낸 **성격**은 아무도
+        # 보지 않던 자리다.
+        if supervision is not None and not citations and not calc_results:
+            asset = verify_asset_claim_grounding(
+                answer, [question] + list(fact_texts or []))
+            if not asset["passed"]:
+                terms = ", ".join(asset["ungrounded"])
+                supervision.findings.append(Finding(
+                    "근거기반", "ASSET_CLAIM_UNGROUNDED", Verdict.REVISE,
+                    asset["reason"],
+                    f"근거 문서를 하나도 확보하지 못한 상태입니다. "
+                    f"{terms}에 투자한다는 서술을 삭제하고, 확인된 근거가 "
+                    f"없다는 점을 밝힌 뒤 무엇을 알려주시면 답할 수 있는지 "
+                    f"역질문할 것"))
+                supervision.directives.append(
+                    f"근거가 없으므로 {terms} 관련 투자대상 서술을 삭제할 것")
+                if supervision.verdict == Verdict.APPROVE:
+                    supervision.verdict = Verdict.REVISE
 
         ok = bool(numeric.passed) and bool(presence.passed)
         if supervision is not None and supervision.verdict in (Verdict.REVISE,

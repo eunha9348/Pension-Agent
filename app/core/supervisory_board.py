@@ -84,6 +84,14 @@ _CONDITIONAL_MARKERS = [
     "경우에는", "조건이라면", "이라면", "에 따라 다릅니다", "확인이 필요",
     "상황에 따라", "가정", "달라질 수 있", "일 수 있",
 ]
+# ⚠️ F52에서 '-다면'·'-라면'·'경우'를 넣으려다 되돌렸다 (2026-09-06).
+#    "30대 초반이시라면 지금 시작하는 것을 권장드립니다"가 통과해 버리는데,
+#    그 '-라면'은 추천의 조건이 아니라 **고객을 부르는 말**이다. 문자열로는
+#    둘을 구별할 수 없다(CLAUDE.md — 문자열로 결정할 수 없는 것은 규칙으로
+#    흉내내지 말 것). 넓히면 F52가 고치려던 구멍이 그대로 돌아온다.
+#    "근로자라면 IRP 가입을 권장드립니다"가 REVISE로 잡히는 것은 오탐이
+#    아니다 — 절대 제약이 요구하는 것은 "확인조건 제시 후 상황별 결론"이지
+#    조건절 하나를 앞에 붙인 직접 추천이 아니다.
 
 # 개인정보로 보이는 패턴 (답변에 그대로 반복 노출되면 지적)
 _PII_PATTERNS = [
@@ -93,24 +101,54 @@ _PII_PATTERNS = [
 ]
 
 
+# 문장 경계 문자. audit_coherence의 _SENTENCE_SPLIT과 같은 집합을 쓴다 —
+# 같은 판단(무엇이 한 문장인가)을 두 곳이 다르게 하면 반드시 어긋난다.
+_SENTENCE_BOUNDARY = ".!?\n·"
+
+
+def _sentence_around(text: str, pos: int) -> str:
+    """text의 pos 위치가 속한 문장을 돌려준다."""
+    start = max((text.rfind(ch, 0, pos) for ch in _SENTENCE_BOUNDARY),
+                default=-1)
+    ends = [i for i in (text.find(ch, pos) for ch in _SENTENCE_BOUNDARY)
+            if i != -1]
+    end = min(ends) if ends else len(text)
+    return text[start + 1:end]
+
+
 def audit_compliance(answer: str, citations: list = (),
                       has_calculation: bool = False) -> list[Finding]:
     """준법 감사. 단정 표현·근거 없는 추천·고지 누락·개인정보를 점검."""
     findings: list[Finding] = []
-    has_conditional = any(m in answer for m in _CONDITIONAL_MARKERS)
 
+    # ⚠️ 조건부 완화는 **같은 문장 안에서만** 인정한다 (F52 · 2026-09-06).
+    #
+    # ━━ 실측 (외부 UI 평가 2번) ━━
+    # 예전에는 `any(m in answer ...)`로 **답변 전체**를 봤다. 그런데 이
+    # 시스템의 답변에는 "개별 계좌·상품에 따라 달라질 수 있습니다" 같은
+    # 일반 고지문이 거의 항상 딸려 나간다. 그 한 줄이 답변 어디에 있든
+    # 단정 판정을 통째로 무마해서, "30대 초반인데 연금저축 지금 시작하는
+    # 게 좋을까요"에 **"지금 시작하는 것을 권장드립니다"**라는 직접 추천이
+    # 그대로 나갔다. 규칙은 정확히 그 표현을 잡고 있었는데(직접 추천 패턴)
+    # 완화 조건이 너무 넓어 발화하지 못한 것이다.
+    # 절대 제약 "단정적 추천 금지"를 정면으로 어기는 자리다.
+    #
+    # audit_coherence가 모순 판정을 문장 단위로 좁힌 것과 같은 처방이다 —
+    # 판정 대상이 문장이면 완화 근거도 그 문장에 있어야 한다.
     for pat, label in _ASSERTIVE_PATTERNS:
-        if pat.search(answer):
-            # 조건부 서술이 함께 있으면 경미하게, 없으면 시정 대상
-            sev = Verdict.REVISE if not has_conditional else Verdict.APPROVE
-            if sev == Verdict.REVISE:
-                findings.append(Finding(
-                    "준법", "ASSERTIVE", Verdict.REVISE,
-                    f"단정적 표현 감지 ({label})",
-                    "해당 문장을 '~한 조건이라면 ~입니다' 형태의 조건부 서술로 바꾸고, "
-                    "확인이 필요한 전제를 함께 제시할 것",
-                ))
-                break
+        m = pat.search(answer)
+        if not m:
+            continue
+        sentence = _sentence_around(answer, m.start())
+        if any(mk in sentence for mk in _CONDITIONAL_MARKERS):
+            continue        # 그 문장 스스로 조건을 밝혔다 — 단정이 아니다
+        findings.append(Finding(
+            "준법", "ASSERTIVE", Verdict.REVISE,
+            f"단정적 표현 감지 ({label}): '{sentence.strip()[:60]}'",
+            "해당 문장을 '~한 조건이라면 ~입니다' 형태의 조건부 서술로 바꾸고, "
+            "확인이 필요한 전제를 함께 제시할 것",
+        ))
+        break
 
     for pat, label in _PII_PATTERNS:
         if pat.search(answer):
@@ -942,6 +980,11 @@ LLM_AUDIT_SYSTEM_PROMPT = """당신은 연금 상담 답변의 **논리 정합�
    (예: 문서가 "자산총액의 60% 이상을 주식에 투자"·"3등급(다소 높은 위험)"
     이라고 적은 펀드를, "크게 잃고 싶지 않다"는 고객에게 "위험등급
     3등급이라 안정적"이라고 권하는 경우)
+   **근거가 하나도 제시되지 않은 경우는 특히 엄격히 보십시오** — 근거
+   문서가 0건이면 그 답변이 말하는 상품·제도의 구체적 사실은 무엇으로도
+   뒷받침되지 않습니다. 그런데도 투자대상·자산구성·보수·수령 요건 같은
+   사실을 단정하고 있으면 REVISE입니다. 그 자리에서 해야 할 일은 근거를
+   확인하지 못했다고 밝히고 무엇을 알려주면 답할 수 있는지 되묻는 것입니다.
 4. 내부 모순 — 같은 답변 안에서 서로 어긋나는 서술이 있는가.
    (예: "한도가 없습니다"와 "한도는 1,200만원입니다"가 함께 있음)
 5. 질문 전제의 검증 — **질문에 이미 틀린 전제가 들어 있는데 답변이 그것을

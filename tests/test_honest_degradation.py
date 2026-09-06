@@ -240,3 +240,122 @@ def test_Q001_실패_답변은_이제_확신있게_나갈_수_없다():
     notice, asks = _unresolved_notice(result)
     assert notice, "검증 미통과 사실이 사용자에게 전달되지 않는다"
     assert asks, "확인 항목으로 전환되지 않는다"
+
+
+# ════════════════════════════════════════════════════════════════
+# F52 · 답변 어딘가의 일반 고지문이 단정 판정을 통째로 무마하던 결함
+#        (2026-09-06 외부 UI 평가 2번)
+# ════════════════════════════════════════════════════════════════
+#
+# `audit_compliance`가 조건부 완화를 **답변 전체**에서 찾았다. 그런데 이
+# 시스템의 답변에는 "개별 계좌·상품에 따라 달라질 수 있습니다" 같은 고지문이
+# 거의 항상 딸려 나간다. 그 한 줄이 어디에 있든 단정 판정이 꺼져서,
+# "30대 초반인데 연금저축 지금 시작하는 게 좋을까요"에 확인 요청 없이
+# "지금 시작하는 것을 권장드립니다"가 그대로 나갔다.
+# 절대 제약 "단정적 추천 금지"를 정면으로 어기는 자리다.
+#
+# audit_coherence가 모순 판정을 문장 단위로 좁힌 것과 같은 처방 —
+# 판정 대상이 문장이면 완화 근거도 그 문장에 있어야 한다.
+
+def test_다른_줄의_고지문이_단정을_무마하지_못한다():
+    from app.core.supervisory_board import audit_compliance
+
+    a = ("복리효과를 오래 누릴 수 있으므로 지금 시작하는 것을 권장드립니다.\n"
+         "개별 계좌·상품·가입 시점에 따라 달라질 수 있습니다.")
+    codes = [f.code for f in audit_compliance(a, citations=[])]
+    assert "ASSERTIVE" in codes, a
+
+
+def test_같은_문장이_조건을_밝히면_단정이_아니다():
+    """★ 오탐 경계 — 그 문장 스스로 조건을 세웠으면 조건부 서술이다."""
+    from app.core.supervisory_board import audit_compliance
+
+    for ok in ("납입 여력이 확보된 경우에는 조기 가입을 권장드립니다.",
+               "상황에 따라 다르지만 조기 가입을 권장드립니다."):
+        assert [f.code for f in audit_compliance(ok, citations=[])] == [], ok
+
+
+def test_조건부_표현을_다시_넓히지_않았다():
+    """★ '-다면'·'-라면'·'경우'를 넣으려다 되돌린 판단을 고정한다.
+
+    "30대 초반이시라면 …권장드립니다"의 '-라면'은 추천의 조건이 아니라
+    고객을 부르는 말이다. 문자열로는 둘을 구별할 수 없으므로 넓히면
+    F52가 고치려던 구멍이 그대로 돌아온다(CLAUDE.md).
+    """
+    from app.core.supervisory_board import _CONDITIONAL_MARKERS
+
+    assert "라면" not in _CONDITIONAL_MARKERS
+    assert "다면" not in _CONDITIONAL_MARKERS
+    assert "경우" not in _CONDITIONAL_MARKERS
+
+
+# ════════════════════════════════════════════════════════════════
+# F53 · 근거 0건인데 투자대상을 지어내던 결함 (외부 UI 평가 4번)
+# ════════════════════════════════════════════════════════════════
+#
+# retrieved_context는 정직하게 "근거 문서: 해당 없음"을 표시했는데, 같은
+# 답변이 "중장기·장기 상품은 주식·부동산·인프라에도 투자한다"를 단정했다.
+# 지어낸 **이름**(verify_product_grounding)과 지어낸 **수치**
+# (verify_numeric_grounding)는 막고 있었는데, 지어낸 **성격**은 아무도
+# 보지 않던 자리였다.
+
+_F53_Q = "솔로몬 국공채 단기·중장기·장기, 뭐가 달라요? 안정적인 걸 원해요."
+
+
+def test_근거_0건에서_지어낸_투자대상이_잡힌다():
+    from app.core.citation_system import verify_asset_claim_grounding
+
+    bad = ("단기 상품은 국공채 위주로 운용되며, 중장기·장기 상품은 "
+           "주식·부동산·인프라에도 투자합니다.")
+    res = verify_asset_claim_grounding(bad, [_F53_Q])
+    assert not res["passed"]
+    # ⚠️ '·'로 문장을 자르면 동사가 붙은 마지막 조각만 남아 주식·부동산을
+    #    통째로 놓친다. 실측으로 드러난 결함이라 세 항목을 모두 고정한다.
+    assert set(res["ungrounded"]) == {"주식", "부동산", "인프라"}
+
+
+def test_질의가_말한_자산군은_잡지_않는다():
+    from app.core.citation_system import verify_asset_claim_grounding
+
+    ok = "국공채에 투자하는 상품이라는 점만 질의에서 확인됩니다."
+    assert verify_asset_claim_grounding(ok, [_F53_Q])["passed"]
+
+
+def test_투자대상_서술이_아니면_잡지_않는다():
+    """★ 용어 설명까지 잡으면 오탐이다 — 투자 동사가 있어야 한다."""
+    from app.core.citation_system import verify_asset_claim_grounding
+
+    ok = "국공채는 국가와 공공기관이 발행하는 채권입니다."
+    assert verify_asset_claim_grounding(ok, [_F53_Q])["passed"]
+
+
+def test_근거에_있으면_통과한다():
+    from app.core.citation_system import verify_asset_claim_grounding
+
+    bad = "중장기·장기 상품은 주식·부동산·인프라에도 투자합니다."
+    assert verify_asset_claim_grounding(
+        bad, [_F53_Q, "이 펀드는 주식과 부동산, 인프라 자산에 투자한다"])["passed"]
+
+
+def test_배선_L5_경로에도_근거0건_지시가_있다():
+    """★ 이 분기가 L4-sub에만 있고 L5'에는 통째로 없었다 — F3의 거울상이다.
+    배선을 지나가는 테스트로 고정한다(부품만 고치면 그대로 샌다)."""
+    from app.generation.answer_prompt import build_supervisor_payload
+
+    payload = build_supervisor_payload(
+        {"query": _F53_Q, "user_conditions": {}}, [], [])
+    assert "확보된 근거가 없습니다" in payload
+    assert "투자대상" in payload
+
+
+def test_배선_검증기가_근거0건에서_자산군_단정을_REVISE로_올린다():
+    """★ 검사가 잡은 것을 판정이 반영해야 한다 (CLAUDE.md)."""
+    from app.core.supervisory_board import Verdict
+    from app.generation.grounding import make_verify_grounding
+
+    vg = make_verify_grounding(question=_F53_Q, slots=[], llm_call=None,
+                               citations=[], answerability="ASK_BACK")
+    v = vg("중장기·장기 상품은 주식·부동산·인프라에도 투자합니다.", [])
+    codes = [f.code for f in v.supervision.findings]
+    assert "ASSET_CLAIM_UNGROUNDED" in codes, codes
+    assert v.supervision.verdict in (Verdict.REVISE, Verdict.BLOCK)
