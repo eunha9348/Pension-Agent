@@ -103,6 +103,16 @@ _VALID: dict[str, tuple] = {
     "I_monthly": (0, 100_000, "월 기준소득월액 (만원 단위로 알려주세요)"),
     "I_final_monthly": (0, 100_000,
                         "가입기간 평균 기준소득월액 (만원 단위로 알려주세요)"),
+    # 연금 외 수령 재원별 세금 (F48) — 원 단위 유입 차단용 상한.
+    # 계좌 잔액 성격이라 account_value와 같은 자릿수를 허용한다.
+    "deferred_severance": (0, 1_000_000, "이연퇴직소득(퇴직급여 이체분, 만원)"),
+    "credited_contribution": (0, 1_000_000,
+                              "세액공제 받은 납입액 (만원 단위로 알려주세요)"),
+    "investment_gain": (0, 1_000_000, "운용수익 (만원 단위로 알려주세요)"),
+    "uncredited_contribution": (0, 1_000_000,
+                                "세액공제 받지 않은 납입액 (만원 단위)"),
+    "severance_effective_rate": (0, 1, "퇴직소득세 실효세율"),
+    "r_other_income": (0, 1, "기타소득세율"),
     "rate": (0, 1, "세율 (0~100% 범위)"),
     "r_tax_credit": (0, 1, "세액공제율"),
     "r_irr": (0, 1, "소득대체율"),
@@ -260,6 +270,33 @@ CALC_PARAM_SPECS: dict[str, list[ParamSpec]] = {
         ParamSpec("IsAnnuityType", _get("is_annuity_type"),
                   variants=_ANNUITY_VARIANTS,
                   ask_back="종신형 수령인지 확정기간형 수령인지"),
+    ],
+
+    # ── 연금 외 수령 재원별 세금 (F48 · 함정 A9) ──────────────
+    # ⚠️ 네 재원 모두 required=False다. 사용자가 재원을 하나만 말해도
+    #    (예: "퇴직금 1억 있는데 해지하면") 그 부분만이라도 답해 줘야
+    #    한다 — "산출 가능한 것은 내주고, 값이 더 필요한 부분만 확인
+    #    요청으로 돌린다"(CLAUDE.md)와 같은 원칙이다. 네 개가 전부
+    #    비어 있으면 계산 자체가 무의미하므로 TopicRule의 calc_needs가
+    #    최소 한 개는 있을 때만 슬롯을 만든다.
+    # ⚠️ severance_effective_rate는 ask_back도 default도 두지 않는다 —
+    #    퇴직소득세는 근속연수공제·환산급여 구조라 단일 실효세율이 없고,
+    #    사용자가 답할 수 있는 값도 아니다. 함수가 None을 받아 그 몫을
+    #    '미확정'으로 분리해 내는 것이 정확한 처리다.
+    "연금외수령_재원별_세금_계산": [
+        ParamSpec("deferred_severance", _get("severance_manwon"),
+                  required=False, default=0.0,
+                  assumption="퇴직급여를 이체한 금액(이연퇴직소득)은 없는 것으로 계산"),
+        ParamSpec("credited_contribution", _get("credited_contribution_manwon"),
+                  required=False, default=0.0,
+                  assumption="세액공제를 받은 납입액은 없는 것으로 계산"),
+        ParamSpec("investment_gain", _get("investment_gain_manwon"),
+                  required=False, default=0.0,
+                  assumption="운용수익은 없는 것으로 계산"),
+        ParamSpec("uncredited_contribution",
+                  _get("uncredited_contribution_manwon"),
+                  required=False, default=0.0,
+                  assumption="세액공제를 받지 않은 납입액은 없는 것으로 계산"),
     ],
 
     # ── 과세방식 비교 ──────────────────────────────────────────

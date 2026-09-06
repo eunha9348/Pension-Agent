@@ -577,6 +577,30 @@ def derive_conditions(question: str,
                                  "월급", "월 급여", "월급여"))
     if wage is not None and not _is_income_amount(q, wage):
         c["avg_monthly_wage_manwon"] = wage
+    # 연금 외 수령(해지·중도인출) 재원별 세금의 입력 (F48).
+    # 함정 A9 — 해지해도 전액 16.5%가 아니라 재원마다 세금이 다르다.
+    # ⚠️ 세 재원 모두 **전용 키워드가 있을 때만** 잡는다. 무맥락 금액을
+    #    끌어오면 F27/F44류(엉뚱한 금액이 계산 인자로 새는 것)가 그대로
+    #    반복된다. 잔고·소득 표지가 붙은 금액도 배제한다.
+    for key, kws in (
+        ("credited_contribution_manwon",
+         ("세액공제 받은 납입액", "세액공제받은 납입액", "세액공제 받은",
+          "세액공제분", "공제받은 납입액")),
+        ("investment_gain_manwon",
+         ("운용수익", "운용 수익", "투자수익", "평가이익")),
+        ("uncredited_contribution_manwon",
+         ("세액공제 안 받은", "세액공제를 받지 않은", "공제 안 받은",
+          "세액공제 미적용")),
+    ):
+        # ⚠️ _is_balance_amount는 걸지 않는다 — 이 세 재원은 **본래 잔액
+        #    성격**이라 "운용수익 2천만원이 있는데"의 '있는데'가 잔고 표지로
+        #    걸려 통째로 막혔다(실측). 잔고 가드는 '잔액을 납입액으로 읽는
+        #    것'을 막으려는 것이고 여기엔 해당하지 않는다. 소득 가드는
+        #    유지한다(개념이 다르고 오탐 기전도 없다).
+        val = _find_amount_near(q, kws)
+        if val is not None and not _is_income_amount(q, val):
+            c[key] = val
+
     # 국민연금 본인부담금 산식의 입력 — 월 기준소득월액 (F48).
     # ⚠️ avg_monthly_wage_manwon과 값이 같아질 수 있으나 **별개 키로 둔다** —
     #    DB형은 '퇴직 직전 3개월 평균임금', 국민연금은 '기준소득월액'이라

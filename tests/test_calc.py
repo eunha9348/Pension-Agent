@@ -25,11 +25,14 @@ from app.core.pension_calc_functions import (_f_comp, _pension_income_deduction,
                                              normalize_tax_rate)
 
 
-def test_레지스트리에_17종이_등록돼_있다():
+def test_레지스트리에_18종이_등록돼_있다():
     """⚠️ 2026-09-06 — 수리팀 산식 2종(DB형·DC형 적립액)이 추가돼 15→17종.
+    ⚠️ 2026-09-06 — F48로 연금외수령_재원별_세금_계산이 추가돼 17→18종.
+       함정 A9에 도메인 지식은 있는데 계산기가 없어 "해지하면 세금 얼마"에
+       수치가 하나도 안 나가던 공백을 메운 것이다.
     개수 자체가 불변식은 아니지만, 등록을 빠뜨리면 계산이 통째로 안 도는
     자리라 숫자로 못 박아 둔다."""
-    assert len(CALC_REGISTRY) == 17
+    assert len(CALC_REGISTRY) == 18
 
 
 # ── 연금수령한도 · 연차 (doc39, doc40) ───────────────────────

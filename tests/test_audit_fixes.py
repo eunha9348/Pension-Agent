@@ -1212,3 +1212,103 @@ def test_제도_설명_질의에는_국민연금_계산이_붙지_않는다():
 
     r = answer_question("F48-PLAIN", "국민연금이 뭐예요?")
     assert "본인부담금" not in r["answer"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# F48(1) · 연금 외 수령(해지·중도인출) 재원별 세금 계산함수 신설
+#
+# 함정 A9에 도메인 지식은 완전히 있는데 **계산기가 없었다.** "IRP에 퇴직금
+# 1억, 세액공제 받은 납입액 3천만원, 운용수익 2천만원이 있는데 지금
+# 해지하면 세금이 얼마인가요"에 수치가 하나도 안 나가고 함정 교정 문장만
+# 실렸다(과제 안내 '기타(중도인출 등)' 유형).
+#
+# 투자설명서 [연금저축계좌 과세 주요 사항]:
+#   · 이연퇴직소득(퇴직급여 이체분) → 퇴직소득 과세기준
+#   · 세액공제 받은 납입액 + 운용수익 → 기타소득세 16.5%
+#   · 세액공제 받지 않은 납입액 → 과세 제외
+# "해지하면 전액 16.5%"는 오답이다.
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_재원별로_다른_과세기준이_적용된다():
+    from app.core.pension_calc_functions import calc_non_pension_withdrawal_tax
+
+    r = calc_non_pension_withdrawal_tax(
+        credited_contribution=3000, investment_gain=2000,
+        uncredited_contribution=1000)
+    # 세액공제분 + 운용수익 = 5,000만원만 과세, × 16.5% = 825만원
+    assert r["기타소득세_과세대상"] == 5000
+    assert r["기타소득세액"] == 825.0
+    assert r["과세제외_납입액"] == 1000       # 세액공제 안 받은 납입액은 과세 제외
+    assert r["합계세액"] == 825.0
+    # 전액(6,000만원)에 16.5%를 매기면 990만원 — 그 오답이 나오면 안 된다
+    assert r["합계세액"] != 990.0
+
+
+def test_퇴직소득세율을_모르면_세액을_지어내지_않는다():
+    """★ 핵심 안전 속성 — 0은 사실이 아니라 미입력이다.
+
+    퇴직소득세는 근속연수공제·환산급여 구조라 단일 실효세율이 없다.
+    0으로 굴리면 사용자에게 "세금이 0원"으로 읽힌다
+    (calc_private_withholding이 이미 세운 원칙과 같다).
+    """
+    from app.core.pension_calc_functions import calc_non_pension_withdrawal_tax
+
+    r = calc_non_pension_withdrawal_tax(
+        deferred_severance=10000, credited_contribution=3000,
+        investment_gain=2000)
+    assert r["이연퇴직소득_세액"] is None
+    assert r["합계세액"] is None              # 합계도 낼 수 없다
+    assert r["기타소득세액"] == 825.0         # 확정 가능한 몫은 그대로 낸다
+    assert "미확정_사유" in r
+    # 이연퇴직소득 1억에 16.5%를 매기면 1,650만원 — 절대 나오면 안 된다
+    assert all(row.get("세액") != 1650.0 for row in r["재원별_내역"])
+
+
+def test_퇴직소득세율을_주면_합계가_나온다():
+    from app.core.pension_calc_functions import calc_non_pension_withdrawal_tax
+
+    r = calc_non_pension_withdrawal_tax(
+        deferred_severance=10000, credited_contribution=3000,
+        investment_gain=2000, severance_effective_rate=0.05)
+    assert r["이연퇴직소득_세액"] == 500.0     # 10000 × 5%
+    assert r["합계세액"] == 1325.0             # 500 + 825
+
+
+def test_재원_금액이_조건으로_추출된다():
+    """calc_needs를 못 채우면 배선이 죽은 코드가 된다.
+
+    ⚠️ _is_balance_amount 가드를 걸면 안 된다 — 이 세 재원은 본래 잔액
+       성격이라 "운용수익 2천만원이 있는데"의 '있는데'가 잔고 표지로 걸려
+       통째로 막혔다(실측).
+    """
+    from app.analysis.conditions import derive_conditions
+
+    q = ("IRP에 퇴직금 1억, 세액공제 받은 납입액 3천만원, 운용수익 "
+         "2천만원이 있는데 지금 해지하면 세금이 얼마인가요")
+    c = derive_conditions(q)
+    assert c.get("credited_contribution_manwon") == 3000.0
+    assert c.get("investment_gain_manwon") == 2000.0
+    assert c.get("severance_manwon") == 10000.0
+
+
+def test_재원별_세금이_답변에_수치로_나간다():
+    """★ 배선 — 이전에는 함정 교정 문장만 나가고 수치가 0건이었다."""
+    from app.pipeline import answer_question
+
+    q = ("IRP에 퇴직금 1억, 세액공제 받은 납입액 3천만원, 운용수익 "
+         "2천만원이 있는데 지금 해지하면 세금이 얼마인가요")
+    a = answer_question("F48-SRC", q)["answer"]
+    assert "825만원" in a
+    assert "별도 산출 필요" in a          # 이연퇴직소득분은 지어내지 않는다
+    # ⚠️ F24/F25 계열 — 중첩 구조를 범용 렌더러에 맡기면 raw 키가 샌다
+    assert "재원별_내역" not in a
+    assert "기타소득세_과세대상" not in a
+
+
+def test_재원_금액이_없으면_빈_계산_카드를_만들지_않는다():
+    """calc_needs 게이팅 — DB형/DC형과 같은 원칙."""
+    from app.pipeline import answer_question
+
+    a = answer_question("F48-PLAIN2", "중도인출 사유가 뭔가요?")["answer"]
+    assert "재원마다 과세기준이 다릅니다" not in a

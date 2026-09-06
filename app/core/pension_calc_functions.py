@@ -202,6 +202,94 @@ def calc_private_withholding(P_private_monthly=None, Age=None,
     return out
 
 
+def calc_non_pension_withdrawal_tax(
+        deferred_severance: float = 0.0,
+        credited_contribution: float = 0.0,
+        investment_gain: float = 0.0,
+        uncredited_contribution: float = 0.0,
+        severance_effective_rate: float | None = None,
+        r_other_income: float = 0.165) -> dict:
+    """[2.3] 연금 외 수령(해지·중도인출) 시 **재원별** 세금.
+
+    ━━ 왜 필요한가 (F48, 2026-09-06) ━━
+    함정 A9에 도메인 지식은 완전히 있는데 **계산기가 없었다.** "IRP에 퇴직금
+    1억, 세액공제 받은 납입액 3천만원, 운용수익 2천만원이 있는데 지금
+    해지하면 세금이 얼마인가요"에 수치가 하나도 나가지 않고 함정 교정
+    문장만 실렸다. 과제 안내의 '기타(중도인출 등 절차·대응 방안)' 유형이다.
+
+    ━━ 재원별 과세 (투자설명서 [연금저축계좌 과세 주요 사항]) ━━
+    투자설명서는 "기타소득 분리과세 16.5%" 뒤에 **"단, 이연퇴직소득은
+    퇴직소득 과세기준 적용"**이라는 단서를 달고 있다. 따라서
+
+      · 이연퇴직소득(퇴직급여 이체분) → 퇴직소득 과세기준
+      · 세액공제 받은 납입액 + 운용수익 → 기타소득세 16.5% 분리과세
+      · 세액공제 받지 않은 납입액 → 과세 제외
+
+    "해지하면 전액 16.5%"는 오답이다.
+
+    ━━ ⚠️ 퇴직소득세율을 지어내지 않는다 ━━
+    퇴직소득세는 근속연수공제·환산급여 구조라 **단일 실효세율이 없다.**
+    severance_effective_rate가 없으면 그 몫의 세액을 0으로 굴리지 않고
+    `미확정` 항목으로 분리해 낸다 — 0은 사실이 아니라 미입력인데 사용자에게는
+    "세금이 0원"으로 읽힌다(calc_private_withholding과 같은 원칙).
+    이연퇴직소득의 세액을 알고 싶으면 퇴직소득세_계산을 따로 쓰면 된다.
+
+    반환 단위는 전부 만원이다.
+    """
+    taxable_other = round(credited_contribution + investment_gain, 4)
+    T_other = round(taxable_other * r_other_income, 4)
+
+    breakdown = [
+        {"재원": "세액공제 받은 납입액과 운용수익", "금액": taxable_other,
+         "적용": f"기타소득세 {r_other_income * 100:.4g}% 분리과세",
+         "세액": T_other},
+        {"재원": "세액공제 받지 않은 납입액", "금액": round(uncredited_contribution, 4),
+         "적용": "과세 제외", "세액": 0.0},
+    ]
+
+    out: dict = {
+        "기타소득세_과세대상": taxable_other,
+        "기타소득세액": T_other,
+        "과세제외_납입액": round(uncredited_contribution, 4),
+        "재원별_내역": breakdown,
+        "source": "R2_KR5129420025 · R2_KR510902511M",
+    }
+
+    if deferred_severance > 0:
+        if severance_effective_rate is None:
+            out["이연퇴직소득"] = round(deferred_severance, 4)
+            out["이연퇴직소득_세액"] = None
+            out["미확정_사유"] = (
+                "이연퇴직소득에는 퇴직소득 과세기준이 적용됩니다. "
+                "퇴직소득세는 근속연수공제·환산급여 구조라 단일 세율이 없어, "
+                "근속연수와 퇴직급여를 알려주시면 별도로 산출해 드립니다.")
+            breakdown.insert(0, {
+                "재원": "이연퇴직소득(퇴직급여 이체분)",
+                "금액": round(deferred_severance, 4),
+                "적용": "퇴직소득 과세기준 (기타소득세 16.5% 아님)",
+                "세액": None})
+            out["합계세액"] = None
+            out["합계세액_주의"] = (
+                "이연퇴직소득분이 미확정이라 합계를 낼 수 없습니다. "
+                f"확정된 기타소득세액만 {T_other}만원입니다.")
+            return out
+
+        T_sev = round(deferred_severance * severance_effective_rate, 4)
+        out["이연퇴직소득"] = round(deferred_severance, 4)
+        out["이연퇴직소득_세액"] = T_sev
+        breakdown.insert(0, {
+            "재원": "이연퇴직소득(퇴직급여 이체분)",
+            "금액": round(deferred_severance, 4),
+            "적용": f"퇴직소득 과세기준 (실효세율 "
+                    f"{severance_effective_rate * 100:.4g}%)",
+            "세액": T_sev})
+        out["합계세액"] = round(T_sev + T_other, 4)
+        return out
+
+    out["합계세액"] = T_other
+    return out
+
+
 # ════════════════════════════════════════════════
 # 3. 종합 수령 시나리오 및 과세 방식 판정
 # ════════════════════════════════════════════════
@@ -758,6 +846,7 @@ PENSION_CALC_FUNCTIONS = {
     # 사적연금 납입·수령 (제공문서 근거)
     "사적연금_납입한도_세액공제_계산": calc_private_contribution_limit,
     "사적연금_원천징수_계산": calc_private_withholding,
+    "연금외수령_재원별_세금_계산": calc_non_pension_withdrawal_tax,
     # 과세방식 비교 (정정판)
     "과세방식_비교_계산": compare_taxation_options,
     "과세방식_판정_계산": calc_taxation_mode,          # DEPRECATED

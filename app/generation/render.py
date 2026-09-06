@@ -211,6 +211,40 @@ def _render_tax_choice(result: dict, indent: str) -> str:
     return "\n".join(lines)
 
 
+def _render_withdrawal_sources(result: dict, indent: str) -> str:
+    """calc_non_pension_withdrawal_tax()의 결과 전용 문장 렌더러 (F48).
+
+    ⚠️ _render_tax_choice와 같은 이유로 따로 둔다 — 이 함수는 '재원별_내역'
+    이라는 **리스트of dict**를 돌려주는데, 범용 key=value 나열로 렌더링하면
+    "재원별_내역 = 3건"·"기타소득세_과세대상 = 3,000.0"처럼 raw 키와 무의미한
+    요약이 그대로 노출된다(CLAUDE.md의 render_calc_result 항목이 경고하는
+    바로 그 형태). 숫자는 전부 result dict에서 그대로 가져온다.
+
+    ⚠️ 세액이 None인 재원은 '0원'이 아니라 '미확정'으로 쓴다. 0은 사실이
+    아니라 미입력인데 사용자에게는 "세금이 없다"로 읽힌다.
+    """
+    lines = [f"{indent}연금 외 수령은 재원마다 과세기준이 다릅니다."]
+    for row in result.get("재원별_내역") or []:
+        amount = row.get("금액") or 0
+        if not amount:
+            continue                      # 0원인 재원은 줄을 만들지 않는다
+        tax = row.get("세액")
+        tax_txt = ("별도 산출 필요" if tax is None
+                   else f"세액 {format_manwon(tax)}")
+        lines.append(f"{indent}· {row.get('재원')} {format_manwon(amount)} "
+                     f"— {row.get('적용')}, {tax_txt}")
+
+    total = result.get("합계세액")
+    if total is None:
+        if note := result.get("합계세액_주의"):
+            lines.append(f"{indent}{note}")
+    else:
+        lines.append(f"{indent}합계 세액은 {format_manwon(total)}입니다.")
+    if reason := result.get("미확정_사유"):
+        lines.append(f"{indent}※ {reason}")
+    return "\n".join(lines)
+
+
 def render_calc_result(result: Any, indent: str = "  ") -> str:
     """계산 결과 dict를 줄 단위 텍스트로. variants 구조를 지원한다."""
     if not isinstance(result, dict):
@@ -218,6 +252,9 @@ def render_calc_result(result: Any, indent: str = "  ") -> str:
 
     if "choice_required" in result and ("separate" in result or "note" in result):
         return _render_tax_choice(result, indent)
+
+    if "재원별_내역" in result:
+        return _render_withdrawal_sources(result, indent)
 
     if "variants" in result and isinstance(result["variants"], list):
         variants = result["variants"]

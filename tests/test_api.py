@@ -94,7 +94,7 @@ def test_health가_mock_여부를_드러낸다():
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert "is_mock" in body["llm"]
-    assert body["calc_functions"] == 17
+    assert body["calc_functions"] == 18   # F48로 17→18종
     assert "kind" in body["corpus"]
 
 

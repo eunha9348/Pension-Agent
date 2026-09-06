@@ -27,16 +27,17 @@ def _slot(fn: str, desc: str = "테스트") -> RequirementSlot:
 # 규격 커버리지
 # ════════════════════════════════════════════════════════════════
 
-def test_registry_17종이_전부_인자규격을_갖는다():
+def test_registry_18종이_전부_인자규격을_갖는다():
     """DEPRECATED 1종(과세방식_판정_계산)은 remap으로 대체되므로 제외.
 
     ⚠️ 2026-09-06 — 수리팀 산식 2종(DB형_퇴직급여_계산·DC형_적립액_계산)
     추가로 15→17종. 인자 규격을 함께 넣지 않으면 등록만 되고 호출은
-    되지 않으므로, 이 테스트가 그 누락을 잡는다."""
+    되지 않으므로, 이 테스트가 그 누락을 잡는다.
+    ⚠️ 2026-09-06 — F48로 연금외수령_재원별_세금_계산 추가돼 17→18종."""
     covered = set(CALC_PARAM_SPECS) | {"과세방식_판정_계산"}
     missing = set(CALC_REGISTRY) - covered
     assert not missing, f"인자 규격이 없는 계산함수: {missing}"
-    assert len(CALC_REGISTRY) == 17
+    assert len(CALC_REGISTRY) == 18
 
 
 def test_deprecated_함수는_현행함수로_교정된다():
