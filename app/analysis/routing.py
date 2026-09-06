@@ -73,6 +73,26 @@ _PERSONAL_NARRATIVE = re.compile(
 )
 
 
+# 계좌를 **아직 갖고 있지 않다**는 신호. 이 표현이 있으면 질의에 나온
+# 계좌 이름은 '보유 계좌'가 아니라 '검토 중인 제도'다.
+#
+# ⚠️ conditions._ACCOUNT_SIGNALS는 "연금저축"이라는 **단어가 나오기만 하면**
+#    account_type을 채운다. 그 키는 자격 판정·상품 매칭 등 여러 곳이 쓰므로
+#    추출 자체를 좁히면 파급이 크다 — 그래서 **라우팅에서만** 걸러낸다.
+_PROSPECTIVE_ACCOUNT: tuple[str, ...] = (
+    "시작하", "시작할", "시작해", "가입할까", "가입하려", "가입해야",
+    "들어야", "들까", "만들까", "만들어야", "새로 ", "아직 없", "없는데",
+)
+
+# 상품 차원의 질의라는 신호. 이게 있으면 계좌 이름이 검토 중이더라도
+# 상품 비교·자격 판정 로직(총보수_비교·판매클래스_적합성_판정)이 돌아야
+# 하므로 GENERAL을 유지한다 — 대주제 2(상품 설명·비교)가 통째로 죽는다.
+_PRODUCT_CONTEXT: tuple[str, ...] = (
+    "총보수", "보수", "클래스", "수수료", "위험등급", "상품", "펀드",
+    "비교", "수익률", "etf", "ETF",
+)
+
+
 @dataclass
 class RouteDecision:
     """경로 판정 결과. 사유를 반드시 남긴다 — trace로 추적 가능해야 한다."""
@@ -131,7 +151,19 @@ def classify_route(question: str,
     has_calc_cond = bool(_CALC_CONDITION_KEYS & set(cond))
     has_calc_slot = any(
         isinstance(s, dict) and s.get("calc_function") for s in slots)
-    has_account = bool(cond.get("account_type") or cond.get("fund_class"))
+    # ⚠️ 판매클래스(fund_class)는 특정 상품을 콕 집었다는 뜻이라 언제나
+    #    강한 신호다. 반면 account_type은 **단어 등장만으로** 채워지므로
+    #    (conditions._ACCOUNT_SIGNALS) "아직 갖고 있지 않다"는 표현이 함께
+    #    나오면 보유 계좌로 볼 수 없다 — F47(b), 2026-09-06 실측:
+    #    "30대 초반인데 연금저축 지금 시작하는 게 좋을까요 아니면 나중에
+    #    할까요"가 account_type='연금저축' 하나로 GENERAL이 확정돼
+    #    "근거를 확인하지 못했습니다 + 문서 3건 나열"이 나갔다.
+    #    다만 상품 어휘가 함께 있으면 GENERAL을 유지한다 — 계좌를 아직 안
+    #    만들었어도 총보수 비교·판매클래스 자격 판정은 해 줘야 한다.
+    prospective = any(s in q for s in _PROSPECTIVE_ACCOUNT)
+    product_ctx = any(s in q for s in _PRODUCT_CONTEXT)
+    has_account = bool(cond.get("fund_class")) or (
+        bool(cond.get("account_type")) and not (prospective and not product_ctx))
     advisory_signal = [s for s in _ADVISORY_SIGNALS if s in q]
     personal = bool(_PERSONAL_NARRATIVE.search(q))
     calc_anchor = [a for a in _CALC_ANCHORS if a in q]
@@ -140,6 +172,7 @@ def classify_route(question: str,
         "계산조건": has_calc_cond, "계산슬롯": has_calc_slot,
         "계좌유형": has_account, "상담신호": len(advisory_signal),
         "개인서술": personal, "계산앵커": len(calc_anchor),
+        "계좌예정": prospective, "상품맥락": product_ctx,
     }
 
     if has_calc_cond:
