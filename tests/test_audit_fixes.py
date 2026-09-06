@@ -1144,3 +1144,71 @@ def test_공적연금_제외_사실이_고객_답변에_고지된다():
     assert "공적연금" in r["answer"]
     # 존재하지 않는 분리과세 선택 세액이 다시 나오면 안 된다
     assert "분리과세를 선택하면" not in r["answer"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# F48(2) · 국민연금 계산함수가 규칙 경로에서 도달 불가였던 결함
+#
+# CALC_REGISTRY에 국민연금_본인부담금_계산·국민연금_수령액_계산·
+# 출산크레딧_인정개월_계산 3종이 등록돼 있고 calc_params 스펙도 있는데,
+# TOPIC_RULES의 "국민연금" 규칙이 calc_function=None이라 규칙 경로에서는
+# 슬롯이 만들어지지 않았다. L1(HCX)이 직접 지정할 때만 돌았고, 그게 F41에서
+# 근거 없이 지정돼 오라우팅을 일으킨 바로 그 경로다.
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_국민연금_본인부담금이_규칙_경로에서_계산된다():
+    """★ 배선 — 400만원 × 9% × 0.5 = 18만원."""
+    from app.pipeline import answer_question
+
+    r = answer_question("F48-NP", "월소득이 400만원인데 국민연금 본인부담금이 얼마인가요")
+    assert "18만원" in r["answer"]
+    assert "월 기준소득월액" in r["answer"]      # 조건 라벨도 표시돼야 한다
+
+
+def test_월_기준소득월액이_조건으로_추출된다():
+    """monthly_income_manwon이 없으면 위 배선은 calc_needs를 못 채워 죽는다.
+
+    ⚠️ avg_monthly_wage_manwon(DB형 평균임금)과 값이 같아질 수 있으나
+       별개 키다 — 한쪽을 다른 쪽 폴백으로 쓰는 _first(...) 패턴은
+       F27·F44에서 오답의 원인이었다.
+    """
+    from app.analysis.conditions import derive_conditions
+
+    assert derive_conditions("월소득이 400만원인데").get("monthly_income_manwon") == 400.0
+    assert derive_conditions("기준소득월액 350만원").get("monthly_income_manwon") == 350.0
+
+
+def test_출산크레딧은_자녀수가_있을_때만_슬롯을_만든다():
+    """calc_needs 게이팅 — 제도 설명만 묻는 질의에 빈 계산 카드를 내지 않는다."""
+    from app.analysis.query_spec import rule_based_spec
+
+    with_child = rule_based_spec("자녀가 2명 있는데 출산크레딧 인정개월수가 얼마인가요")
+    fns = {s.get("calc_function") for s in with_child.get("asked_for") or []}
+    assert "출산크레딧_인정개월_계산" in fns
+
+    plain = rule_based_spec("출산크레딧이 뭔가요?")
+    fns2 = {s.get("calc_function") for s in plain.get("asked_for") or []}
+    assert "출산크레딧_인정개월_계산" not in fns2
+
+
+def test_국민연금_수령액은_일부러_배선하지_않는다():
+    """★ 의도적 미배선 — 소득대체율(r_irr)은 사용자가 말해 주는 값이 아니고
+    제공 자료로도 확정할 수 없다. 배선하면 "국민연금 얼마 받나요"마다
+    '적용 소득대체율'을 되묻는 슬롯이 생기는데, 그건 답이 아니라 알 수 없는
+    용어를 되묻는 것이다. 검색 기반 일반 슬롯이 제도 문서를 찾아오게 둔다.
+    """
+    from app.analysis.query_spec import TOPIC_RULES
+
+    wired = {r.calc_function for r in TOPIC_RULES}
+    assert "국민연금_수령액_계산" not in wired
+    assert "국민연금_본인부담금_계산" in wired
+    assert "출산크레딧_인정개월_계산" in wired
+
+
+def test_제도_설명_질의에는_국민연금_계산이_붙지_않는다():
+    """빈 계산 카드 방지 — DB형/DC형과 같은 calc_needs 게이팅 원칙."""
+    from app.pipeline import answer_question
+
+    r = answer_question("F48-PLAIN", "국민연금이 뭐예요?")
+    assert "본인부담금" not in r["answer"]

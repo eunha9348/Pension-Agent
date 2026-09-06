@@ -577,6 +577,20 @@ def derive_conditions(question: str,
                                  "월급", "월 급여", "월급여"))
     if wage is not None and not _is_income_amount(q, wage):
         c["avg_monthly_wage_manwon"] = wage
+    # 국민연금 본인부담금 산식의 입력 — 월 기준소득월액 (F48).
+    # ⚠️ avg_monthly_wage_manwon과 값이 같아질 수 있으나 **별개 키로 둔다** —
+    #    DB형은 '퇴직 직전 3개월 평균임금', 국민연금은 '기준소득월액'이라
+    #    산식이 요구하는 개념이 다르다. 한쪽 키를 다른 쪽 폴백으로 쓰는
+    #    _first(...) 패턴은 F27·F44에서 오답의 원인이었으므로 쓰지 않는다.
+    # ⚠️ 여기서는 _is_income_amount 가드를 걸지 않는다 — 이 키 자체가
+    #    소득을 담는 자리라 소득 표지가 붙는 것이 정상이다
+    #    (total_income_manwon을 _INCOME_MISLABEL_KEYS에서 뺀 것과 같은 이유).
+    #    라우팅 키(_CALC_CONDITION_KEYS)가 아니므로 경로 판정에도 영향이 없다.
+    m_inc = _find_amount_near(q, ("기준소득월액", "월소득", "월 소득",
+                                  "월 급여", "월급여", "월급"))
+    if m_inc is not None and not _is_balance_amount(q, m_inc):
+        c["monthly_income_manwon"] = m_inc
+
     # DC형 적립액 산식의 입력 — 연차별 연봉 구간
     if (sched := _salary_schedule(q, c.get("service_years"))) is not None:
         c["salary_schedule"] = sched
@@ -900,6 +914,11 @@ def describe_conditions(conditions: dict[str, Any]) -> str:
         "severance_manwon": "퇴직급여", "account_value_manwon": "계좌 평가액",
         "total_income_manwon": "소득", "years_elapsed": "가입 후 경과연수",
         "other_income_manwon": "그 외 종합소득",
+        # F48 — 라벨이 없으면 계산에 실제로 쓴 조건인데도 "확인된 개인
+        # 조건이 없어"라고 표시된다. 계산 입력은 반드시 여기 등록할 것.
+        "monthly_income_manwon": "월 기준소득월액",
+        "avg_monthly_wage_manwon": "평균 월급여",
+        "children_total": "자녀 수",
         "private_pension_annual_manwon": "연간 연금수령액",
         "is_annuity_type": "수령 형태", "fund_class": "판매 클래스",
         "join_before_2013": "2013.3.1 이전 가입",
