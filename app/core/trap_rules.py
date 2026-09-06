@@ -963,7 +963,14 @@ def term_present(text: str, term: str) -> bool:
     if _ASCII_TERM.match(term):
         return re.search(rf'(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9])',
                          text) is not None
-    return term in text
+    # ⚠️ 공백을 정규화해 대조한다 (2026-09-06 외부 UI 평가 3번).
+    #    답변이 "이연 퇴직소득"이라고 띄어 쓰면 핵심어 "이연퇴직소득"이
+    #    부분 문자열로 잡히지 않아, **교정을 정확히 반영한 답변**이
+    #    미해소로 판정돼 강제 재생성과 강등을 부른다. 띄어쓰기는 같은 말의
+    #    표기 차이일 뿐이라 여기서 갈릴 이유가 없다.
+    #    법령 인용 검증(MIN_QUOTE_CHARS)이 공백만 정규화해 대조하는 것과
+    #    같은 처방이다 — 그쪽과 기준을 맞춘다.
+    return re.sub(r'\s+', '', term) in re.sub(r'\s+', '', text)
 
 
 def unaddressed_traps(answer: str, checks: list[dict]) -> list[dict]:

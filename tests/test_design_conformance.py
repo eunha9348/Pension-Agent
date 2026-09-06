@@ -280,3 +280,24 @@ def test_함정을_반영하지_않은_답변은_재생성을_탄다():
     assert len(bad.calls) > len(ok.calls), (
         f"함정 미반영 답변이 재생성을 타지 않았다 — "
         f"준수 {ok.calls} / 미준수 {bad.calls}")
+
+
+# ════════════════════════════════════════════════════════════════
+# F54 · 확인 요청이 결론보다 뒤에 붙는 서술 순서 (2026-09-06 UI 평가 총평)
+# ════════════════════════════════════════════════════════════════
+#
+# 외부 평가의 횡단 지적: "일단 확신에 찬 답을 주고 끝에 가서 되묻는"
+# 패턴이 1·2·4·5번에서 반복됐다. 확신에 찬 결론을 앞에 놓고 단서를 맨
+# 끝에 붙이면 읽는 사람은 앞부분만 결론으로 받아들인다 — M2에서 조건별
+# 값의 서술 순서를 고친 것과 같은 이유다.
+#
+# ⚠️ 두 경로에 **모두** 있어야 한다. 한쪽만 고치면 F3과 같은 비대칭이 생긴다.
+
+def test_두_생성_프롬프트가_모두_결론보다_한계를_먼저_말하게_한다():
+    from app.generation.advisory import ADVISORY_SYSTEM_PROMPT
+    from app.generation.answer_prompt import SUPERVISOR_SYSTEM_PROMPT
+
+    for name, prompt in (("L5'", SUPERVISOR_SYSTEM_PROMPT),
+                         ("L4-sub", ADVISORY_SYSTEM_PROMPT)):
+        assert "확인되지 않은 조건이 결론을 좌우할 때" in prompt, name
+        assert "결론보다" in prompt and "먼저" in prompt, name

@@ -720,3 +720,36 @@ def test_C4는_인출한도_질의를_걸지_않는다(question):
     from app.core.trap_rules import detect_traps
 
     assert "C4" not in [t.id for t in detect_traps(question)], question
+
+
+# ════════════════════════════════════════════════════════════════
+# F54 · 띄어쓰기 차이로 해소 판정이 어긋나던 결함 (2026-09-06 UI 평가 3번)
+# ════════════════════════════════════════════════════════════════
+#
+# 답변이 "이연 퇴직소득"이라고 띄어 쓰면 A9의 핵심어 "이연퇴직소득"이
+# 부분 문자열로 잡히지 않아, **교정을 정확히 반영한 답변**이 미해소로
+# 판정돼 강제 재생성과 강등을 불렀다. 띄어쓰기는 같은 말의 표기 차이일
+# 뿐이라 여기서 갈릴 이유가 없다 — 법령 인용 검증이 공백만 정규화해
+# 대조하는 것과 같은 처방이다.
+
+def test_띄어쓰기가_달라도_핵심어_반영으로_본다():
+    from app.core.trap_rules import term_present
+
+    assert term_present("이 금액은 이연 퇴직소득으로 과세됩니다.", "이연퇴직소득")
+    assert term_present("이연퇴직소득 기준이 적용됩니다.", "이연퇴직소득")
+
+
+def test_영문_약어는_여전히_낱말_경계를_지킨다():
+    """★ 공백 정규화가 ASCII 경계 검사를 무르지 않는다.
+    무르면 'DB'가 다른 영문 안에서 잡히는 예전 오탐이 돌아온다."""
+    from app.core.trap_rules import term_present
+
+    assert term_present("DB형 제도입니다.", "DB")
+    assert not term_present("ADBC 코드입니다.", "DB")
+
+
+def test_다른_말은_여전히_미반영이다():
+    """★ 완화가 아니라 표기 차이 흡수임을 고정한다."""
+    from app.core.trap_rules import term_present
+
+    assert not term_present("퇴직소득세가 부과됩니다.", "이연퇴직소득")
