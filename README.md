@@ -3,12 +3,6 @@
 제10회 미래에셋증권 AI Festival · 연금 Agent 트랙 출품작.
 자연어 연금 질의를 **제공 문서 근거로만** 조회·분석·설명하는 AI 에이전트.
 
-> ✅ **현재 상태: 실물 코퍼스 인덱싱 완료 (2026-09-05)**
-> 실제 코퍼스 **158문서(PDF 156 · xlsx 2) · 8,172청크**로 인덱스를 구성했고,
-> CLOVA Studio 실연동(HCX-005)으로 L1·L5'·L6 호출이 성공하는 것을 배포
-> 환경에서 확인했습니다. 검색은 BM25 + 벡터 RRF 하이브리드입니다.
-> 회귀 테스트 1,476건 통과. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
-
 ---
 
 ## 제출 정보
@@ -18,32 +12,9 @@
 | 제출 채널 | 주최 측 GitHub Organization 내 Private Repository Push |
 | 제출물 | ① 소스코드 + Dockerfile/requirements.txt + 본 README &nbsp;·&nbsp; ② 기술제안서 &nbsp;·&nbsp; ③ 평가용 API End-point URL |
 | **API End-point** | `http://54.116.169.219/answer` |
-| End-point 제출 | **README 명시 + 구글폼 제출 둘 다 필수** — 연금 주제 폼: <https://forms.gle/JY33gvdFAncAvYCSA> |
-| **제출 마감** | **09.06(일) 23:59** — 이후 결과물 변경 시 **실격**(코드 검증이 평가 과정에서 진행될 수 있음) |
-| 서버 운영 기간 | **09.07(월) 10:00 ~ 09.11(금) 15:00** — 기간 중 API 상시 활성화 유지 |
 
 - 경로 `/answer` 고정, 요청 헤더(인증 포함) 불필요
 - 표준 포트: HTTP 80 / HTTPS 443(자체 서명 인증서 가능) — `docker compose up -d`만으로 80 포트 충족(`HOST_PORT`로 변경 가능)
-
-### 평가 호출 규격 (주최측 공지)
-
-| 항목 | 값 |
-|---|---|
-| 문항당 타임아웃 | **300초** (초과·5xx 시 최대 2회 재시도) |
-| 동시성 | **순차 1건씩 · 동시 요청 없음** |
-| 응답 필드 | 5개 전부 **문자열** · `application/json` |
-| `retrieved_context` 구분 형식 | 자율 (평가 대상 아님) — 본 구현은 `\n---\n` 사용 |
-| 주최측 발신 IP | **34.47.115.128** (평가 호출·헬스체크 동일) |
-
-서버 아웃바운드 점검(평가와 무관, 자율):
-
-```bash
-curl -s http://34.47.115.128/health     # 우리 서버 안에서 실행
-```
-
-파이프라인 총 예산은 `PIPELINE_BUDGET_SEC`(기본 **240초** = 300초 - 여유 60초)로
-조정합니다. 예산이 모자라면 LLM 단계가 생략되며, 그 사유와 남은 시간이
-`think_trace`에 기록됩니다.
 
 ---
 
@@ -54,7 +25,7 @@ GET /answer?question_id={id}&question={질의}
 ```
 
 ```bash
-curl -G "http://<end-point>/answer" \
+curl -G "http://54.116.169.219/answer" \
   --data-urlencode "question_id=Q-001" \
   --data-urlencode "question=연금저축과 IRP 합쳐서 세액공제 얼마까지 되나요"
 ```
@@ -76,6 +47,8 @@ curl -G "http://<end-point>/answer" \
 ---
 
 ## 빠른 시작
+
+### 로컬 실행 (Python 3.11)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -170,7 +143,7 @@ L5'와 L4-sub는 배타적이라 경로가 늘어도 호출 횟수는 늘지 않
 하기 위해서입니다. 값마다 원문 스니펫을 함께 보관해 인용과 수치 검증에
 그대로 씁니다. 진단은 `python -m scripts.corpus_facts`.
 
-⚠️ **위험등급은 1등급이 가장 위험합니다.** 숫자만 쓰면 정반대 서술이
+**위험등급은 1등급이 가장 위험합니다.** 숫자만 쓰면 정반대 서술이
 나오므로 원문 표기(`4등급(보통 위험)`)를 함께 싣습니다.
 
 ### 법령 계층 — 외부 자료는 보조입니다
@@ -183,7 +156,7 @@ L5'와 L4-sub는 배타적이라 경로가 늘어도 호출 횟수는 늘지 않
 | 함정 판정 | 이 **함정**이 이 질의에 적용되는가 | `trap_ids` 조정 후 감사 재실행 |
 | 저촉 판정 | 이 **답변**이 조문에 어긋나는가 | 검증 통과분을 REVISE로 상향만 |
 
-⚠️ **제공 문서가 최종 근거이고 법령은 보조입니다**(과제 안내). 저촉 판정은
+**제공 문서가 최종 근거이고 법령은 보조입니다**(과제 안내). 저촉 판정은
 세 겹으로 막습니다 — 조문 인용 verbatim · 답변 문장 verbatim ·
 **제공 문서가 그 문장을 뒷받침하지 않을 것**. 즉 저촉으로 채택되는 경우는
 **제공 문서와도 맞지 않고 법령과도 맞지 않을 때뿐**입니다.
@@ -228,11 +201,11 @@ python -m app.ingest.build_embeddings      # ③ 청크 벡터 (②를 다시 �
 
 | 형식 | 지원 | 비고 |
 |---|---|---|
-| `.pdf` | ✅ | **제공 문서 156건이 이 형식.** `pypdf` 필요, 텍스트 레이어(OCR 결과) 필수 — 텍스트 레이어가 없는 순수 스캔 이미지는 판독 불가 |
-| `.xlsx` | ✅ | `openpyxl` 필요. 제공 문서 2건 |
-| `.zip`(JPEG+OCR) | ✅ | 페이지별 JPEG+텍스트 레이아웃 4종 자동 인식 — 대비용, 이번 제공 문서에는 없음 |
-| `.txt/.md/.csv/.tsv/.json/.html` | ✅ | 표준 라이브러리만 사용 |
-| `.hwp/.docx/.pptx` | ❌ | 변환 후 투입 |
+| `.pdf` | O | **제공 문서 156건이 이 형식.** `pypdf` 필요, 텍스트 레이어(OCR 결과) 필수 — 텍스트 레이어가 없는 순수 스캔 이미지는 판독 불가 |
+| `.xlsx` | O | `openpyxl` 필요. 제공 문서 2건 |
+| `.zip`(JPEG+OCR) | O | 페이지별 JPEG+텍스트 레이아웃 4종 자동 인식 — 대비용, 이번 제공 문서에는 없음 |
+| `.txt/.md/.csv/.tsv/.json/.html` | O | 표준 라이브러리만 사용 |
+| `.hwp/.docx/.pptx` | X | 변환 후 투입 |
 
 판독 실패 파일은 `GET /health`의 `corpus.skipped_files`에 남습니다.
 
@@ -248,7 +221,7 @@ python -m app.ingest.build_embeddings      # ③ 청크 벡터 (②를 다시 �
 `runs_repaired`(교차 문서 복원) · `runs_masked`(격리). 진단은
 `python -m scripts.corpus_health`(문턱 미달로 놓친 구간까지 보고).
 
-⚠️ 인덱스는 호스트 볼륨에 남아 재사용되므로, 복원을 반영하려면 재인덱싱이
+인덱스는 호스트 볼륨에 남아 재사용되므로, 복원을 반영하려면 재인덱싱이
 필요합니다(`FORCE_REINDEX=true` 또는 `docker compose run --rm reindex`).
 
 개발용 mock 코퍼스는 `python -m app.ingest.make_mock_corpus`로 만듭니다.
