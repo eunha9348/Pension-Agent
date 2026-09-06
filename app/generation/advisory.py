@@ -117,7 +117,11 @@ def build_advisory_payload(query_spec: dict,
     # 상담형 질의에서 정작 위험등급·보수를 말하지 못한다 — F3에서 함정
     # 교정이 이 경로에만 빠져 있던 것과 정확히 같은 계열의 사고다.
     if facts_block := render_facts_block(
-            query_spec.get("_product_facts") or []):
+            query_spec.get("_product_facts") or [],
+            # F51 — 안정 선호를 밝힌 고객인지 알아야 위험 방향을 지시할 수
+            # 있다. 두 경로에 같은 인자를 넘긴다(한쪽만 고치면 F3과 같은
+            # 비대칭이 생긴다).
+            question=query_spec.get("query", "")):
         parts.append(facts_block)
 
     if evidence:

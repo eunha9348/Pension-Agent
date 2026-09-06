@@ -124,7 +124,11 @@ def build_supervisor_payload(query_spec: dict,
     # 결정론적으로 확정한 값이라 신뢰도가 근거 청크보다 높고, 뒤에 두면
     # 긴 근거 뭉치에 파묻혀 모델이 청크 본문에서 다시 주워 읽는다.
     if facts_block := render_facts_block(
-            query_spec.get("_product_facts") or []):
+            query_spec.get("_product_facts") or [],
+            # F51 — 안정 선호를 밝힌 고객인지 알아야 위험 방향을 지시할 수
+            # 있다. 두 경로에 같은 인자를 넘긴다(한쪽만 고치면 F3과 같은
+            # 비대칭이 생긴다).
+            question=query_spec.get("query", "")):
         parts.append(facts_block)
 
     if evidence:

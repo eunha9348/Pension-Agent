@@ -686,7 +686,8 @@ def collect_facts(doc_ids, doc_meta_lookup) -> list[dict]:
     return out
 
 
-def render_facts_block(facts: list[dict], limit: int = 4) -> str:
+def render_facts_block(facts: list[dict], limit: int = 4,
+                       question: str = "") -> str:
     """답변 생성 프롬프트에 실을 블록.
 
     ⚠️ 원문 스니펫을 함께 싣는다. 값만 주면 모델이 그 값을 근거 없이
@@ -712,6 +713,25 @@ def render_facts_block(facts: list[dict], limit: int = 4) -> str:
     lines.append(
         "  ※ 위험등급은 숫자가 작을수록 위험이 큽니다(1등급이 가장 높은 위험). "
         "숫자만 쓰지 말고 위 표기를 그대로 옮기십시오.")
+    # ── F51 · 안정 선호 고객에게 고위험 상품을 권할 때 ──────────
+    # 실측(2026-09-06 외부 UI 평가 5번): "크게 잃지 않으면서 굴릴 상품"에
+    # 위험등급 3등급(원문 표기 '다소 높은 위험')이고 근거 문서가 "자산총액의
+    # 60% 이상을 주식에 투자"라고 적은 펀드를 **"안정적"**이라고 제시했다.
+    # 값은 정확히 전달됐는데 **방향을 뒤집어 서술**한 경우라, 수치 검증으로는
+    # 잡히지 않는다. 그래서 생성 시점에 지시하고, 표기 누락은 L6가 결정론적으로
+    # 잡는다(supervisory_board RISK_LABEL_OMITTED). 지시만으로는 부족하고
+    # 검사만으로는 재생성 비용이 드니 둘 다 둔다.
+    if question and has_safety_preference(question):
+        risky = [f for f in facts[:limit]
+                 if _risk_grade_value(f) in _HIGH_RISK_GRADES]
+        if risky:
+            lines.append(
+                "  ※ 이 고객은 손실을 원하지 않는다고 밝혔습니다. 위 상품 중 "
+                "위험등급 1~3등급(매우 높은/높은/다소 높은 위험)은 그 성향과 "
+                "어긋납니다. '안정적'이라고 쓰지 말고, 문서의 위험 표기를 "
+                "그대로 밝힌 뒤 성향과 어긋난다는 점을 먼저 말하십시오. "
+                "더 안정적인 선택을 원하시면 무엇을 확인해야 하는지 함께 "
+                "안내하십시오.")
     if any(f.get("returns") or f.get("return_table") for f in facts[:limit]):
         # ⚠️ 과제 안내가 수익률을 6축에 넣었으므로 빼지 않는다. 다만
         #    **과거 실적**임을 못박는다. 투자설명서 자신이 "과거 수익률이
@@ -825,4 +845,107 @@ def near_misses(text: str, facts: ProductFacts) -> dict[str, list[str]]:
                 break
         if lines:
             out[axis] = lines
+    return out
+
+
+# ════════════════════════════════════════════════════════════════
+# F51 · 위험 적합성 — 고위험 상품을 '안정적'이라 서술했는가
+# ════════════════════════════════════════════════════════════════
+#
+# ━━ 실측 (2026-09-06 외부 UI 평가 5번) ━━
+# "58세인데, 크게 잃지 않으면서 굴릴 상품 하나 추천해 주세요."에 대해
+# 시스템이 R2_KR5156450026을 추천하면서 **"위험등급 3등급이라 안정적"**
+# 이라고 설명했다. 그 상품의 근거 문서 원문은 "자산총액의 60% 이상을
+# 주식에 투자"이고, 위험등급 3등급의 원문 표기는 "다소 높은 위험"이다.
+# 즉 문서가 스스로 "위험이 다소 높다"고 적어 둔 상품을, 잃고 싶지 않다는
+# 고객에게 "안정적"이라고 제시했다. 대주제 2의 '조건부 추천'에서 가장
+# 치명적인 실패 유형이다.
+#
+# ━━ 왜 이 판정만 결정론적으로 두는가 ━━
+# "이 상품이 이 고객에게 적합한가"는 의미 판단이라 규칙으로 흉내낼 수
+# 없다(CLAUDE.md). 그래서 여기서 보는 것은 적합성 자체가 아니라
+# **표기 누락**이다 — 답변이 안정성을 주장하면서 그 상품의 위험등급
+# 원문 표기("다소 높은 위험")를 **한 번도 쓰지 않았는가**. 이건
+# verify_calc_presence와 같은 계열의 존재 검사이고, 문자열로 확정된다.
+#
+# 표기를 그대로 쓰고도 "그래도 안정적"이라고 우기는 경우는 의미 판단이라
+# LLM 의미 감사(LLM_AUDIT_SYSTEM_PROMPT)의 몫으로 남긴다. 규칙은 확실한
+# 것만 잡는다 — 결정론 계층의 오탐은 되돌릴 수 없기 때문이다.
+
+# 위험이 큰 쪽으로 분류된 등급. 협회 6단계에서 1~3이 '높은 위험' 계열이고
+# 원문 표기 자체가 "매우 높은/높은/다소 높은 위험"이다.
+_HIGH_RISK_GRADES = (1, 2, 3)
+
+# 답변이 안정성을 주장하는 표현. 넓히면 오탐이 늘고, 오탐은 강제 재생성을
+# 부른다 — "위험", "손실" 같은 중립어는 넣지 않는다.
+_SAFETY_CLAIM: tuple[str, ...] = (
+    "안정적", "안정성이 높", "안전한", "안전하게", "원금 손실 걱정",
+    "손실 위험이 낮", "위험이 낮은 편", "보수적으로 운용", "잃지 않",
+)
+
+# 질의가 안정 선호를 드러내는 표현. 생성 프롬프트 지침에만 쓴다
+# (판정에는 쓰지 않는다 — 선호를 안 밝혀도 표기 누락은 결함이다).
+SAFETY_PREFERENCE: tuple[str, ...] = (
+    "크게 잃지", "잃지 않", "안정적", "안정성", "안전한", "안전하게",
+    "원금 보장", "원금보장", "손실이 싫", "손해 보기 싫", "보수적",
+    "위험은 싫", "리스크는 싫", "지키고 싶",
+)
+
+
+def has_safety_preference(question: str) -> bool:
+    """질의가 '잃고 싶지 않다'는 성향을 밝혔는가."""
+    q = question or ""
+    return any(s in q for s in SAFETY_PREFERENCE)
+
+
+def _risk_grade_value(f: dict) -> Optional[int]:
+    hit = f.get("risk_grade") or {}
+    v = hit.get("value")
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return int(v)
+    return None
+
+
+def risk_label_omissions(answer: str, facts: list[dict]) -> list[dict]:
+    """답변이 안정성을 주장하면서 고위험 상품의 원문 위험 표기를 뺐는가.
+
+    반환: [{doc_id, product_name, grade, label}] — 비어 있으면 문제 없음.
+
+    ⚠️ 판정 대상은 **근거로 채택된 문서의 팩트**뿐이다(collect_facts가
+       이미 그렇게 좁혀 준다). 색인에만 있는 문서의 등급으로 답변을
+       탓하면 그건 대상이 다른 근거다.
+    ⚠️ 답변에 그 상품 표기가 아예 없으면 대상이 아니다 — 언급하지도
+       않은 상품의 등급 표기를 요구하는 것은 오탐이다.
+    """
+    if not answer or not facts:
+        return []
+    if not any(s in answer for s in _SAFETY_CLAIM):
+        return []
+    norm_answer = re.sub(r"\s+", "", answer)
+    out: list[dict] = []
+    for f in facts:
+        grade = _risk_grade_value(f)
+        if grade not in _HIGH_RISK_GRADES:
+            continue
+        label = (f.get("risk_grade") or {}).get("label") or ""
+        if not label:
+            continue
+        name = f.get("product_name") or ""
+        # 답변이 이 상품을 실제로 언급했는가 — 상품명이나 등급 숫자로 본다.
+        mentioned = (bool(name) and re.sub(r"\s+", "", name) in norm_answer) \
+            or f"{grade}등급" in norm_answer
+        if not mentioned:
+            continue
+        # 원문 표기를 이미 실었으면 결함이 아니다(공백만 정규화해 대조).
+        if re.sub(r"\s+", "", label) in norm_answer:
+            continue
+        # 표기 전체가 아니라 위험 방향어만 실은 경우도 인정한다 —
+        # "다소 높은 위험"이라고 썼으면 방향은 전달된 것이다.
+        direction = _RISK_STANDARD.get(grade, "")
+        if direction and re.sub(r"\s+", "", direction) in norm_answer:
+            continue
+        out.append({"doc_id": f.get("doc_id", ""), "product_name": name,
+                    "grade": grade, "label": label})
     return out

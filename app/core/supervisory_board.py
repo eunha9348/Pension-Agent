@@ -335,7 +335,8 @@ def audit_fitness(answer: str,
                    user_conditions: Optional[dict] = None,
                    mentioned_products: Optional[list[dict]] = None,
                    trap_ids: Optional[list[str]] = None,
-                   trap_checks: Optional[list[dict]] = None) -> list[Finding]:
+                   trap_checks: Optional[list[dict]] = None,
+                   product_facts: Optional[list[dict]] = None) -> list[Finding]:
     """적합성 감사. 사용자 조건과 답변 내용이 어긋나지 않는지 본다.
 
     trap_checks : 규칙별 검증 정보([{id, severity, verify_any, ...}]).
@@ -393,6 +394,31 @@ def audit_fitness(answer: str,
             "유형별로 갈리는 부분을 조건부로 서술하고, 계좌 유형 확인을 "
             "함께 요청할 것",
         ))
+
+    # ── 고위험 상품을 '안정적'이라 서술했는가 (F51) ────────────
+    #
+    # ⚠️ 적합성 자체를 판정하지 않는다 — 그건 의미 판단이라 규칙으로
+    #    흉내내면 오탐이 나고, 결정론 계층의 오탐은 되돌릴 수 없다.
+    #    여기서 보는 것은 **표기 누락**이다: 답변이 안정성을 주장하면서
+    #    그 상품의 위험등급 원문 표기("다소 높은 위험")를 한 번도 쓰지
+    #    않았는가. verify_calc_presence와 같은 계열의 존재 검사다.
+    # ⚠️ REVISE다. 시정 지시("원문 표기를 함께 쓸 것")를 구체적으로 만들
+    #    수 있으므로 DOWNGRADE로 두면 그 지시를 버리는 것이 된다
+    #    (CLAUDE.md — DOWNGRADE는 재생성을 타지 않는다).
+    if product_facts:
+        from app.analysis.product_facts import risk_label_omissions
+
+        for om in risk_label_omissions(answer, product_facts):
+            who = om.get("product_name") or om.get("doc_id", "")
+            findings.append(Finding(
+                "적합성", "RISK_LABEL_OMITTED", Verdict.REVISE,
+                f"안정성을 주장하면서 위험등급 원문 표기를 뺐음: "
+                f"{who} — 문서 표기 '{om['label']}'",
+                f"'{om['label']}'라는 문서 원문 표기를 답변에 그대로 쓰고, "
+                f"위험등급은 숫자가 작을수록 위험이 크다는 점을 함께 밝힐 것. "
+                f"안정성을 원하는 조건과 이 상품의 위험 수준이 어긋난다면 "
+                f"그 사실을 먼저 말할 것",
+            ))
 
     # ── 감지된 함정이 답변에서 실제로 다뤄졌는가 ──────────────
     #
@@ -636,7 +662,8 @@ def supervise(answer: str,
               answerability: str = "ANSWER",
               trap_ids: Optional[list[str]] = None,
               trap_checks: Optional[list[dict]] = None,
-              partial_answer_possible: bool = False) -> SupervisionResult:
+              partial_answer_possible: bool = False,
+              product_facts: Optional[list[dict]] = None) -> SupervisionResult:
     """5대 감사를 실행하고 종합 판정 + 시정 지시를 산출한다.
 
     준법 · 이상치 · 적합성 · 부담 · **정합성**.
@@ -650,7 +677,7 @@ def supervise(answer: str,
     findings += audit_compliance(answer, citations or [], has_calculation=bool(calc_results))
     findings += audit_anomaly(calc_results, user_conditions)
     findings += audit_fitness(answer, user_conditions, mentioned_products,
-                              trap_ids, trap_checks)
+                              trap_ids, trap_checks, product_facts)
     findings += audit_coherence(answer, ask_back_items)
     burden_findings, revised_items = audit_burden(
         answer, ask_back_items, answerability, partial_answer_possible)
@@ -907,6 +934,14 @@ LLM_AUDIT_SYSTEM_PROMPT = """당신은 연금 상담 답변의 **논리 정합�
    내리고 있지는 않은가.
 3. 근거–주장 정합 — 인용한 근거가 실제로 그 주장을 뒷받침하는가.
    근거는 A를 말하는데 결론은 B를 말하고 있지는 않은가.
+   **고객 성향과 상품 특성의 적합성도 여기서 보십시오** — 손실을 원하지
+   않는다고 밝힌 고객에게, 근거 문서가 스스로 "위험이 높다"거나 "주식에
+   주로 투자한다"고 적어 둔 상품을 "안정적"이라고 제시하고 있지는
+   않은가. 값을 정확히 인용하고도 방향을 뒤집어 설명하면 그 답변은
+   근거 문서와 어긋난 것입니다.
+   (예: 문서가 "자산총액의 60% 이상을 주식에 투자"·"3등급(다소 높은 위험)"
+    이라고 적은 펀드를, "크게 잃고 싶지 않다"는 고객에게 "위험등급
+    3등급이라 안정적"이라고 권하는 경우)
 4. 내부 모순 — 같은 답변 안에서 서로 어긋나는 서술이 있는가.
    (예: "한도가 없습니다"와 "한도는 1,200만원입니다"가 함께 있음)
 5. 질문 전제의 검증 — **질문에 이미 틀린 전제가 들어 있는데 답변이 그것을

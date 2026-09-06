@@ -167,3 +167,119 @@ def test_답변이_반영한_팩트의_근거문서는_retrieved_context에_실�
     assert "fundA" in r["retrieved_context"], (
         "답변이 팩트를 반영했는데 그 근거 문서가 retrieved_context에 없다 — "
         f"실제: {r['retrieved_context'][:120]!r}")
+
+
+# ════════════════════════════════════════════════════════════════
+# F51 · 고위험 상품을 '안정적'이라 서술한 답변 (2026-09-06 외부 UI 평가 5번)
+# ════════════════════════════════════════════════════════════════
+#
+# "58세인데, 크게 잃지 않으면서 굴릴 상품 하나 추천해 주세요."에
+# 위험등급 3등급(원문 표기 '다소 높은 위험')이고 근거 문서가 "자산총액의
+# 60% 이상을 주식에 투자"라고 적은 펀드를 **"안정적"**이라 제시했다.
+# 수치는 정확했고(3등급) 상품명도 실재했으므로 수치검증·상품접지 어느
+# 쪽도 잡지 못했다 — 값이 아니라 **방향**이 뒤집힌 사고다.
+#
+# ⚠️ 판정은 '적합성'이 아니라 **표기 누락**만 본다. 적합성 자체는 의미
+#    판단이라 규칙으로 흉내내면 오탐이 나고, 결정론 계층의 오탐은
+#    되돌릴 수 없다(CLAUDE.md 단조성의 따름정리).
+
+_F51_FACTS = [{
+    "doc_id": "R2_KR5156450026",
+    "product_name": "미래에셋퇴직연금성장유망중소형주증권자투자신탁",
+    "risk_grade": {"axis": "위험등급", "value": 3,
+                   "label": "3등급(다소 높은 위험)",
+                   "snippet": "투자위험등급 3등급(다소 높은 위험)"},
+    "asset_class": {"axis": "상품분류", "value": "주식형", "label": "주식형",
+                    "snippet": "자산총액의 60% 이상을 주식에 투자"},
+}]
+
+
+def test_안정성_주장에_위험표기가_빠지면_잡힌다():
+    """★ 실측 재현 — '3등급이라 안정적'에서 '다소 높은 위험'이 사라졌다."""
+    from app.analysis.product_facts import risk_label_omissions
+
+    bad = ("위험등급 3등급이라 비교적 안정적인 "
+           "미래에셋퇴직연금성장유망중소형주증권자투자신탁을 권해드립니다.")
+    hits = risk_label_omissions(bad, _F51_FACTS)
+    assert len(hits) == 1 and hits[0]["grade"] == 3
+
+
+def test_원문_표기를_실은_답변은_잡지_않는다():
+    """★ 오탐 경계 — 문서 표기를 그대로 밝혔으면 방향이 전달된 것이다.
+    표기를 쓰고도 '안정적'이라 우기는 경우는 의미 감사의 몫으로 남긴다."""
+    from app.analysis.product_facts import risk_label_omissions
+
+    for good in (
+        "이 상품은 3등급(다소 높은 위험)으로 분류돼 안정성을 원하시는 "
+        "조건과는 어긋납니다.",
+        # 표기 전체가 아니라 위험 방향어만 실어도 인정한다
+        "미래에셋퇴직연금성장유망중소형주증권자투자신탁은 다소 높은 위험 "
+        "구간이라 안정적이라고 보기 어렵습니다.",
+    ):
+        assert risk_label_omissions(good, _F51_FACTS) == [], good
+
+
+def test_안정성_주장이_없으면_대상이_아니다():
+    """★ 위험등급을 그냥 안내하는 답변까지 잡으면 오탐이다."""
+    from app.analysis.product_facts import risk_label_omissions
+
+    assert risk_label_omissions(
+        "해당 상품의 위험등급은 3등급입니다.", _F51_FACTS) == []
+
+
+def test_답변이_언급하지_않은_상품은_대상이_아니다():
+    """★ 언급하지도 않은 상품의 등급 표기를 요구하는 것은 오탐이다."""
+    from app.analysis.product_facts import risk_label_omissions
+
+    assert risk_label_omissions(
+        "예금처럼 안정적인 원리금보장형 상품을 검토해 보십시오.",
+        _F51_FACTS) == []
+
+
+def test_저위험_상품은_안정적이라_해도_대상이_아니다():
+    """★ 5·6등급은 문서 자신이 '낮은 위험'이라 적은 상품이다."""
+    from app.analysis.product_facts import risk_label_omissions
+
+    low = [{**_F51_FACTS[0],
+            "risk_grade": {"axis": "위험등급", "value": 5,
+                           "label": "5등급(낮은 위험)", "snippet": ""}}]
+    assert risk_label_omissions("5등급이라 안정적입니다.", low) == []
+
+
+def test_감사가_REVISE로_올리고_시정지시를_만든다():
+    """★ 검사가 잡은 것을 판정이 반영해야 한다 — DOWNGRADE로 두면
+    시정 지시를 만들어 놓고 버리는 것이 된다(CLAUDE.md)."""
+    from app.core.supervisory_board import Verdict, audit_fitness
+
+    bad = "위험등급 3등급이라 비교적 안정적입니다."
+    hits = [f for f in audit_fitness(bad, {}, [], None, None, _F51_FACTS)
+            if f.code == "RISK_LABEL_OMITTED"]
+    assert len(hits) == 1
+    assert hits[0].severity is Verdict.REVISE
+    assert "다소 높은 위험" in hits[0].directive
+
+
+def test_안정_선호를_밝히면_생성_프롬프트가_방향을_지시한다():
+    """★ 검사만 두면 재생성 비용이 들고, 지시만 두면 HCX가 어길 수 있다.
+    두 겹으로 둔다(마크다운 금지 지시를 어긴 전례와 같은 계열)."""
+    from app.analysis.product_facts import render_facts_block
+
+    q = "58세인데, 크게 잃지 않으면서 굴릴 상품 하나 추천해 주세요."
+    blk = render_facts_block(_F51_FACTS, question=q)
+    assert "성향과" in blk and "어긋납니다" in blk
+    # 성향을 밝히지 않은 질의에는 이 지시가 붙지 않는다
+    plain = render_facts_block(_F51_FACTS, question="이 상품 위험등급이 몇 등급인가요?")
+    assert "손실을 원하지 않는다고" not in plain
+
+
+def test_배선_두_경로_모두_팩트블록에_질의를_넘긴다():
+    """★ ADVISORY에만 빠지면 '상품 하나 추천해 주세요'에서 정작 방향
+    지시가 사라진다 — F3(함정 교정이 ADVISORY에만 빠져 있던 것)과 같은 계열."""
+    import inspect
+
+    from app.generation import advisory, answer_prompt
+
+    for mod in (advisory, answer_prompt):
+        src = inspect.getsource(mod)
+        assert 'render_facts_block(' in src
+        assert 'question=query_spec.get("query", "")' in src, mod.__name__

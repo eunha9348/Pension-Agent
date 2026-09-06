@@ -171,7 +171,12 @@ def make_verify_grounding(question: str,
                           mentioned_products: Optional[list[dict]] = None,
                           partial_answer_possible: bool = False,
                           skip_semantic: bool = False,
-                          fact_texts: Optional[list[str]] = None):
+                          fact_texts: Optional[list[str]] = None,
+                          # F51 — 상품 팩트 원본(값 + 원문 표기). fact_texts는
+                          # 수치 검증용 문자열만 담아서 위험등급 '표기'를
+                          # 판정할 수 없다. 두 용도를 한 인자로 합치면
+                          # 다시 어긋난다.
+                          product_facts: Optional[list[dict]] = None):
     """(answer, evidence) -> GroundingVerdict 시그니처의 함수를 만든다."""
 
     def verify_grounding(answer: str, evidence: list[EvidenceChunk]) -> GroundingVerdict:
@@ -232,6 +237,7 @@ def make_verify_grounding(question: str,
             trap_ids=trap_ids or [],
             trap_checks=trap_checks or [],
             partial_answer_possible=partial_answer_possible,
+            product_facts=product_facts or [],
         )
 
         if llm_call is not None and not skip_semantic:

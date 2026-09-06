@@ -844,7 +844,10 @@ def _answer_question_impl(question_id: str, question: str,
         trap_checks=trap_context.get("checks") or [],
         mentioned_products=mentioned,
         partial_answer_possible=partial_possible,
-        fact_texts=fact_snippets(query_spec.get("_product_facts") or []))
+        fact_texts=fact_snippets(query_spec.get("_product_facts") or []),
+        # F51 — 위험등급 원문 표기 누락 판정에 쓴다. fact_texts(수치 검증용
+        # 문자열)로는 '표기'를 볼 수 없어 별도 인자로 넘긴다.
+        product_facts=query_spec.get("_product_facts") or [])
 
     verdict = verify_grounding(draft, evidence)
     trace.log("L6_감독심사", verdict.as_trace() or "심사 완료")
