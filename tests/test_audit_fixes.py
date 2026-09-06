@@ -1608,3 +1608,61 @@ def test_배선_공적연금_질의_답변에_사적연금_규정_비적용이_�
     # 그리고 맨몸 거절이 아니라 역질문이 함께 나가야 한다
     #  (평가지표 '정보한계 대응' — 한계 고지 또는 역질문)
     assert "연금저축" in ans or "IRP" in ans, ans
+
+
+# ════════════════════════════════════════════════════════════════
+# F55 · 나이 표현이 여럿이면 첫 매치(과거 시작 나이)를 그대로 써서
+#        현재 나이 판정이 전부 틀어지던 결함 (2026-09-07 실측, UI-006)
+# ════════════════════════════════════════════════════════════════
+#
+# "25세부터 30년간 IRP에 납입했고 지금 55세인데"에서 `parse_age`가 첫
+# 매치인 25(시작 나이)를 반환했다. 실제 현재 나이는 55인데, 그 결과
+# `audit_fitness`의 AGE_CONTEXT 감사가 "55세 미만인데 연금수령을
+# 전제로 서술함"이라는 **거짓** 경고를 붙였다 — 자격을 충족한 55세
+# 이용자에게 나이 미달 경고가 나가는 상태였다.
+
+def test_시작나이와_현재나이가_함께_있으면_현재나이를_고른다():
+    from app.analysis.units import parse_age
+
+    q = ("25세부터 30년간 irp에 연마다 300만원씩 납입했고 지금 55세인데, "
+         "연금수령으로 인출가능한 최대 금액이 얼마인가요")
+    assert parse_age(q) == 55
+
+
+@pytest.mark.parametrize("q,expected", [
+    ("58세인데 65세 되면 국민연금 받을 수 있나요", 58),
+    ("국민연금은 65세부터 받을 수 있는데 저는 지금 58세입니다", 58),
+    ("만 55세부터 연금 받을 수 있는 거 맞죠? 저는 58세인데", 58),
+])
+def test_나이_표현_여럿_중_현재나이_판정_다양한_어순(q, expected):
+    from app.analysis.units import parse_age
+
+    assert parse_age(q) == expected
+
+
+def test_나이_표현이_하나뿐이면_기존_동작과_같다():
+    """★ 회귀 방지 — 압도적 다수인 단일 나이 표현 질의는 영향받지 않는다."""
+    from app.analysis.units import parse_age
+
+    assert parse_age("24살이고 연금 계획 좀") == 24
+    assert parse_age("30대 초반인데 연금저축 지금 시작하는 게 좋을까요") is None
+
+
+def test_안내서_고정_회귀질의는_그대로_58세로_파싱된다():
+    """★ CLAUDE.md에 회귀 테스트로 고정된 안내서 예시 질의
+    ("58세인데, 크게 잃지 않으면서...")가 이 변경으로 깨지지 않는다."""
+    from app.analysis.units import parse_age
+
+    assert parse_age("58세인데, 크게 잃지 않으면서 굴릴 상품 하나 "
+                     "추천해 주세요.") == 58
+
+
+def test_배선_나이_오분류로_인한_거짓_AGE_CONTEXT_경고가_사라진다():
+    """★ 배선 테스트 — parse_age만 고쳐도 conditions.py가 그 값을
+    실제로 쓰는지 확인한다."""
+    from app.analysis.conditions import derive_conditions
+
+    q = ("25세부터 30년간 irp에 연마다 300만원씩 납입했고 지금 55세인데, "
+         "연금수령으로 인출가능한 최대 금액이 얼마인가요")
+    c = derive_conditions(q)
+    assert c.get("age") == 55

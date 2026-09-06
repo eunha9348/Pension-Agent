@@ -158,10 +158,42 @@ _PENSION_YEAR = re.compile(r'(\d{1,2})\s*년\s*차')
 _SERVICE_YEARS = re.compile(r'(?:근속|재직|다니|근무)\D{0,6}(\d{1,2})\s*년')
 _PLAIN_YEARS = re.compile(r'(\d{1,2})\s*년(?!\s*차)')
 
+# 나이 표현 뒤에 이게 붙으면 **시작 나이**(과거)를 가리킨다 — 현재 나이가 아니다.
+_AGE_START_SUFFIX = re.compile(r'^\s*부터')
+# 나이 표현 앞 근처에 이게 있으면 **현재 나이**를 가리킨다.
+_AGE_CURRENT_MARKER = re.compile(r'(지금|현재|올해)')
+
 
 def parse_age(text: str) -> Optional[int]:
-    m = _AGE.search(text or "")
-    return int(m.group(1)) if m else None
+    """나이를 뽑는다. 나이 표현이 여럿이면 **현재 나이**를 우선한다.
+
+    ━━ 왜 필요한가 (2026-09-07 실측, UI-006) ━━
+    "25세부터 30년간 IRP에 납입했고 지금 55세인데"처럼 시작 나이와 현재
+    나이가 함께 나오면, 예전에는 첫 매치(25세, 과거 시작 나이)를 그대로
+    썼다. 그 결과 나이 기반 판정(55세 이상 연금수령 개시 요건 등)이 전부
+    틀어져, 실제로는 자격을 충족한 55세 이용자에게 "55세 미만"이라는
+    경고가 붙었다.
+
+    시작 나이는 뒤에 '부터'가 붙는 경우가 압도적으로 흔하므로 그것만
+    배제하고, '지금·현재·올해'가 근처에 있으면 그 나이를 쓴다. 둘 다
+    없으면 '부터'가 안 붙은 첫 매치를, 그마저 없으면(모든 매치가 시작
+    나이 형태) 원래 동작(첫 매치)으로 되돌아간다 — 나이 표현이 하나뿐인
+    압도적 다수 질의는 이 분기 어디를 타도 결과가 같다.
+    """
+    t = text or ""
+    matches = list(_AGE.finditer(t))
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return int(matches[0].group(1))
+    candidates = [m for m in matches
+                 if not _AGE_START_SUFFIX.match(t[m.end():m.end() + 4])]
+    pool = candidates or matches
+    for m in pool:
+        before = t[max(0, m.start() - 10):m.start()]
+        if _AGE_CURRENT_MARKER.search(before):
+            return int(m.group(1))
+    return int(pool[0].group(1))
 
 
 def parse_pension_year(text: str) -> Optional[int]:

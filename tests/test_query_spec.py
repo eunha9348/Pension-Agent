@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.analysis.query_spec import (make_extract_query_spec, rule_based_spec,
                                      sanitize_spec)
 from app.config import Settings
@@ -266,3 +268,53 @@ def test_JSON을_받으면_LLM_경로로_처리한다():
     spec = make_extract_query_spec(client=_Ok())("1억이고 10년차면 한도가?")
     assert spec["source"].startswith("llm")
     assert "연금수령한도" in spec["search_terms"]
+
+
+# ════════════════════════════════════════════════════════════════
+# F55 · '인출가능한 최대 금액' 류 자연어가 연금수령한도 규칙 어디에도
+#        안 걸리던 결함 (2026-09-07 실측, UI-006)
+# ════════════════════════════════════════════════════════════════
+#
+# "25세부터 30년간 IRP에 연 300만원씩 납입했고 지금 55세인데, 연금수령으로
+# 인출가능한 최대 금액이 얼마인가요"가 주제 미매칭으로 떨어져 슬롯이 안
+# 만들어졌고, HCX가 일반 지식에서 **1,500만원 분리과세 기준**(과세방식이
+# 갈리는 문턱일 뿐 인출 한도가 아니다)을 "최대한도로 인출 가능한 금액"
+# 이라고 잘못 답했다. F36/F41/F44/F49와 같은 narrow-trigger 계열이다.
+# "얼마까지 인출"·"얼마나 인출"은 '인출'이 '얼마' **뒤**에 오는 어순만
+# 잡고, '인출/수령'이 '최대' **앞**에 오는 흔한 어순은 못 잡았다.
+
+def test_인출가능한_최대_금액_질의가_연금수령한도로_매칭된다():
+    spec = rule_based_spec(
+        "25세부터 30년간 irp에 연마다 300만원씩 납입했고 지금 55세인데, "
+        "연금수령으로 인출가능한 최대 금액이 얼마인가요")
+    assert spec.get("intent") == "연금수령한도"
+    fns = [c["function"] for c in spec["planned_calls"]]
+    assert "연금수령한도_계산" in fns
+
+
+@pytest.mark.parametrize("q", [
+    "연금계좌에서 받을 수 있는 최대 금액이 궁금해요",
+    "수령 가능한 최대 금액이 얼마나 되나요",
+    "최대로 인출할 수 있는 금액을 알고 싶어요",
+])
+def test_다른_어순의_인출가능_표현도_매칭된다(q):
+    spec = rule_based_spec(q)
+    assert spec.get("intent") == "연금수령한도", spec.get("intent")
+
+
+def test_새_키워드가_300건_실측에서_기존_키워드와_겹치지_않는다():
+    """★ 새로 추가한 키워드가 replay 300건 어디에도 오탐을 만들지 않는다.
+    (측정: 새 키워드로만 걸리는 질의 0건, 2026-09-07)"""
+    from scripts.replay_audit_300 import CASES
+
+    old_kw = ("수령한도", "인출한도", "얼마까지 인출", "얼마나 인출",
+              "얼마까지 뽑", "한도")
+    new_kw = ("인출가능한 최대", "인출 가능한 최대", "인출할 수 있는 최대",
+              "받을 수 있는 최대", "수령 가능한 최대", "수령가능한 최대",
+              "최대로 인출", "최대로 받을 수", "최대 얼마까지")
+    exclude = ("세액공제", "공제한도", "납입한도", "공제 한도")
+    new_only = [cid for cid, q, *_ in CASES
+               if not any(x in q for x in exclude)
+               and any(k in q for k in new_kw)
+               and not any(k in q for k in old_kw)]
+    assert new_only == []
