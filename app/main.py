@@ -41,6 +41,19 @@ REQUIRED_FIELDS = ("question_id", "question", "retrieved_context",
                    "think_trace", "answer")
 
 
+class UTF8JSONResponse(JSONResponse):
+    """Content-Type에 charset=utf-8을 명시한다.
+
+    바이트 자체는 원래도 UTF-8이지만(Starlette JSONResponse가
+    json.dumps(...).encode("utf-8")로 렌더링), 헤더에 charset이 없으면
+    일부 클라이언트(예: 브라우저의 raw JSON 뷰어)가 인코딩을 잘못
+    추측해 화면에 깨져 보인다. 평가는 단일 GET·재시도 불가이므로
+    "표준상 기본값이 UTF-8이라 문제없다"에 기대지 않고 명시한다.
+    """
+
+    media_type = "application/json; charset=utf-8"
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _startup()
@@ -52,6 +65,7 @@ app = FastAPI(
     description="제10회 미래에셋증권 AI Festival · 연금 Agent 트랙",
     version="0.1.0",
     lifespan=lifespan,
+    default_response_class=UTF8JSONResponse,
 )
 
 
@@ -116,13 +130,13 @@ def answer(question_id: str = Query(..., description="평가 문항 ID"),
         result = _ensure_schema(payload, question_id, question)
         log.info("[%s] 처리 완료 %.0fms (근거 %d자)", question_id,
                  (time.time() - t0) * 1000, len(result["retrieved_context"]))
-        return JSONResponse(content=result)
+        return UTF8JSONResponse(content=result)
 
     except Exception as e:                      # noqa: BLE001
         # 여기까지 온 예외는 버그다. 그래도 스키마는 지킨다.
         detail = traceback.format_exc(limit=3)
         log.exception("[%s] 처리 실패", question_id)
-        return JSONResponse(content=_ensure_schema({
+        return UTF8JSONResponse(content=_ensure_schema({
             "retrieved_context": "근거 문서 없음 — 처리 중 오류가 발생해 "
                                  "검색 결과를 확정하지 못했습니다.",
             "think_trace": (f"처리 중 예외가 발생했습니다: {type(e).__name__}: {e}\n"
