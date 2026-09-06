@@ -218,6 +218,86 @@ def _is_income_amount(question: str, value: float) -> bool:
     return False
 
 
+# 이 명사가 금액에 붙으면 그 연금은 **공적연금**이지 사적연금이 아니다.
+# 국민연금·공무원연금·군인연금·사학연금 등은 소득세법상 공적연금소득이라
+# 1,500만원 초과 시 분리과세/종합과세 **선택권 자체가 없다**(무조건 종합과세).
+# 사적연금 슬롯(private_pension_*)에 넣으면 존재하지 않는 세액이 계산된다.
+_PUBLIC_PENSION_NOUN = (
+    "국민연금", "노령연금", "공무원연금", "군인연금", "사학연금",
+    "별정우체국연금", "기초연금", "유족연금", "장애연금", "공적연금",
+)
+
+# 사적연금 수령액 키 — 공적연금 가드의 적용 대상.
+_PRIVATE_PENSION_KEYS = frozenset({
+    "private_pension_annual_manwon", "private_pension_monthly_manwon"})
+
+
+def _is_public_pension_amount(question: str, value: float) -> bool:
+    """그 금액이 사적연금이 아니라 공적연금 수령액을 가리키는가.
+
+    ━━ 왜 필요한가 (F46, 2026-09-06 실측) ━━
+    "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요"에서 월 수령액
+    정규식이 **연금 종류를 구별하지 않아** 200이 그대로
+    private_pension_monthly_manwon으로 들어갔다. 연 2,400만원으로 환산돼
+    과세방식_비교_계산이 돌았고, 답변은
+
+        "사적연금 연 수령액이 1,500만원을 초과해 분리과세와 종합과세 중
+         하나를 선택해야 합니다 … 종합과세 쪽이 283.8만원 더 낮습니다"
+
+    라는 **법적으로 존재하지 않는 세액**을 확신 있게 제시했다. 같은 답변이
+    인용한 doc39 원문은 "공적연금과 이연퇴직소득은 1,500만원 판정 대상에서
+    제외한다"였다 — 답변이 자기 근거 문서로 자신을 반박하는 상태였다.
+
+    함정 C2가 이 도메인 지식을 이미 갖고 있으나 trigger_keywords가
+    ["1500","1,500","천오백"]이라 **사용자가 그 숫자를 말해야만** 발화한다.
+    시스템은 사용자가 말하지 않아도 1,500만원 규정을 적용하는데 교정 함정은
+    사용자가 말할 때만 켜지는 **트리거 비대칭**이 있었다.
+
+    ━━ 기존 가드와 다른 축이다 ━━
+    _is_income_amount(소득인가)·_is_non_pension_asset_amount(연금 밖 자산인가)는
+    모두 "이 돈이 **어떤 종류**인가"를 본다. 이 함수만 "**누구의 연금**인가"를
+    본다 — F27/F28/F34/F35/F44/F45가 전부 앞의 축이었고, 이 축은 가드가
+    한 줄도 없었다.
+
+    ━━ 창 크기 (앞 12자 · 뒤 8자) ━━
+    _is_non_pension_asset_amount와 같은 값을 쓴다. 뒤쪽도 보는 이유는
+    "매달 200만원씩 국민연금을 받습니다"처럼 명사가 금액 뒤에 오는 어순이
+    자연스럽기 때문이다. 창을 더 넓히면
+    "연금저축에서 월 200만원 받는데 국민연금은 별도예요"처럼 **정상적인
+    사적연금 금액**까지 차단되므로 넓히지 않는다 — 공적연금이 함께 언급된
+    문장에서 사적연금 금액을 버리면 답할 수 있는 질의를 못 답하게 된다.
+    """
+    q = question or ""
+    for start, end, v in parse_amount_expressions(q):
+        if v != value:
+            continue
+        before = q[max(0, start - 12):start]
+        after = q[end:end + 8]
+        if any(n in before for n in _PUBLIC_PENSION_NOUN):
+            return True
+        if any(n in after for n in _PUBLIC_PENSION_NOUN):
+            return True
+    return False
+
+
+def _note_public_pension(c: dict[str, Any]) -> None:
+    """공적연금 금액을 사적연금 조건에서 제외했음을 **고객에게** 고지한다.
+
+    ⚠️ diagnostic_notes와 나누는 이유(F21) — 그쪽은 "LLM 값을 버렸다"는 내부
+       진단이라 고객 문장에 넣지 않는다. 반면 이 문장은 고객이 알아야 할
+       **도메인 사실**이다. 조건을 분명히 봤으면서 아무 말 없이 버리면
+       "질의에서 확인된 개인 조건이 없어"라는 부정확한 안내가 나가고,
+       평가지표 '정보한계 대응'(무리한 답변 대신 한계 고지)도 충족하지
+       못한다. 판정 근거는 함정 C2·doc39와 같다.
+    """
+    note = ("말씀하신 금액은 공적연금(국민연금·공무원연금·군인연금 등) 수령액으로 "
+            "보입니다. 공적연금은 사적연금의 1,500만원 초과 분리과세·종합과세 "
+            "선택 대상이 아니어서 그 계산에 넣지 않았습니다")
+    notes = c.setdefault("condition_notes", [])
+    if note not in notes:                # 월·연 양쪽에서 불려도 한 번만 싣는다
+        notes.append(note)
+
+
 def _find_amount_near(question: str, keywords: tuple[str, ...]) -> Optional[float]:
     """키워드에 **가장 가까운 금액 표현 하나**를 고른다.
 
@@ -550,18 +630,43 @@ def derive_conditions(question: str,
         c["other_income_manwon"] = c["total_income_manwon"]
 
     # 월/연 단위 연금 수령액
-    if (m := re.search(r'(?:매달|매월|월)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q)):
-        if (v := parse_amount_to_manwon(m.group(1))) is not None:
-            c["private_pension_monthly_manwon"] = v
+    # ⚠️ 이 정규식들은 **연금 종류를 구별하지 않는다.** "국민연금 월 200만원
+    #    받습니다"의 200이 사적연금 슬롯에 들어가면 존재하지 않는 분리과세
+    #    선택 세액이 계산된다(F46). 공적연금으로 언급된 금액은 여기서 막는다 —
+    #    _is_public_pension_amount의 docstring 참조.
+    # ⚠️ re.search가 아니라 finditer다 — "국민연금 월 100만원 받고 연금저축에서
+    #    월 200만원 받는데"처럼 공적연금과 사적연금이 **함께** 나오는 질의에서,
+    #    첫 매치(공적연금)만 보고 멈추면 뒤의 정상적인 사적연금 금액을 통째로
+    #    놓친다. 공적연금으로 걸린 것은 건너뛰고 다음 후보를 본다.
+    #    (첫 매치가 공적연금이 아니면 예전과 똑같이 그것을 채택하므로 순수 가산이다.)
+    for m in re.finditer(r'(?:매달|매월|월)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q):
+        if (v := parse_amount_to_manwon(m.group(1))) is None:
+            continue
+        if _is_public_pension_amount(q, v):
+            c.setdefault("diagnostic_notes", []).append(
+                f"월 {_fmt(v)}만원은 공적연금 수령액이라 "
+                f"private_pension_monthly_manwon으로 반영하지 않았습니다")
+            _note_public_pension(c)
+            continue
+        c["private_pension_monthly_manwon"] = v
+        break
     # ⚠️ '연간'만 받으면 안 된다. "연 1200만원 받으면"처럼 '연간'의 축약형인
     #    맨 '연'이 훨씬 흔한데, 그동안 이 규칙에 없어서 원천징수 계산에
     #    쓸 금액이 통째로 안 잡혔다(실측 감사 L10·L11·L12·L13·L19 5건 전부
     #    "월 수령액이 확인되지 않아 세율만 안내합니다"로 계산이 비었다).
     #    '연'을 목록 맨 뒤에 둔다 — '연간'이 먼저 매칭되게 순서를 지킨다.
     #    '국민연금'·'연령' 같은 복합어는 연 뒤에 공백이 없어 오매칭되지 않는다.
-    if (m := re.search(r'(?:연간|1년에|해마다|매년|연)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q)):
-        if (v := parse_amount_to_manwon(m.group(1))) is not None:
-            c["private_pension_annual_manwon"] = v
+    for m in re.finditer(r'(?:연간|1년에|해마다|매년|연)\s*([^\s,]{1,12})\s*(?:씩|정도)?\s*(?:받|수령|나오)', q):
+        if (v := parse_amount_to_manwon(m.group(1))) is None:
+            continue
+        if _is_public_pension_amount(q, v):          # F46 — 위와 같은 이유
+            c.setdefault("diagnostic_notes", []).append(
+                f"연 {_fmt(v)}만원은 공적연금 수령액이라 "
+                f"private_pension_annual_manwon으로 반영하지 않았습니다")
+            _note_public_pension(c)
+            continue
+        c["private_pension_annual_manwon"] = v
+        break
     # ⚠️ 위 정규식은 시간 표지 **바로 다음 토큰**만 금액으로 본다. 그래서
     #    "연간 연금수령액 2,000만원 받는데"처럼 사이에 명사가 끼면 '연금'을
     #    캡처하고 실패한다(2026-08-29 실측 — 계산이 통째로 안 돌았다).
@@ -577,7 +682,10 @@ def derive_conditions(question: str,
         if (v := _find_amount_near(q, ("연간 연금수령액", "연간 수령액",
                                        "연 연금수령액", "연간 사적연금 수령액",
                                        "사적연금 수령액", "사적연금수령액"))) is not None:
-            c["private_pension_annual_manwon"] = v
+            # F46 — 세 번째 경로다. "가드를 하나 추가할 때 같은 조건에 도달하는
+            # 다른 경로가 또 있는가"(F45의 교훈)를 지켜 여기도 함께 막는다.
+            if not _is_public_pension_amount(q, v):
+                c["private_pension_annual_manwon"] = v
 
     # 문맥 없는 단일 금액은 보조 후보로만 둔다 (용도를 단정하지 않는다)
     if (generic := parse_amount_to_manwon(q)) is not None:
@@ -692,6 +800,16 @@ def derive_conditions(question: str,
                 c.setdefault("diagnostic_notes", []).append(
                     f"{_fmt(val)}만원이 소득(월소득·총급여 등)으로 언급되어 "
                     f"조건({k})으로 반영하지 않았습니다")
+                continue
+            if k in _PRIVATE_PENSION_KEYS and _is_public_pension_amount(q, val):
+                # LLM이 국민연금·공무원연금·군인연금 수령액을 사적연금 수령액으로
+                # 잘못 라벨링한 경우(F46). 규칙 경로 3곳을 막아도 이 경로가
+                # 열려 있으면 같은 오답이 그대로 나간다 — F45에서 겪은 것과
+                # 정확히 같은 "같은 조건에 도달하는 다른 경로"다.
+                c.setdefault("diagnostic_notes", []).append(
+                    f"{_fmt(val)}만원이 공적연금 수령액으로 언급되어 "
+                    f"조건({k})으로 반영하지 않았습니다")
+                _note_public_pension(c)
                 continue
             if (k in _PENSION_YEAR_KEYS
                     and _is_service_years_conflation(q, val, c.get("service_years"))):

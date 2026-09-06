@@ -1045,3 +1045,102 @@ def test_계산_결과가_잘못된_숫자_대신_확인_요청으로_바뀐다(
     r = answer_question("ROUND-4", q)
     assert "96만원" not in r["answer"]
     assert "연금계좌 평가액" in r["answer"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# F46 · 공적연금이 사적연금 계산으로 들어가던 결함 (2026-09-06)
+#
+# "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요"에서 월 수령액
+# 정규식이 연금 **종류**를 구별하지 않아 200이 private_pension_monthly_manwon
+# 으로 들어갔다. 연 2,400만원으로 환산돼 과세방식_비교_계산이 돌았고,
+# "분리과세 396만원 vs 종합과세 112.2만원, 종합과세가 283.8만원 유리"라는
+# **법적으로 존재하지 않는 세액**이 나갔다 — 공적연금에는 그 선택권이 없다.
+# 같은 답변이 인용한 doc39는 "공적연금과 이연퇴직소득은 1,500만원 판정
+# 대상에서 제외한다"였다(답변이 자기 근거로 자신을 반박).
+#
+# 기존 가드 3종은 모두 "이 돈이 어떤 종류인가"(소득·현금·근속연수)를 봤고,
+# "누구의 연금인가" 축은 가드가 없었다.
+# ═══════════════════════════════════════════════════════════════════
+
+import pytest
+
+
+@pytest.mark.parametrize("q", [
+    "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요",
+    "군인연금 연 4800만원 수령하는데 세금이 얼마인가요",
+    "아버지가 공무원연금 월 300만원 받으시는데 노후 대비를 어떻게 해야 할까요",
+    "매달 200만원씩 국민연금을 받습니다. 세금은요",      # 명사가 금액 뒤
+    "사학연금 월 250만원 받는데 세금은 얼마인가요",
+])
+def test_공적연금_수령액은_사적연금_조건이_되지_않는다(q):
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(q)
+    assert "private_pension_monthly_manwon" not in c
+    assert "private_pension_annual_manwon" not in c
+
+
+def test_공적연금_가드는_LLM_경로에서도_동작한다():
+    """★ F45의 교훈 — 같은 조건에 도달하는 다른 경로가 또 있는가.
+
+    규칙 경로 3곳을 막아도 LLM 조건 병합 루프가 열려 있으면 같은 오답이
+    그대로 나간다.
+    """
+    from app.analysis.conditions import derive_conditions
+
+    c = derive_conditions(
+        "국민연금 월 150만원 받는데 노후 준비를 어떻게 해야 하나요",
+        llm_conditions={"private_pension_monthly_manwon": 150})
+    assert "private_pension_monthly_manwon" not in c
+
+
+@pytest.mark.parametrize("q,key,expected", [
+    ("연금저축에서 매달 200만원 받는데 세금은 얼마인가요",
+     "private_pension_monthly_manwon", 200.0),
+    ("연간 사적연금 수령액이 2000만원인데 세금이 얼마예요",
+     "private_pension_annual_manwon", 2000.0),
+    ("연 1200만원 받으면 원천징수세율이 몇 퍼센트인가요",
+     "private_pension_annual_manwon", 1200.0),
+    ("IRP에서 매월 150만원 수령하는데 세율이 어떻게 되나요",
+     "private_pension_monthly_manwon", 150.0),
+    # 공적연금이 문장에 **언급**되기만 하고 금액은 사적연금인 경우 —
+    # 창을 넓히면 이런 정상 질의가 막힌다(그래서 앞 12자·뒤 8자로 고정).
+    ("연금저축에서 월 200만원 받는데 국민연금은 별도예요. 세금은?",
+     "private_pension_monthly_manwon", 200.0),
+])
+def test_대조군_정상_사적연금_금액은_그대로_반영된다(q, key, expected):
+    from app.analysis.conditions import derive_conditions
+
+    assert derive_conditions(q).get(key) == expected
+
+
+@pytest.mark.parametrize("q,key,expected", [
+    ("국민연금 월 100만원 받고 연금저축에서 월 200만원 받는데 세금은?",
+     "private_pension_monthly_manwon", 200.0),
+    ("국민연금 연 1200만원 받고 사적연금은 연 2000만원 받는데 세금은?",
+     "private_pension_annual_manwon", 2000.0),
+])
+def test_공적연금과_사적연금이_함께_나오면_사적연금만_고른다(q, key, expected):
+    """re.search가 아니라 finditer여야 한다.
+
+    첫 매치(공적연금)에서 멈추면 뒤의 정상적인 사적연금 금액을 통째로
+    놓쳐, 답할 수 있는 질의를 못 답하게 된다.
+    """
+    from app.analysis.conditions import derive_conditions
+
+    assert derive_conditions(q).get(key) == expected
+
+
+def test_공적연금_제외_사실이_고객_답변에_고지된다():
+    """★ 배선 — 조건을 봤으면서 아무 말 없이 버리면 '확인된 조건이 없다'는
+    부정확한 안내가 나간다. 평가지표 '정보한계 대응'은 한계 고지를 요구한다.
+
+    ⚠️ diagnostic_notes가 아니라 condition_notes로 실어야 한다 — 전자는
+       F21 이후 내부 진단 전용이라 고객 문장에 도달하지 않는다.
+    """
+    from app.pipeline import answer_question
+
+    r = answer_question("F46-WIRE", "국민연금을 매달 200만원 받습니다. 세금은 얼마나 내나요")
+    assert "공적연금" in r["answer"]
+    # 존재하지 않는 분리과세 선택 세액이 다시 나오면 안 된다
+    assert "분리과세를 선택하면" not in r["answer"]
