@@ -7,7 +7,7 @@
 > 실제 코퍼스 **158문서(PDF 156 · xlsx 2) · 8,172청크**로 인덱스를 구성했고,
 > CLOVA Studio 실연동(HCX-005)으로 L1·L5'·L6 호출이 성공하는 것을 배포
 > 환경에서 확인했습니다. 검색은 BM25 + 벡터 RRF 하이브리드입니다.
-> 회귀 테스트 1,413건 통과. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
+> 회귀 테스트 1,444건 통과. 자세한 내용은 [PROGRESS.md](PROGRESS.md).
 
 ---
 
@@ -144,7 +144,7 @@ mock으로 동작 중이면 응답 `think_trace`와 서버 로그에 `[MOCK LLM]
 | L1 | 질의 분석 | HyperCLOVA X | `analysis/query_spec.py` |
 | 경로 분류 | GENERAL(계산) / ADVISORY(상담) 결정 | – | `analysis/routing.py` |
 | 1.5 | 계획 감사 — 화이트리스트 검증 | – | `core/supervisory_board.py` |
-| L2 | 함정 감지 (28종) | – | `core/trap_rules.py` |
+| L2 | 함정 감지 (29종) | – | `core/trap_rules.py` |
 | L3 ∥ L4 | 하이브리드 검색 ∥ 가입자격 판정 (ThreadPoolExecutor 병렬) | – | `retrieval/hybrid.py` |
 | 합류 barrier | 자격 미달 후보만 제외, 미상은 통과 | – | `pipeline._eligibility_barrier()` |
 | L5 | 계산 (18종, CALC_REGISTRY) | – | `core/pension_calc_functions.py` |
@@ -270,7 +270,7 @@ app/
   pipeline.py     L0~L6 통합
   main.py         GET /answer · GET /health
 sql/schema.sql    PostgreSQL 스키마 (선택)
-tests/            회귀 테스트 1,413건 + 자체 평가셋 42문항
+tests/            회귀 테스트 1,444건 + 자체 평가셋 42문항
 ```
 
 ## 의존성
