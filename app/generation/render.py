@@ -12,6 +12,7 @@ from app.analysis.units import format_manwon
 
 # 계산함수 반환 키 → 사람이 읽는 이름
 _LABELS = {
+    "과세방식_선택_기준액": "1,500만원 판정 기준액",
     "limit": "연금수령한도",
     "denominator": "적용 분모(11 − 연금수령연차)",
     "unlimited": "한도 없음",
@@ -61,6 +62,11 @@ _UNIT_MANWON = {
     "총연금및기타소득", "인적공제", "그외소득_과세표준",
     # 퇴직급여 적립액 (수리팀 산식 · DB/DC 공통 출력 키)
     "퇴직급여_적립액", "평균월급",
+    # 과세방식 비교의 1,500만원 판정 기준액 (F13) — 법령 상수라 계산 결과에
+    # 그대로 실어 근거를 만든다. _render_tax_choice가 전용 렌더러라 이 키는
+    # 사실상 이 목록을 거치지 않지만, 다른 호출자가 범용 렌더러로 찍을 때도
+    # 일관되게 "1,500만원"으로 보이도록 등록해 둔다.
+    "과세방식_선택_기준액",
 }
 _UNIT_RATE = {
     "r_withholding", "reduction_rate", "applied_rate_of_original_tax",

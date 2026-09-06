@@ -359,9 +359,18 @@ def compare_taxation_options(P_np_annual: float,
     """
     is_choice_required = P_private_pension_annual > 1500
 
+    # ⚠️ 반환값에 명시적으로 싣는다(F13, 2026-09-06 실측). 이 상수는 위
+    # is_choice_required 판정과 아래 렌더러(_render_tax_choice)의 "1,500만원을
+    # 초과해…" 문장 양쪽에 하드코딩돼 있었는데, 어느 쪽도 계산 결과 dict에는
+    # 실리지 않았다. 그래서 numeric_verifier가 이 상수를 "근거 있는 값"으로
+    # 알 방법이 없었고, 우연히 근처 값(예: 세액 합계 1504.8)에 걸려 낡은
+    # 0.5% 허용오차로 통과하고 있었을 뿐이다 — 오차를 좁히자 즉시 드러났다.
+    # 법령이 정한 상수이므로 실제로 계산 결과에 실어 근거를 만드는 것이
+    # 맞다(오차를 다시 넓혀 우연에 기대는 것과는 다르다).
     if not is_choice_required:
         return {
             "choice_required": False,
+            "과세방식_선택_기준액": 1500.0,
             "note": "사적연금 연 1,500만원 이하 — 저율 연금소득세(5.5~3.3%) 원천징수로 종결. "
                     "종합/분리 선택 대상 아님.",
             "source": "R2_KR5111450067 외 · doc39",
@@ -393,6 +402,7 @@ def compare_taxation_options(P_np_annual: float,
     comp_rate = round(comprehensive_total / base_comp, 6) if base_comp > 0 else 0.0
     return {
         "choice_required": True,
+        "과세방식_선택_기준액": 1500.0,
         "separate": {
             "사적연금_분리과세": round(sep_private_tax, 2),
             "사적연금_적용세율": round(DEFAULT_SEPARATE_TAX_RATE_LOCAL, 4),

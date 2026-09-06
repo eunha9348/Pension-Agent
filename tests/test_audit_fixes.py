@@ -1428,3 +1428,95 @@ def test_상품_비교_질의가_무관한_문서를_근거로_쓰지_않는다(
     r = answer_question(
         "F49-WIRE", "솔로몬 국공채 단기 · 중장기 · 장기, 뭐가 달라요? 안정적인 걸 원해요.")
     assert "명예퇴직" not in r["retrieved_context"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# F13 · 수치검증 허용 변형이 99.5~100.5% 구간을 무조건 통과시킴 (기존 결함)
+#
+# _matches()의 상대오차(rel_tol=0.005)가 **allowed 안의 모든 값**에 대해
+# 블록 단위로 적용됐다. 근거에 100(전혀 다른 맥락의 값 — 예: "국민연금
+# 가입 상한 연령 100세")이 있으면, 답변이 무관한 날조 수치("예상 세액
+# 99.7만원")를 내도 100의 0.5% 이내(99.5~100.5)라는 이유만으로 통과했다.
+#
+# 표시 반올림(76.56→"77만원")을 흡수하려던 의도였지만, 그 케이스는 이미
+# _flatten_numbers가 표시 함수를 그대로 호출해 파생값을 명시적으로 만드는
+# 방식으로 별도 처리돼 있었다(2026-08-29). 즉 블록 단위 상대오차는 원래
+# 목적에는 필요 없이 남아 있던 것이고, 오직 "무관한 값과 우연히 가까운
+# 날조"를 통과시키는 구멍으로만 작동하고 있었다.
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_무관한_근거값과_우연히_가까운_날조_수치는_차단된다():
+    """★ 실측 재현 — 예전에는 이게 통과했다.
+
+    근거의 '100세'(가입 상한 연령)와 아무 관계도 없는 '99.7만원'(세액)이
+    옛 0.5% 블록 허용오차 때문에 통과했었다.
+    """
+    from app.core.numeric_verifier import verify_numeric_grounding
+
+    evidence = ["국민연금 가입 상한 연령은 100세까지 유예 신청이 가능하다."]
+    answer = "예상 세액은 99.7만원입니다."
+    r = verify_numeric_grounding(answer, [], evidence)
+    assert not r.passed
+    assert 99.7 in r.ungrounded
+
+
+def test_실효세율_표시_반올림은_여전히_통과한다():
+    """★ 대조군 — 정당한 표시 반올림까지 막으면 안 된다.
+
+    _pct()는 유효숫자 4자리로 반올림한다(0.171504 → "17.15%"). 이 파생값도
+    허용 집합에 명시적으로 들어가야 한다(만원 표시 반올림과 같은 원칙).
+    """
+    from app.core.pension_calc_functions import compare_taxation_options
+    from app.generation.render import render_calc_result
+    from app.core.numeric_verifier import verify_numeric_grounding
+
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    text = render_calc_result(r)
+    v = verify_numeric_grounding(text, calc_results=[r],
+                                 question="사적연금 2000만원 그외소득 7000만원")
+    assert v.passed, v.ungrounded
+
+
+def test_1500만원_기준액이_계산결과에_명시적으로_실린다():
+    """★ 배선 — 이전에는 이 상수가 계산 결과 어디에도 없어, 답변이 우연히
+    근처 값(예: 세액 합계 1504.8)에 걸려 낡은 0.5% 오차로 통과하고
+    있었을 뿐이다. 법령 상수이므로 계산 결과에 직접 실어 근거를 만든다.
+    """
+    from app.core.pension_calc_functions import compare_taxation_options
+
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    assert r["과세방식_선택_기준액"] == 1500.0
+
+    r2 = compare_taxation_options(P_np_annual=0, P_private_pension_annual=1000)
+    assert r2["과세방식_선택_기준액"] == 1500.0
+
+
+def test_1500만원_기준액은_강제표기_대상이_아니다():
+    """LLM이 다른 말로 바꿔 쓸 수 있는 고정 진술문의 상수라 답변에 다른
+    표현으로 실려도 누락으로 잡히면 안 된다(F24/F25류 — 새 계산 키가
+    강제표기 대상으로 새어 들어가지 않게 할 것)."""
+    from app.core.pension_calc_functions import compare_taxation_options
+    from app.core.numeric_verifier import verify_calc_presence
+
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    p = verify_calc_presence("세액 차이는 15.8만원입니다.", [r])
+    assert p.passed, [m[0] for m in p.missing]
+
+
+def test_강제표기_검증도_표시_반올림값을_인정한다():
+    """★ verify_calc_presence 방향 — raw 15.84든 표시형 15.8이든 답변에
+    있으면 실린 것으로 본다. 한쪽만 인정하면 정상 답변이 '누락'으로
+    잘못 잡힌다."""
+    from app.core.pension_calc_functions import compare_taxation_options
+    from app.core.numeric_verifier import verify_calc_presence
+
+    r = compare_taxation_options(P_np_annual=0, P_private_pension_annual=2000,
+                                 other_comprehensive_income=7000)
+    p_raw = verify_calc_presence("세액 차이는 15.84만원입니다.", [r])
+    p_shown = verify_calc_presence("세액 차이는 15.8만원입니다.", [r])
+    assert p_raw.passed
+    assert p_shown.passed

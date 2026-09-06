@@ -113,7 +113,7 @@ def _flatten_numbers(obj: Any) -> set[float]:
     ⚠️ 단위를 아는 키에서만 환산한다. 모든 수에 ×10000을 적용하면
        연차·나이 같은 값까지 거대한 후보를 만들어 날조를 통과시킨다.
     """
-    from app.generation.render import _UNIT_MANWON
+    from app.generation.render import _UNIT_MANWON, _UNIT_RATE
 
     found: set[float] = set()
     if isinstance(obj, bool):
@@ -125,6 +125,16 @@ def _flatten_numbers(obj: Any) -> set[float]:
     elif isinstance(obj, dict):
         for k, v in obj.items():
             found |= _flatten_numbers(v)
+            if (k in _UNIT_RATE and isinstance(v, (int, float))
+                    and not isinstance(v, bool)):
+                # ⚠️ 비율도 만원 값과 같은 표시 반올림 문제가 있다(F13,
+                #    2026-09-06 실측). _pct()는 유효숫자 4자리로 반올림한다
+                #    (0.171504 → "17.15%", 0.186353 → "18.64%"). _variants()의
+                #    ×100 변환은 원본값(17.1504·18.6353)만 내놓으므로, 답변에
+                #    실제로 찍히는 표시값과 어긋난다 — 만원 값의 반올림 보정과
+                #    정확히 같은 함정이다. 표시 함수를 그대로 호출해 뽑는다.
+                from app.generation.render import _pct
+                found |= extract_numbers(_pct(v), include_trivial=True)
             if (k in _UNIT_MANWON and isinstance(v, (int, float))
                     and not isinstance(v, bool)):
                 found.add(float(v) * 10_000)      # 만원 → 원
@@ -186,8 +196,25 @@ def _variants(v: float) -> set[float]:
     return out
 
 
-def _matches(target: float, allowed: set[float], rel_tol: float = 0.005) -> bool:
-    """target이 allowed 안의 어떤 값과 (변형 포함) 일치하는지."""
+def _matches(target: float, allowed: set[float], rel_tol: float = 1e-6) -> bool:
+    """target이 allowed 안의 어떤 값과 (변형 포함) 일치하는지.
+
+    ⚠️ F13 (2026-09-06) — 예전 기본값은 0.005(0.5%)였다. 이건 표시 반올림
+    (76.56→"77만원")을 흡수하려던 것이었는데, 실제로는 그 목적에 쓰이지도
+    못했다(77 vs 76.56 = 0.575%로 0.5%조차 못 넘었다 — 그래서 이미
+    `_flatten_numbers`가 표시 함수를 그대로 호출해 파생값을 명시적으로
+    만드는 별도 처리를 하고 있었다). 남은 역할은 **allowed 안의 아무
+    값에나 우연히 근접한 날조 수치를 통과시키는 것**뿐이었다 — 실측:
+    근거에 "100세"(가입 상한 연령)만 있어도 답변의 날조된 "99.7만원"
+    (세액)이 통과했다. 0.5%는 100 기준으로 99.5~100.5 전체를 무조건
+    합격시킨다.
+
+    지금 값(1e-6)은 그 구멍을 닫으면서 **부동소수점 연산 잡음만** 흡수
+    하려는 것이다 — 표시 반올림용이 아니다. 표시 반올림은 반드시
+    `_flatten_numbers`/`verify_calc_presence`가 표시 함수를 그대로 호출해
+    명시적으로 파생값을 만드는 쪽으로 처리할 것. 오차를 다시 넓히면
+    이 취약점이 그대로 돌아온다.
+    """
     for cand in _variants(target):
         for a in allowed:
             if a == 0 and cand == 0:
@@ -251,7 +278,12 @@ class PresenceResult:
 _PRESENCE_SKIP = {"source", "rate_source", "DEPRECATED", "note", "기준", "action",
                   "doc_id", "markers", "is_legacy_suspect", "reason", "params",
                   "label", "denominator", "unlimited", "eligible", "comparable",
-                  "choice_required"}
+                  "choice_required",
+                  # F13 — 렌더러가 항상 고정 문장으로 진술하는 법령 상수라
+                  # LLM 답변에서 다른 말로 바뀌어도 누락으로 잡을 필요가 없다
+                  # (F24/F25류 — 새 계산 키가 강제표기 대상으로 새어 들어가지
+                  # 않게 할 것).
+                  "과세방식_선택_기준액"}
 
 
 # 제도가 정한 **상수 한도**. 계산값이 아니라 맥락이다.
@@ -403,7 +435,17 @@ def verify_calc_presence(answer: str,
     present: set[float] = {v for _s, _e, v in parse_amount_expressions(answer)}
     present |= extract_numbers(answer, include_trivial=True)
 
-    missing = [t for t in targets if not _matches(t[1], present)]
+    def _shown_up(shown: str) -> bool:
+        # ⚠️ F13 — raw 값(15.84)의 허용오차를 좁혔더니, 표시 반올림값
+        # (15.8)만 쓴 정상 답변이 "누락"으로 잡혔다. _presence_targets의
+        # 세 번째 요소는 render.py의 표시 함수가 만든 값 그대로이므로
+        # (예: format_manwon(15.84) == "15.8만원"), 그 표시형에서 뽑은
+        # 숫자도 답변에 있으면 실렸다고 본다 — raw와 표시형 어느 쪽으로
+        # 답해도 강제표기 요건은 만족해야 한다.
+        return bool(extract_numbers(shown, include_trivial=True) & present)
+
+    missing = [t for t in targets
+              if not _matches(t[1], present) and not _shown_up(t[2])]
     return PresenceResult(passed=not missing, missing=missing,
                           required_count=len(targets))
 
