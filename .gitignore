@@ -16,5 +16,7 @@ data/index/
 data/models
 # 법령 수집 산출물 (7천여 조문). 서버에서 crawler로 만든다.
 data/law/*.json
-# 300건 재현 실행 결과
+# 재현 실행 결과 (--out 인자로 이름을 임의로 지정해도 걸러지도록 패턴을 넓힘)
 replay_result_*.json
+replay_*.json
+venv/
