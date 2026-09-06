@@ -1356,3 +1356,75 @@ def test_대조군_사적연금_근거가_있으면_그대로_반영된다(q, ll
 
     c = derive_conditions(q, llm_conditions=llm)
     assert c.get("private_pension_monthly_manwon") == expected
+
+
+# ═══════════════════════════════════════════════════════════════════
+# F49 · 안내서 상품 비교 예시 질의가 상품 비교 규칙에 안 걸렸다
+#
+# 안내서 7페이지 대주제 2 예시:
+#   "솔로몬 국공채 단기·중장기·장기, 뭐가 달라요? 안정적인 걸 원해요."
+# 상품_비교 TopicRule의 키워드는 ("총보수","보수가 낮","수수료 비교",
+# "어떤 클래스","비교해","저렴한")뿐이라 **하나도 안 걸렸다.** 사용자는
+# "총보수"라고 말하지 않고 "뭐가 달라요"라고 말한다.
+# 그 결과 대주제 2의 핵심 유형이 일반 폴백 슬롯으로 떨어져 무관한 문서
+# (명예퇴직금 처리)를 근거로 답했다 — 평가지표 '근거 완전성'의
+# "질의 대상과 무관한 근거를 배제했는가"를 정면으로 어긴다.
+#
+# ⚠️ 비교어를 그냥 넓히면 안 된다 — "뭐가 달라"·"차이"는 제도 비교에도
+#    똑같이 쓰인다. require_any(AND 게이트)로 **상품 차원**임을 요구한다.
+# ═══════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize("q", [
+    "솔로몬 국공채 단기 · 중장기 · 장기, 뭐가 달라요? 안정적인 걸 원해요.",
+    "이 펀드랑 저 펀드 차이가 뭔가요",
+    "TDF랑 인덱스펀드 뭐가 달라요",
+    "위험등급 3등급이랑 4등급 어떤 차이가 있나요",
+    "채권형이랑 주식형 상품 어느 게 나은가요",
+])
+def test_상품_차원_비교질의가_상품_비교로_잡힌다(q):
+    from app.analysis.query_spec import rule_based_spec
+
+    assert rule_based_spec(q).get("intent") == "상품_비교", q
+
+
+@pytest.mark.parametrize("q,expected", [
+    # ★ 제도 비교는 끌려오면 안 된다 — 안내서 난이도 '하'의 기초 제도 질의다
+    ("DC와 DB, 퇴직금이 정해지는 방식이랑 운용 주체가 어떻게 다른가요?", "일반"),
+    ("연금저축이랑 IRP 차이가 뭔가요", "일반"),
+    ("연금저축이랑 IRP 차이점이 뭐예요", "일반"),
+    # 세제 비교는 원래 규칙이 가져가야 한다
+    ("분리과세랑 종합과세 뭐가 달라요", "과세방식"),
+])
+def test_대조군_제도_세제_비교는_상품_비교로_가지_않는다(q, expected):
+    from app.analysis.query_spec import rule_based_spec
+
+    assert rule_based_spec(q).get("intent") == expected, q
+
+
+def test_한국어_축약형_뭔가요도_잡는다():
+    """'뭔'은 '뭐+ㄴ'의 축약이라 "차이가 뭐"가 "차이가 뭔가요"를 포함하지
+    **않는다.** 한국어 부분문자열 매칭의 전형적인 함정(CLAUDE.md)."""
+    from app.analysis.query_spec import rule_based_spec
+
+    assert rule_based_spec("이 펀드 차이가 뭔가요").get("intent") == "상품_비교"
+    assert rule_based_spec("이 펀드 차이가 뭐예요").get("intent") == "상품_비교"
+
+
+def test_상품_차원_어휘는_L0_분류와_같은_목록을_쓴다():
+    """같은 판단(이 질의가 상품 차원인가)을 두 곳이 다른 기준으로 하면
+    반드시 어긋난다 — L0는 '상품'으로 분류하는데 주제 규칙만 모르는 상태가
+    바로 F49의 본질이었다."""
+    from app.analysis.query_spec import _PRODUCT_DIMENSION
+    from app.core.grounding_retrieval import DOMAIN_AREAS
+
+    assert set(DOMAIN_AREAS["상품"]) <= set(_PRODUCT_DIMENSION)
+
+
+def test_상품_비교_질의가_무관한_문서를_근거로_쓰지_않는다():
+    """★ 배선 — 이전에는 명예퇴직금 처리 문서가 근거로 실렸다."""
+    from app.pipeline import answer_question
+
+    r = answer_question(
+        "F49-WIRE", "솔로몬 국공채 단기 · 중장기 · 장기, 뭐가 달라요? 안정적인 걸 원해요.")
+    assert "명예퇴직" not in r["retrieved_context"]
