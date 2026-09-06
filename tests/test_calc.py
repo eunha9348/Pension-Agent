@@ -252,6 +252,55 @@ def test_부분적으로만_재배치_여지가_있는_경우():
     assert out["재배치시_추가공제_가능액"] == pytest.approx(100 * 0.165)
 
 
+# ── 구체적 추천 분배액 (2026-09-07, 수리담당 산식 검증 후 보강) ──────
+#
+# 수리담당이 제시한 산식 min(min(y,600)+z,900)(세액공제대상액)·
+# min(x,900)(최대세액공제대상액)을 8개 케이스로 대조한 결과, 기존
+# A_tax_credit·재배치시_추가공제_가능액과 대수적으로 완전히 일치했다
+# (계산 자체는 이미 맞다). 다만 "연금저축 600만원까지 채우고 나머지를
+# IRP에"라는 **구체적인 두 금액**은 계산해서 내지 않아, LLM이 뺄셈을
+# 스스로 해야 하는 사각지대가 있었다 — 그 부분만 보강한다.
+
+def test_추천_분배액_기본_케이스():
+    """x=900,y=0 → 이미 넣기로 한 900만원을 그대로 유지한 채
+    연금저축 600 / IRP 300으로 재배치하라는 것이 정답이다."""
+    out = calc_private_contribution_limit(X_pension_saving=900, r_tax_credit=0.165)
+    assert out["개선된_연금저축"] == pytest.approx(600.0)
+    assert out["개선된_IRP"] == pytest.approx(300.0)
+    assert "재배치로도_공제_안_되는_초과분" not in out
+
+
+def test_추천_분배액_총액이_합산한도를_넘으면_초과분을_따로_알린다():
+    """★ x=1000,y=0 — 900을 넘는 100만원은 어느 계좌로 옮겨도 공제되지
+    않는다. 권장 분배는 900까지만 채우는 값이어야 하고, 나머지는
+    별도 필드로 정직하게 알려야 한다(새 돈을 더 넣으라는 권고가 아니라
+    기존 금액의 배분만 바꾸는 것이므로 총액을 900으로 조작하면 안 된다)."""
+    out = calc_private_contribution_limit(X_pension_saving=1000, r_tax_credit=0.165)
+    assert out["개선된_연금저축"] == pytest.approx(600.0)
+    assert out["개선된_IRP"] == pytest.approx(300.0)
+    assert out["재배치로도_공제_안_되는_초과분"] == pytest.approx(100.0)
+
+
+def test_추천_분배액이_기존_IRP_금액을_반영한다():
+    """x=900,y=200 → 이미 IRP에 200이 있으므로, 총액 1100 중 재배치로
+    커버 가능한 900을 600/300으로 나누는 것이 정답이다(y=200을 무시하고
+    엉뚱한 값을 내면 안 된다)."""
+    out = calc_private_contribution_limit(X_pension_saving=900, Y_irp_personal=200,
+                                          r_tax_credit=0.165)
+    assert out["개선된_연금저축"] == pytest.approx(600.0)
+    assert out["개선된_IRP"] == pytest.approx(300.0)
+    assert out["재배치로도_공제_안_되는_초과분"] == pytest.approx(200.0)
+
+
+def test_재배치_여지가_없으면_추천_분배액_필드도_없다():
+    """★ 회귀 방지 — IsReallocatable=False(이미 합산 한도까지 다 참)면
+    추천 분배액을 계산할 이유가 없다."""
+    out = calc_private_contribution_limit(X_pension_saving=700, Y_irp_personal=300,
+                                          r_tax_credit=0.165)
+    assert "개선된_연금저축" not in out
+    assert "개선된_IRP" not in out
+
+
 @pytest.mark.parametrize("age,annuity,rate", [
     (60, False, 0.055),
     (75, False, 0.044),

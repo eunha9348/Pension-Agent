@@ -178,6 +178,26 @@ def calc_private_contribution_limit(X_pension_saving=None, Y_irp_personal=None,
         if recoverable > 0:
             out["IsReallocatable"] = True
             out["재배치시_추가공제_가능액"] = round(recoverable * r_tax_credit, 4)
+
+            # ━━ 구체적인 추천 분배액도 계산해서 낸다 (2026-09-07,
+            #    수리담당 제공 산식 검증 후 보강) ━━
+            # "IRP로 옮기면 더 받는다"까지만 말하면 LLM이 얼마씩 옮길지
+            # 스스로 계산해야 한다 — 뺄셈 하나라도 LLM에게 맡기면
+            # "계산은 함수, 설명은 LLM" 원칙이 깨진다. 그래서 최적 분배
+            # (연금저축 한도부터 채우고 남는 돈을 IRP에)의 정확한 두
+            # 금액을 여기서 직접 낸다.
+            #
+            # ⚠️ 이미 넣기로 한 총액(x+y)을 그대로 유지한 채 **배분만**
+            #    바꾼다 — 새 돈을 더 넣으라는 권고가 아니다. 총액이
+            #    합산 한도(900)를 넘으면 그 초과분은 어느 계좌로 옮겨도
+            #    공제되지 않으므로, 권장 분배는 합산 한도까지만 채우는
+            #    값이고 초과분은 별도로 알린다.
+            capped_total = min(x + y, LIMIT_COMBINED)
+            out["개선된_연금저축"] = round(min(capped_total, LIMIT_PENSION_SAVING), 4)
+            out["개선된_IRP"] = round(capped_total - out["개선된_연금저축"], 4)
+            leftover = (x + y) - capped_total
+            if leftover > 0:
+                out["재배치로도_공제_안_되는_초과분"] = round(leftover, 4)
         else:
             # 이미 합산 한도(900)까지 다 찼으면 옮겨도 더 받을 게 없다
             # — 그 사실 자체가 답이므로 False로 명시한다.
